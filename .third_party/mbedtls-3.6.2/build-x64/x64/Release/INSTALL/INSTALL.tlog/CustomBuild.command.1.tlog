@@ -1,0 +1,10 @@
+^D:\COPILOT-TOOLS\.THIRD_PARTY\MBEDTLS-3.6.2\BUILD-X64\CMAKEFILES\6F2A427DDA9DB3DBA071B8106E209E14\INSTALL_FORCE.RULE
+setlocal
+cd .
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\copilot-tools\.third_party\mbedtls-3.6.2\build-x64\CMakeFiles\a0a27f41374e99f10c3fb39483a93b8b\lib.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\copilot-tools\.third_party\mbedtls-3.6.2\library\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="D:\copilot-tools\.third_party\mbedtls-3.6.2\build-x64\library\CMakeFiles\lib" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{08A75736-39D9-3FE2-A29E-669D7C76D538}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

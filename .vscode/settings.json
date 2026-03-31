@@ -1,0 +1,16 @@
+{
+    "cmake.useCMakePresets": "never",
+    "cmake.buildDirectory": "${workspaceFolder}/build-vs-win32",
+    "cmake.generator": "Visual Studio 18 2026",
+    "cmake.configureSettings": {
+        "CMAKE_GENERATOR_PLATFORM": "Win32",
+        "CMAKE_BUILD_TYPE": "Debug"
+    },
+    "cmake.buildArgs": [
+        "--",
+        "/p:Platform=Win32"
+    ],
+    "C_Cpp.default.compilerPath": "cl.exe",
+    "C_Cpp.default.intelliSenseMode": "windows-msvc-x86",
+    "C_Cpp.default.cppStandard": "c++20"
+}

@@ -1,15 +1,24 @@
 {
     "cmake.useCMakePresets": "never",
+    "cmake.sourceDirectory": "${workspaceFolder}",
     "cmake.buildDirectory": "${workspaceFolder}/build-vs-win32",
     "cmake.generator": "Visual Studio 18 2026",
+    "cmake.configureEnvironment": {
+        "PATH": "C:\\Program Files\\PowerShell\\7;${env:PATH}",
+        "TEMP": "${workspaceFolder}\\temp",
+        "TMP": "${workspaceFolder}\\temp"
+    },
+    "cmake.buildEnvironment": {
+        "PATH": "C:\\Program Files\\PowerShell\\7;${env:PATH}",
+        "TEMP": "${workspaceFolder}\\temp",
+        "TMP": "${workspaceFolder}\\temp"
+    },
     "cmake.configureSettings": {
         "CMAKE_GENERATOR_PLATFORM": "Win32",
-        "CMAKE_BUILD_TYPE": "Debug"
+        "COPILOT_BUILD_TESTS": "OFF",
+        "COPILOT_BUILD_EXAMPLES": "ON",
+        "COPILOT_BUILD_BENCHMARKS": "OFF"
     },
-    "cmake.buildArgs": [
-        "--",
-        "/p:Platform=Win32"
-    ],
     "C_Cpp.default.compilerPath": "cl.exe",
     "C_Cpp.default.intelliSenseMode": "windows-msvc-x86",
     "C_Cpp.default.cppStandard": "c++20"

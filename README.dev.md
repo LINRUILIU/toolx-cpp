@@ -158,10 +158,14 @@ Example:
 
 ## Build with Visual Studio 2026 (MSBuild solution)
 
+This is the default Windows local-dev tree for VS Code / CMake Tools.
+It keeps examples on, but leaves tests and benchmarks off so the build folder stays smaller.
+If you need a full validation tree, reconfigure with `COPILOT_BUILD_TESTS=ON` temporarily.
+
 1. Generate solution files:
 
 ```powershell
-cmake -S . -B build-vs-win32 -G "Visual Studio 18 2026" -A Win32
+cmake -S . -B build-vs-win32 -G "Visual Studio 18 2026" -A Win32 -DCOPILOT_BUILD_TESTS=OFF -DCOPILOT_BUILD_EXAMPLES=ON -DCOPILOT_BUILD_BENCHMARKS=OFF
 ```
 
 2. Build Debug|Win32:
@@ -178,6 +182,8 @@ cmake --build build-vs-win32 --config Debug -- /p:Platform=Win32
 
 - Default library type is static to keep deployment simple for small projects.
 - Core API supports both macro-format and macro-stream styles.
+- `build-vs-win32` is the lean Visual Studio tree for daily use; it can be deleted and regenerated at any time.
+- `temp/` is intentionally used as the temporary directory for MSBuild/CMake Tools on Windows.
 
 ## 编码
 
@@ -878,15 +884,21 @@ Migration notes (non-breaking):
 In some environments (typically network/cache state), VS Code CMake Tools may report
 "failed to configure project" while command-line CMake still works.
 
-Recommended fallback:
+For this repository, the common Windows fixes are:
+
+- Use the Visual Studio 18 2026 generator with `build-vs-win32`.
+- Make sure PowerShell 7 is on `PATH` for CMake Tools.
+- Keep `TEMP` and `TMP` pointed at the workspace `temp/` directory so MSBuild does not create temp folders under the user profile.
+- Do not pass `/p:Platform=Win32` through `cmake.buildArgs`; the generator already knows the platform.
+
+Recommended command-line fallback:
 
 ```powershell
-cmake -S . -B build-vs-win32 -G "Visual Studio 18 2026" -A Win32
+cmake -S . -B build-vs-win32 -G "Visual Studio 18 2026" -A Win32 -DCOPILOT_BUILD_TESTS=OFF -DCOPILOT_BUILD_EXAMPLES=ON -DCOPILOT_BUILD_BENCHMARKS=OFF
 cmake --build build-vs-win32 --config Debug -- /p:Platform=Win32
-ctest --test-dir build-vs-win32 -C Debug --output-on-failure
 ```
 
-If `ctest` index is stale and reports `No tests were found!!!`, run test executables directly from `build-vs-win32/Debug/` (for example, `logsys_tests.exe`, `cfgx_tests.exe`, `fsx_tests.exe`, `tuix_tests.exe`).
+If you need tests, temporarily reconfigure with `COPILOT_BUILD_TESTS=ON` or use a separate full build tree.
 
 If cache is stale/corrupted, clean build artifacts and reconfigure:
 

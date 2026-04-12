@@ -1,3 +1,7 @@
+#第三方依赖（仅保留离线压缩包）
+.third_party/*
+!.third_party/*.zip
+
 #构建产物
 build/
 build-vs/
@@ -21,3 +25,10 @@ Testing/
 *.pdb
 *.ipch
 *.log
+
+# reference 本地实验/临时工具，不进入仓库
+/reference/class_cft.cpp
+/reference/class_cft.h
+/reference/cmd_console_tools.cpp
+/reference/cmd_console_tools.h
+/reference/txt_compare/

@@ -111,6 +111,7 @@ namespace tuix
         Move,
         ButtonDown,
         ButtonUp,
+        Click,
         DoubleClick,
         Wheel
     };
@@ -136,6 +137,13 @@ namespace tuix
         ExclusiveConsume,
         PeekOnly,
         TeeBack
+    };
+
+    enum class InputConsumeSupport
+    {
+        Native,
+        Degraded,
+        Unsupported
     };
 
     struct KeyEvent
@@ -192,12 +200,14 @@ namespace tuix
         virtual PollResult Poll(int timeout_ms = 0) = 0;
         virtual bool SetConsumeMode(InputConsumeMode mode) = 0;
         virtual InputConsumeMode consume_mode() const noexcept = 0;
+        virtual InputConsumeSupport QueryConsumeModeSupport(InputConsumeMode mode) const noexcept = 0;
     };
 
     struct FrameCell
     {
         std::string utf8{" "};
         std::uint8_t display_width{1};
+        bool continuation{false};
     };
 
     struct Rect
@@ -233,11 +243,25 @@ namespace tuix
         virtual void Layout(const Rect &bounds);
         virtual void Render(FrameBuffer &frame) const = 0;
         virtual bool HandleEvent(const InputEvent &event);
+        virtual bool HitTest(std::uint16_t x, std::uint16_t y) const;
+        virtual void OnFocusChanged(bool focused);
 
         const Rect &bounds() const noexcept;
+        void SetVisible(bool visible) noexcept;
+        bool visible() const noexcept;
+        void SetEnabled(bool enabled) noexcept;
+        bool enabled() const noexcept;
+        void SetFocusable(bool focusable) noexcept;
+        bool focusable() const noexcept;
+        void SetFocused(bool focused) noexcept;
+        bool focused() const noexcept;
 
     private:
         Rect bounds_{};
+        bool visible_{true};
+        bool enabled_{true};
+        bool focusable_{false};
+        bool focused_{false};
     };
 
     class Layout : public Widget
@@ -350,6 +374,11 @@ namespace tuix
 
         void SetRoot(std::shared_ptr<Widget> root);
         void SetInputSource(std::unique_ptr<InputSource> input_source);
+        bool SetFocusedWidget(Widget *widget);
+        Widget *FocusedWidget() const noexcept;
+        void RequestRepaint() noexcept;
+        bool NeedsRepaint() const noexcept;
+        std::size_t render_count() const noexcept;
 
         void RequestExit() noexcept;
         bool Running() const noexcept;
@@ -363,6 +392,10 @@ namespace tuix
         std::unique_ptr<InputSource> input_source_;
         std::unique_ptr<FrameBuffer> previous_frame_;
         bool running_{true};
+        Widget *focused_widget_{nullptr};
+        TerminalSize last_size_{};
+        bool needs_repaint_{true};
+        std::size_t render_count_{0};
     };
 
     std::unique_ptr<InputSource> CreateConsoleInputSource(const InputOptions &options = {});

@@ -732,7 +732,7 @@ cmake --build build-vs-win32 --config Debug --target textcodec_example -- /p:Pla
 ctest --test-dir build-vs-win32 -C Debug --output-on-failure -R textcodec_tests
 ```
 
-## tuix (M3)
+## tuix (M4)
 
 `tuix` is the terminal UI foundation module.
 
@@ -741,17 +741,21 @@ Current scope:
 - terminal core (`clear/move/set cursor/color/print/clear-line/clear-rect/title`)
 - runtime backend reporting (`Terminal::CurrentBackend`)
 - poll-only input model (`InputSource::Poll`, non-blocking by default)
-- input consume strategy (`ExclusiveConsume` / `PeekOnly` / `TeeBack`)
+- detectable input consume capability reporting (`QueryConsumeModeSupport`)
+- input consume strategy (`ExclusiveConsume` / `PeekOnly` / experimental `TeeBack`)
 - frame diff rendering (`FrameBuffer` + `RenderFrameDiff`)
-- minimal widget/layout/application framework (`Widget/Layout/Application`)
-- basic controls (`Label`, `Button`) for text render and Enter-triggered click
+- widget/layout/application framework with focus-aware dispatch (`Widget/Layout/Application`)
+- basic controls (`Label`, `Button`) with UTF-8-safe text clipping
+- focus management (`SetFocusedWidget` / `FocusedWidget`, `Tab` / `Shift+Tab`, arrow-key traversal)
+- mouse hit routing for clickable controls and resize-driven relayout/repaint
+- dirty-frame rendering (`RequestRepaint`, repaint only on input/focus/resize/explicit invalidate)
 
-Platform strategy in M3:
+Platform strategy in M4:
 
 - On Windows console handle output, prefer Win32-enhanced backend by default.
 - If console handle is unavailable (pipe/redirect/test host), fallback to ANSI backend.
 - Windows input source reads low-level console events (`PeekConsoleInput` / `ReadConsoleInput`).
-- Basic layout engine is available (vertical/horizontal split), but no advanced focus manager or pixel graphics API.
+- Basic layout engine is available (vertical/horizontal split), but no advanced retained UI tree, theme system, or pixel graphics API.
 
 ### tuix quick start
 
@@ -791,10 +795,12 @@ cmake --build build-vs-win32 --config Debug --target tuix_showcase -- /p:Platfor
 
 Showcase controls:
 
-- arrow keys or `W/A/S/D`: move cursor marker
-- mouse move/click: move marker (when console mouse events are enabled)
-- `Tab`: cycle consume mode (`ExclusiveConsume` -> `PeekOnly` -> `TeeBack`)
-- `Q` or `Esc`: exit
+- `Tab` / `Shift+Tab`: cycle focus
+- arrow keys: move focus among buttons
+- `Enter` / `Space`: activate the focused button
+- mouse click: focus and activate the clicked button
+- `Esc`: exit
+- resize terminal window: relayout + repaint
 
 ### Run tuix tests
 
@@ -808,15 +814,15 @@ If `ctest` prints `No tests were found!!!` in a stale cache/build folder, run te
 .\build-vs-win32\Debug\tuix_tests.exe
 ```
 
-## M3 Closeout Contract
+## M4 Closeout Contract
 
-This section defines the current stable baseline after the M3 re-scope.
+This section defines the current stable baseline after the M4 interaction upgrade.
 
 ### Compatibility
 
 - Existing M1/V2 call sites remain callable.
 - `hashx` remains source-compatible as a facade and forwards to `utils::hash`.
-- New M3 capability is additive (`utils::hash`, `tuix::Terminal::CurrentBackend`, string text metrics helpers in `utils::str`).
+- New M4 capability is additive (`tuix` focus metadata, focus routing, repaint control, consume-mode capability reporting).
 
 ### Thread-Safety
 
@@ -836,11 +842,12 @@ This section defines the current stable baseline after the M3 re-scope.
 - `utils::str` text measurement helpers focus on fast runtime metrics for loops and rendering paths.
 - They do not solve source/compiler/terminal charset mismatch configuration.
 
-### Known Limits (M3)
+### Known Limits (M4)
 
 - Hash algorithms are non-cryptographic only; no SHA-family guarantees.
 - `textcodec` does not provide a full UTF-8/UTF-16/GBK conversion suite.
-- `tuix` currently provides only basic widget/layout primitives (`Label/Button/Vertical/Horizontal`) and no advanced retained UI system.
+- `tuix` still provides only a compact control set (`Label/Button/Vertical/Horizontal`) and not a full retained UI system.
+- `TeeBack` remains an explicitly degraded/experimental consume mode in M4 and is not equivalent to a true replay queue.
 - `fsx` recovery is best-effort and is not a full ACID transaction system.
 
 ### fsx Usage Boundary
@@ -849,9 +856,9 @@ This section defines the current stable baseline after the M3 re-scope.
 - Use `fsx` when you need batch intent, rollback visibility, and optional journal recovery.
 - Use `RecoverFromJournal(...)` only for interrupted/failed transactional batches.
 
-### M3 Release Gate
+### M4 Release Gate
 
-Before treating M3 as stable, verify all items below:
+Before treating M4 as stable, verify all items below:
 
 1. Build gate:
 	- build module examples (`utils/fsx/hashx/textcodec/tuix`) in Win32/Debug.
@@ -870,13 +877,13 @@ Closeout status:
 
 - Phase B (`logsys`): async queue backend, time rotation, UDP syslog sink, dynamic level apply, and regression tests are all landed.
 - Phase C (`cfgx`/`cfgtool`): TOML + remote reload + encrypted persistence + snapshot/audit + `snapshot-export`/`snapshot-restore` CLI landed.
-- Phase D (`fsx`/`tuix`): directory watcher semantics + link/capability API + basic widget/layout/control framework landed.
+- Phase D (`fsx`/`tuix`): directory watcher semantics + link/capability API + interactive M4 widget/layout/control framework landed.
 
 Migration notes (non-breaking):
 
 - Existing APIs remain callable; new functionality is additive.
 - `fsx::CreateFileWatcher` now accepts directory path and emits per-child relative paths for directory events.
-- `tuix` adds `Label`/`Button` and `Application` loop usage without changing existing terminal/input API contracts.
+- `tuix` keeps existing terminal/input API contracts callable while adding focus routing, UTF-8-safe control rendering, and repaint control.
 - For deterministic test assertions after async logging in `logsys`, call `Logger::Flush()` before checking sink output.
 
 ### CMake Tools configure failure (VS Code) troubleshooting

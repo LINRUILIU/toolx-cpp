@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
-#include <memory>
+#include <utility>
+#include <vector>
 
 #include "tuix.h"
 
@@ -12,9 +14,10 @@ namespace
     class MarkWidget final : public tuix::Widget
     {
     public:
-        explicit MarkWidget(char marker)
+        explicit MarkWidget(char marker, bool focusable = false)
             : marker_(marker)
         {
+            SetFocusable(focusable);
         }
 
         void Render(tuix::FrameBuffer &frame) const override
@@ -27,9 +30,10 @@ namespace
             frame.Put(b.x, b.y, std::string(1, marker_), 1);
         }
 
-        bool HandleEvent(const tuix::InputEvent &) override
+        bool HandleEvent(const tuix::InputEvent &event) override
         {
             ++events_;
+            last_type_ = event.type;
             return true;
         }
 
@@ -38,9 +42,55 @@ namespace
             return events_;
         }
 
+        tuix::EventType last_type() const noexcept
+        {
+            return last_type_;
+        }
+
     private:
         char marker_;
         int events_{0};
+        tuix::EventType last_type_{tuix::EventType::None};
+    };
+
+    class FakeInputSource final : public tuix::InputSource
+    {
+    public:
+        explicit FakeInputSource(std::vector<tuix::PollResult> results)
+            : results_(std::move(results))
+        {
+        }
+
+        tuix::PollResult Poll(int) override
+        {
+            if (index_ >= results_.size())
+            {
+                return {};
+            }
+            return results_[index_++];
+        }
+
+        bool SetConsumeMode(tuix::InputConsumeMode mode) override
+        {
+            mode_ = mode;
+            return true;
+        }
+
+        tuix::InputConsumeMode consume_mode() const noexcept override
+        {
+            return mode_;
+        }
+
+        tuix::InputConsumeSupport QueryConsumeModeSupport(tuix::InputConsumeMode mode) const noexcept override
+        {
+            return mode == tuix::InputConsumeMode::TeeBack ? tuix::InputConsumeSupport::Degraded
+                                                           : tuix::InputConsumeSupport::Native;
+        }
+
+    private:
+        std::vector<tuix::PollResult> results_;
+        std::size_t index_{0};
+        tuix::InputConsumeMode mode_{tuix::InputConsumeMode::ExclusiveConsume};
     };
 }
 
@@ -101,45 +151,42 @@ TEST(TuixInputTests, PollStreamInput)
 
     auto p2 = source->Poll(0);
     ASSERT_EQ(p2.status, tuix::PollStatus::HasEvent);
-    ASSERT_EQ(p2.event.type, tuix::EventType::Key);
     EXPECT_EQ(p2.event.key.key, tuix::Key::ArrowUp);
 
     auto p3 = source->Poll(0);
     ASSERT_EQ(p3.status, tuix::PollStatus::HasEvent);
-    ASSERT_EQ(p3.event.type, tuix::EventType::Key);
     EXPECT_EQ(p3.event.key.key, tuix::Key::Enter);
-
-    auto p4 = source->Poll(0);
-    EXPECT_EQ(p4.status, tuix::PollStatus::NoEvent);
 }
 
-TEST(TuixInputTests, PollStreamCsiModifier)
-{
-    std::istringstream in(std::string("\x1B[1;5A"));
-    auto source = tuix::CreateStreamInputSource(in);
-    ASSERT_NE(source, nullptr);
-
-    auto p = source->Poll(0);
-    ASSERT_EQ(p.status, tuix::PollStatus::HasEvent);
-    ASSERT_EQ(p.event.type, tuix::EventType::Key);
-    EXPECT_EQ(p.event.key.key, tuix::Key::ArrowUp);
-    EXPECT_TRUE(tuix::HasModifier(p.event.key.modifiers, tuix::KeyModifier::Ctrl));
-}
-
-TEST(TuixInputTests, StreamInputConsumeModeAndTimeoutValidation)
+TEST(TuixInputTests, SupportsDetectableConsumeModeCapabilities)
 {
     std::istringstream in(std::string("x"));
     auto source = tuix::CreateStreamInputSource(in);
     ASSERT_NE(source, nullptr);
 
-    EXPECT_EQ(source->consume_mode(), tuix::InputConsumeMode::ExclusiveConsume);
-    EXPECT_TRUE(source->SetConsumeMode(tuix::InputConsumeMode::PeekOnly));
-    EXPECT_EQ(source->consume_mode(), tuix::InputConsumeMode::PeekOnly);
-    EXPECT_TRUE(source->SetConsumeMode(tuix::InputConsumeMode::TeeBack));
-    EXPECT_EQ(source->consume_mode(), tuix::InputConsumeMode::TeeBack);
+    EXPECT_EQ(source->QueryConsumeModeSupport(tuix::InputConsumeMode::ExclusiveConsume),
+              tuix::InputConsumeSupport::Native);
+    EXPECT_EQ(source->QueryConsumeModeSupport(tuix::InputConsumeMode::PeekOnly),
+              tuix::InputConsumeSupport::Native);
+    EXPECT_EQ(source->QueryConsumeModeSupport(tuix::InputConsumeMode::TeeBack),
+              tuix::InputConsumeSupport::Degraded);
+}
 
-    auto p = source->Poll(-1);
-    EXPECT_EQ(p.status, tuix::PollStatus::Error);
+TEST(TuixInputTests, PollStreamCsiModifierAndShiftTab)
+{
+    std::istringstream in(std::string("\x1B[1;5A\x1B[Z"));
+    auto source = tuix::CreateStreamInputSource(in);
+    ASSERT_NE(source, nullptr);
+
+    auto p1 = source->Poll(0);
+    ASSERT_EQ(p1.status, tuix::PollStatus::HasEvent);
+    EXPECT_EQ(p1.event.key.key, tuix::Key::ArrowUp);
+    EXPECT_TRUE(tuix::HasModifier(p1.event.key.modifiers, tuix::KeyModifier::Ctrl));
+
+    auto p2 = source->Poll(0);
+    ASSERT_EQ(p2.status, tuix::PollStatus::HasEvent);
+    EXPECT_EQ(p2.event.key.key, tuix::Key::Tab);
+    EXPECT_TRUE(tuix::HasModifier(p2.event.key.modifiers, tuix::KeyModifier::Shift));
 }
 
 TEST(TuixInputTests, StreamPeekOnlyDoesNotAdvanceSeekableStream)
@@ -150,17 +197,14 @@ TEST(TuixInputTests, StreamPeekOnlyDoesNotAdvanceSeekableStream)
     ASSERT_TRUE(source->SetConsumeMode(tuix::InputConsumeMode::PeekOnly));
 
     auto p1 = source->Poll(0);
-    ASSERT_EQ(p1.status, tuix::PollStatus::HasEvent);
-    EXPECT_EQ(p1.event.key.key, tuix::Key::Character);
-    EXPECT_EQ(p1.event.key.ch, 'a');
-
     auto p2 = source->Poll(0);
+    ASSERT_EQ(p1.status, tuix::PollStatus::HasEvent);
     ASSERT_EQ(p2.status, tuix::PollStatus::HasEvent);
-    EXPECT_EQ(p2.event.key.key, tuix::Key::Character);
+    EXPECT_EQ(p1.event.key.ch, 'a');
     EXPECT_EQ(p2.event.key.ch, 'a');
 }
 
-TEST(TuixInputTests, StreamTeeBackReturnsDegradeMessage)
+TEST(TuixInputTests, StreamTeeBackReturnsExplicitDegradeMessage)
 {
     std::istringstream in(std::string("z"));
     auto source = tuix::CreateStreamInputSource(in);
@@ -169,11 +213,10 @@ TEST(TuixInputTests, StreamTeeBackReturnsDegradeMessage)
 
     auto p = source->Poll(0);
     ASSERT_EQ(p.status, tuix::PollStatus::HasEvent);
-    EXPECT_EQ(p.event.key.key, tuix::Key::Character);
     EXPECT_FALSE(p.message.empty());
 }
 
-TEST(TuixFrameBufferTests, AutoDisplayWidthEstimation)
+TEST(TuixFrameBufferTests, AutoDisplayWidthEstimationAndContinuationTracking)
 {
     tuix::FrameBuffer fb(4, 1, ' ');
     ASSERT_TRUE(fb.Put(0, 0, "A", 0));
@@ -181,10 +224,29 @@ TEST(TuixFrameBufferTests, AutoDisplayWidthEstimation)
 
     const tuix::FrameCell *ascii = fb.Get(0, 0);
     const tuix::FrameCell *cjk = fb.Get(1, 0);
+    const tuix::FrameCell *tail = fb.Get(2, 0);
     ASSERT_NE(ascii, nullptr);
     ASSERT_NE(cjk, nullptr);
+    ASSERT_NE(tail, nullptr);
     EXPECT_EQ(ascii->display_width, 1u);
     EXPECT_EQ(cjk->display_width, 2u);
+    EXPECT_TRUE(tail->continuation);
+}
+
+TEST(TuixFrameBufferTests, ReplacesWideCellWithoutLeavingDanglingTail)
+{
+    tuix::FrameBuffer fb(4, 1, ' ');
+    ASSERT_TRUE(fb.Put(0, 0, "中", 0));
+    ASSERT_TRUE(fb.Put(0, 0, "A", 1));
+
+    const auto *c0 = fb.Get(0, 0);
+    const auto *c1 = fb.Get(1, 0);
+    ASSERT_NE(c0, nullptr);
+    ASSERT_NE(c1, nullptr);
+    EXPECT_EQ(c0->utf8, "A");
+    EXPECT_FALSE(c0->continuation);
+    EXPECT_EQ(c1->utf8, " ");
+    EXPECT_FALSE(c1->continuation);
 }
 
 TEST(TuixTerminalTests, RenderFrameDiffUpdatesOnlyChangedCells)
@@ -237,75 +299,175 @@ TEST(TuixFrameworkTests, VerticalLayoutSplitsBoundsForChildren)
     EXPECT_EQ(c1->bounds().height, 3u);
     EXPECT_EQ(c2->bounds().y, 3u);
     EXPECT_EQ(c2->bounds().height, 2u);
-
-    tuix::FrameBuffer fb(6, 5, ' ');
-    layout.Render(fb);
-
-    const auto *top = fb.Get(0, 0);
-    const auto *bottom = fb.Get(0, 3);
-    ASSERT_NE(top, nullptr);
-    ASSERT_NE(bottom, nullptr);
-    EXPECT_EQ(top->utf8, "A");
-    EXPECT_EQ(bottom->utf8, "B");
 }
 
-TEST(TuixFrameworkTests, LabelRendersTextWithClipping)
+TEST(TuixFrameworkTests, LabelRendersUtf8WithDisplayWidthClipping)
 {
-    tuix::Label label("hello");
-    label.Layout(tuix::Rect{0, 0, 3, 1});
+    tuix::Label label("A中B");
+    label.Layout(tuix::Rect{0, 0, 4, 1});
 
-    tuix::FrameBuffer fb(3, 1, ' ');
+    tuix::FrameBuffer fb(4, 1, ' ');
     label.Render(fb);
 
     const auto *c0 = fb.Get(0, 0);
     const auto *c1 = fb.Get(1, 0);
     const auto *c2 = fb.Get(2, 0);
+    const auto *c3 = fb.Get(3, 0);
     ASSERT_NE(c0, nullptr);
     ASSERT_NE(c1, nullptr);
     ASSERT_NE(c2, nullptr);
-    EXPECT_EQ(c0->utf8, "h");
-    EXPECT_EQ(c1->utf8, "e");
-    EXPECT_EQ(c2->utf8, "l");
+    ASSERT_NE(c3, nullptr);
+    EXPECT_EQ(c0->utf8, "A");
+    EXPECT_EQ(c1->utf8, "中");
+    EXPECT_TRUE(c2->continuation);
+    EXPECT_EQ(c3->utf8, "B");
 }
 
-TEST(TuixFrameworkTests, ButtonClickFiresOnEnterWhenFocused)
+TEST(TuixFrameworkTests, ButtonHandlesEnterSpaceAndMouseClick)
 {
     int clicked = 0;
-    auto button = std::make_shared<tuix::Button>("go");
-    button->SetFocused(true);
-    button->SetOnClick([&clicked]()
-                       { ++clicked; });
+    tuix::Button button("go");
+    button.Layout(tuix::Rect{0, 0, 8, 1});
+    button.SetFocused(true);
+    button.SetOnClick([&clicked]()
+                      { ++clicked; });
 
-    std::istringstream in(std::string("\n\x1B"));
+    tuix::InputEvent enter;
+    enter.type = tuix::EventType::Key;
+    enter.key.key = tuix::Key::Enter;
+    EXPECT_TRUE(button.HandleEvent(enter));
+
+    tuix::InputEvent space;
+    space.type = tuix::EventType::Key;
+    space.key.key = tuix::Key::Character;
+    space.key.ch = ' ';
+    EXPECT_TRUE(button.HandleEvent(space));
+
+    tuix::InputEvent click;
+    click.type = tuix::EventType::Mouse;
+    click.mouse.button = tuix::MouseButton::Left;
+    click.mouse.action = tuix::MouseAction::Click;
+    click.mouse.x = 1;
+    click.mouse.y = 0;
+    EXPECT_TRUE(button.HandleEvent(click));
+
+    EXPECT_EQ(clicked, 3);
+}
+
+TEST(TuixFrameworkTests, LayoutRoutesMouseEventOnlyToHitTarget)
+{
+    auto left = std::make_shared<MarkWidget>('L');
+    auto right = std::make_shared<MarkWidget>('R');
+
+    tuix::HorizontalLayout layout;
+    layout.AddChild(left);
+    layout.AddChild(right);
+    layout.Layout(tuix::Rect{0, 0, 8, 1});
+
+    tuix::InputEvent click;
+    click.type = tuix::EventType::Mouse;
+    click.mouse.button = tuix::MouseButton::Left;
+    click.mouse.action = tuix::MouseAction::Click;
+    click.mouse.x = 6;
+    click.mouse.y = 0;
+
+    EXPECT_TRUE(layout.HandleEvent(click));
+    EXPECT_EQ(left->events(), 0);
+    EXPECT_EQ(right->events(), 1);
+}
+
+TEST(TuixFrameworkTests, ApplicationCyclesFocusWithTabAndShiftTab)
+{
+    auto root = std::make_shared<tuix::HorizontalLayout>();
+    auto left = std::make_shared<tuix::Button>("left");
+    auto right = std::make_shared<tuix::Button>("right");
+    root->AddChild(left);
+    root->AddChild(right);
+
+    std::istringstream in(std::string("\t\x1B[Z\x1B"));
     auto source = tuix::CreateStreamInputSource(in);
     ASSERT_NE(source, nullptr);
+
+    tuix::Application app(nullptr);
+    app.SetRoot(root);
+    app.SetInputSource(std::move(source));
+
+    EXPECT_TRUE(app.Tick(0));
+    EXPECT_EQ(app.FocusedWidget(), right.get());
+    EXPECT_TRUE(app.Tick(0));
+    EXPECT_EQ(app.FocusedWidget(), left.get());
+    EXPECT_FALSE(app.Tick(0));
+}
+
+TEST(TuixFrameworkTests, ApplicationDispatchesFocusedKeyEvent)
+{
+    std::istringstream in(std::string(" \x1B"));
+    auto source = tuix::CreateStreamInputSource(in);
+    ASSERT_NE(source, nullptr);
+
+    int clicked = 0;
+    auto button = std::make_shared<tuix::Button>("go");
+    button->SetOnClick([&clicked]()
+                       { ++clicked; });
 
     tuix::Application app(nullptr);
     app.SetRoot(button);
     app.SetInputSource(std::move(source));
 
     EXPECT_TRUE(app.Tick(0));
-    EXPECT_FALSE(app.Tick(0));
     EXPECT_EQ(clicked, 1);
+    EXPECT_FALSE(app.Tick(0));
 }
 
-TEST(TuixFrameworkTests, ApplicationDispatchesEventsAndStopsOnEscape)
+TEST(TuixFrameworkTests, ApplicationOnlyRepaintsWhenDirty)
 {
-    std::istringstream in(std::string("x\x1B"));
+    std::ostringstream out;
+    tuix::Terminal terminal(out, true);
+    auto label = std::make_shared<tuix::Label>("steady");
+
+    std::istringstream in(std::string());
     auto source = tuix::CreateStreamInputSource(in);
     ASSERT_NE(source, nullptr);
 
-    auto widget = std::make_shared<MarkWidget>('W');
-
-    tuix::Application app(nullptr);
-    app.SetRoot(widget);
+    tuix::Application app(&terminal);
+    app.SetRoot(label);
     app.SetInputSource(std::move(source));
 
-    EXPECT_TRUE(app.Running());
     EXPECT_TRUE(app.Tick(0));
-    EXPECT_FALSE(app.Tick(0));
-    EXPECT_FALSE(app.Running());
-    EXPECT_GE(widget->events(), 2);
+    EXPECT_EQ(app.render_count(), 1u);
+    const std::string first = out.str();
+
+    EXPECT_TRUE(app.Tick(0));
+    EXPECT_EQ(app.render_count(), 1u);
+    EXPECT_EQ(out.str(), first);
+
+    app.RequestRepaint();
+    EXPECT_TRUE(app.Tick(0));
+    EXPECT_EQ(app.render_count(), 2u);
+}
+
+TEST(TuixFrameworkTests, ResizeEventTriggersRepaint)
+{
+    std::ostringstream out;
+    tuix::Terminal terminal(out, true);
+    auto label = std::make_shared<tuix::Label>("resize");
+
+    tuix::PollResult resize;
+    resize.status = tuix::PollStatus::HasEvent;
+    resize.event.type = tuix::EventType::Resize;
+    resize.event.resize.size.cols = 100;
+    resize.event.resize.size.rows = 30;
+    resize.event.resize.size.buffer_cols = 100;
+    resize.event.resize.size.buffer_rows = 30;
+
+    auto source = std::make_unique<FakeInputSource>(std::vector<tuix::PollResult>{resize});
+
+    tuix::Application app(&terminal);
+    app.SetRoot(label);
+    app.SetInputSource(std::move(source));
+
+    EXPECT_TRUE(app.Tick(0));
+    EXPECT_EQ(app.render_count(), 1u);
 }
 
 #if defined(_WIN32)

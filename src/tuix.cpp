@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <istream>
 #include <iostream>
 #include <ostream>
@@ -194,19 +195,172 @@ namespace tuix
             return static_cast<std::uint8_t>(width);
         }
 
-        void DrawAsciiClipped(FrameBuffer &frame, const Rect &bounds, std::string_view text)
+        std::size_t Utf8CharLen(unsigned char c)
+        {
+            if ((c & 0x80u) == 0)
+            {
+                return 1;
+            }
+            if ((c & 0xE0u) == 0xC0u)
+            {
+                return 2;
+            }
+            if ((c & 0xF0u) == 0xE0u)
+            {
+                return 3;
+            }
+            if ((c & 0xF8u) == 0xF0u)
+            {
+                return 4;
+            }
+            return 1;
+        }
+
+        void DrawUtf8Clipped(FrameBuffer &frame, const Rect &bounds, std::string_view text)
         {
             if (bounds.width == 0 || bounds.height == 0)
             {
                 return;
             }
 
-            const std::size_t max_chars = static_cast<std::size_t>(bounds.width);
-            const std::size_t n = std::min<std::size_t>(max_chars, text.size());
-            for (std::size_t i = 0; i < n; ++i)
+            std::uint16_t col = bounds.x;
+            std::size_t i = 0;
+            while (i < text.size() && col < static_cast<std::uint16_t>(bounds.x + bounds.width))
             {
-                frame.Put(static_cast<std::uint16_t>(bounds.x + i), bounds.y, text.substr(i, 1), 1);
+                const unsigned char lead = static_cast<unsigned char>(text[i]);
+                std::size_t len = Utf8CharLen(lead);
+                if (i + len > text.size())
+                {
+                    len = 1;
+                }
+
+                const std::string_view ch(text.data() + i, len);
+                const std::uint8_t width = EstimateDisplayWidth(ch);
+                const std::uint16_t safe_width = std::max<std::uint16_t>(1, width);
+                if (col + safe_width > static_cast<std::uint16_t>(bounds.x + bounds.width))
+                {
+                    break;
+                }
+
+                frame.Put(col, bounds.y, ch, width);
+                col = static_cast<std::uint16_t>(col + safe_width);
+                i += len;
             }
+        }
+
+        std::uint16_t DisplayWidthOrOne(const FrameCell &cell)
+        {
+            return std::max<std::uint16_t>(1, cell.display_width);
+        }
+
+        std::uint16_t FindCellAnchorX(const FrameBuffer &frame, std::uint16_t x, std::uint16_t y)
+        {
+            std::uint16_t anchor = x;
+            while (anchor > 0)
+            {
+                const FrameCell *cell = frame.Get(anchor, y);
+                if (cell == nullptr || !cell->continuation)
+                {
+                    break;
+                }
+                --anchor;
+            }
+            return anchor;
+        }
+
+        std::uint16_t AdvanceDisplayCell(const FrameBuffer &frame, std::uint16_t x, std::uint16_t y)
+        {
+            const FrameCell *cell = frame.Get(x, y);
+            if (cell == nullptr)
+            {
+                return static_cast<std::uint16_t>(x + 1);
+            }
+            if (cell->continuation)
+            {
+                return static_cast<std::uint16_t>(x + 1);
+            }
+            return static_cast<std::uint16_t>(x + DisplayWidthOrOne(*cell));
+        }
+
+        bool CellsEquivalent(const FrameCell *a, const FrameCell *b)
+        {
+            if (a == nullptr || b == nullptr)
+            {
+                return a == b;
+            }
+            return a->utf8 == b->utf8 &&
+                   a->display_width == b->display_width &&
+                   a->continuation == b->continuation;
+        }
+
+        Widget *FindFocusedWidget(Widget *widget)
+        {
+            if (widget == nullptr || !widget->visible() || !widget->enabled())
+            {
+                return nullptr;
+            }
+            if (widget->focused())
+            {
+                return widget;
+            }
+            auto *layout = dynamic_cast<Layout *>(widget);
+            if (layout == nullptr)
+            {
+                return nullptr;
+            }
+            for (const auto &child : layout->Children())
+            {
+                Widget *found = FindFocusedWidget(child.get());
+                if (found != nullptr)
+                {
+                    return found;
+                }
+            }
+            return nullptr;
+        }
+
+        void CollectFocusableWidgets(Widget *widget, std::vector<Widget *> *out)
+        {
+            if (widget == nullptr || out == nullptr || !widget->visible() || !widget->enabled())
+            {
+                return;
+            }
+            if (widget->focusable())
+            {
+                out->push_back(widget);
+            }
+            auto *layout = dynamic_cast<Layout *>(widget);
+            if (layout == nullptr)
+            {
+                return;
+            }
+            for (const auto &child : layout->Children())
+            {
+                CollectFocusableWidgets(child.get(), out);
+            }
+        }
+
+        Widget *FindWidgetAt(Widget *widget, std::uint16_t x, std::uint16_t y)
+        {
+            if (widget == nullptr || !widget->visible() || !widget->enabled() || !widget->HitTest(x, y))
+            {
+                return nullptr;
+            }
+
+            auto *layout = dynamic_cast<Layout *>(widget);
+            if (layout != nullptr)
+            {
+                const auto &children = layout->Children();
+                for (auto it = children.rbegin(); it != children.rend(); ++it)
+                {
+                    Widget *found = FindWidgetAt(it->get(), x, y);
+                    if (found != nullptr)
+                    {
+                        return found;
+                    }
+                }
+            }
+            return widget;
         }
 
         bool IsCsiArrowWithModifier(std::string_view raw, char dir, int *mod)
@@ -302,6 +456,13 @@ namespace tuix
             {
                 ev.type = EventType::Key;
                 ev.key.key = Key::ArrowLeft;
+                return ev;
+            }
+            if (raw == "\x1B[Z")
+            {
+                ev.type = EventType::Key;
+                ev.key.key = Key::Tab;
+                ev.key.modifiers = KeyModifier::Shift;
                 return ev;
             }
 
@@ -599,7 +760,7 @@ namespace tuix
 
             if (mode_ == InputConsumeMode::TeeBack && result.status == PollStatus::HasEvent)
             {
-                result.message = "TeeBack currently degrades to exclusive consume";
+                result.message = "TeeBack is experimental on stream input and currently degrades to exclusive consume";
             }
             return result;
         }
@@ -615,7 +776,27 @@ namespace tuix
             return mode_;
         }
 
+        InputConsumeSupport QueryConsumeModeSupport(InputConsumeMode mode) const noexcept override
+        {
+            switch (mode)
+            {
+            case InputConsumeMode::ExclusiveConsume:
+                return InputConsumeSupport::Native;
+            case InputConsumeMode::PeekOnly:
+                return CanRewind() ? InputConsumeSupport::Native : InputConsumeSupport::Degraded;
+            case InputConsumeMode::TeeBack:
+                return InputConsumeSupport::Degraded;
+            }
+            return InputConsumeSupport::Unsupported;
+        }
+
     private:
+        bool CanRewind() const noexcept
+        {
+            auto &stream = const_cast<std::istream &>(in_);
+            return stream.good() && stream.tellg() != std::streampos(-1);
+        }
+
         std::istream &in_;
         InputConsumeMode mode_{InputConsumeMode::ExclusiveConsume};
     };
@@ -824,7 +1005,7 @@ namespace tuix
                     }
                     if (mode_ == InputConsumeMode::TeeBack)
                     {
-                        result.message = "TeeBack currently degrades to exclusive consume";
+                        result.message = "TeeBack is experimental on console input and currently degrades to exclusive consume";
                     }
                     result.status = PollStatus::HasEvent;
                     return result;
@@ -870,6 +1051,9 @@ namespace tuix
                         {
                             result.event.mouse.button = MouseButton::Left;
                             result.event.mouse.action = MouseAction::ButtonDown;
+                            last_left_down_ = true;
+                            last_left_x_ = result.event.mouse.x;
+                            last_left_y_ = result.event.mouse.y;
                         }
                         else if ((mr.dwButtonState & RIGHTMOST_BUTTON_PRESSED) != 0)
                         {
@@ -883,14 +1067,22 @@ namespace tuix
                         }
                         else
                         {
+                            result.event.mouse.button = MouseButton::Left;
                             result.event.mouse.action = MouseAction::ButtonUp;
+                            if (last_left_down_ &&
+                                last_left_x_ == result.event.mouse.x &&
+                                last_left_y_ == result.event.mouse.y)
+                            {
+                                result.event.mouse.action = MouseAction::Click;
+                            }
+                            last_left_down_ = false;
                         }
                     }
 
                     result.status = PollStatus::HasEvent;
                     if (mode_ == InputConsumeMode::TeeBack)
                     {
-                        result.message = "TeeBack currently degrades to exclusive consume";
+                        result.message = "TeeBack is experimental on console input and currently degrades to exclusive consume";
                     }
                     return result;
                 }
@@ -905,7 +1097,7 @@ namespace tuix
                     result.status = PollStatus::HasEvent;
                     if (mode_ == InputConsumeMode::TeeBack)
                     {
-                        result.message = "TeeBack currently degrades to exclusive consume";
+                        result.message = "TeeBack is experimental on console input and currently degrades to exclusive consume";
                     }
                     return result;
                 }
@@ -929,11 +1121,27 @@ namespace tuix
             return mode_;
         }
 
+        InputConsumeSupport QueryConsumeModeSupport(InputConsumeMode mode) const noexcept override
+        {
+            switch (mode)
+            {
+            case InputConsumeMode::ExclusiveConsume:
+            case InputConsumeMode::PeekOnly:
+                return InputConsumeSupport::Native;
+            case InputConsumeMode::TeeBack:
+                return InputConsumeSupport::Degraded;
+            }
+            return InputConsumeSupport::Unsupported;
+        }
+
     private:
         HANDLE in_{INVALID_HANDLE_VALUE};
         DWORD original_mode_{0};
         bool ok_{true};
         InputConsumeMode mode_{InputConsumeMode::ExclusiveConsume};
+        bool last_left_down_{false};
+        std::uint16_t last_left_x_{0};
+        std::uint16_t last_left_y_{0};
     };
 #endif
 
@@ -959,6 +1167,7 @@ namespace tuix
         {
             cell.utf8.assign(1, fill);
             cell.display_width = 1;
+            cell.continuation = false;
         }
     }
 
@@ -968,9 +1177,58 @@ namespace tuix
         {
             return false;
         }
+
+        const auto clear_anchor = [this, y](std::uint16_t anchor_x)
+        {
+            if (anchor_x >= width_)
+            {
+                return;
+            }
+            const std::size_t anchor_idx = static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + anchor_x;
+            const std::uint16_t span = std::max<std::uint16_t>(1, data_[anchor_idx].display_width);
+            for (std::uint16_t d = 0; d < span; ++d)
+            {
+                const std::uint16_t tx = static_cast<std::uint16_t>(anchor_x + d);
+                if (tx >= width_)
+                {
+                    break;
+                }
+                const std::size_t idx = static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + tx;
+                data_[idx].utf8 = " ";
+                data_[idx].display_width = 1;
+                data_[idx].continuation = false;
+            }
+        };
+
+        const std::uint16_t safe_width = std::max<std::uint16_t>(1, display_width == 0 ? EstimateDisplayWidth(utf8) : display_width);
+        const std::uint16_t left_anchor = FindCellAnchorX(*this, x, y);
+        clear_anchor(left_anchor);
+        for (std::uint16_t d = 0; d < safe_width; ++d)
+        {
+            const std::uint16_t tx = static_cast<std::uint16_t>(x + d);
+            if (tx >= width_)
+            {
+                break;
+            }
+            clear_anchor(FindCellAnchorX(*this, tx, y));
+        }
+
         const std::size_t idx = static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + x;
         data_[idx].utf8.assign(utf8.data(), utf8.size());
-        data_[idx].display_width = display_width == 0 ? EstimateDisplayWidth(utf8) : display_width;
+        data_[idx].display_width = static_cast<std::uint8_t>(safe_width);
+        data_[idx].continuation = false;
+        for (std::uint16_t d = 1; d < safe_width; ++d)
+        {
+            const std::uint16_t tx = static_cast<std::uint16_t>(x + d);
+            if (tx >= width_)
+            {
+                break;
+            }
+            const std::size_t tail_idx = static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + tx;
+            data_[tail_idx].utf8 = " ";
+            data_[tail_idx].display_width = 1;
+            data_[tail_idx].continuation = true;
+        }
         return true;
     }
 
@@ -989,14 +1247,72 @@ namespace tuix
         bounds_ = bounds;
     }
 
+    bool Widget::HitTest(std::uint16_t x, std::uint16_t y) const
+    {
+        return visible_ &&
+               x >= bounds_.x &&
+               y >= bounds_.y &&
+               x < static_cast<std::uint16_t>(bounds_.x + bounds_.width) &&
+               y < static_cast<std::uint16_t>(bounds_.y + bounds_.height);
+    }
+
     bool Widget::HandleEvent(const InputEvent &)
     {
         return false;
     }
 
+    void Widget::OnFocusChanged(bool)
+    {
+    }
+
     const Rect &Widget::bounds() const noexcept
     {
         return bounds_;
+    }
+
+    void Widget::SetVisible(bool visible) noexcept
+    {
+        visible_ = visible;
+    }
+
+    bool Widget::visible() const noexcept
+    {
+        return visible_;
+    }
+
+    void Widget::SetEnabled(bool enabled) noexcept
+    {
+        enabled_ = enabled;
+    }
+
+    bool Widget::enabled() const noexcept
+    {
+        return enabled_;
+    }
+
+    void Widget::SetFocusable(bool focusable) noexcept
+    {
+        focusable_ = focusable;
+    }
+
+    bool Widget::focusable() const noexcept
+    {
+        return focusable_;
+    }
+
+    void Widget::SetFocused(bool focused) noexcept
+    {
+        if (focused_ == focused)
+        {
+            return;
+        }
+        focused_ = focused;
+        OnFocusChanged(focused_);
+    }
+
+    bool Widget::focused() const noexcept
+    {
+        return focused_;
     }
 
     void Layout::AddChild(std::shared_ptr<Widget> child)
@@ -1014,15 +1330,39 @@ namespace tuix
 
     bool Layout::HandleEvent(const InputEvent &event)
     {
-        bool handled = false;
-        for (const auto &child : children_)
+        if (event.type == EventType::Mouse)
         {
-            if (child && child->HandleEvent(event))
+            for (auto it = children_.rbegin(); it != children_.rend(); ++it)
             {
-                handled = true;
+                Widget *child = it->get();
+                if (child != nullptr && child->visible() && child->enabled() &&
+                    child->HitTest(event.mouse.x, event.mouse.y) &&
+                    child->HandleEvent(event))
+                {
+                    return true;
+                }
             }
         }
-        return handled;
+
+        if (event.type == EventType::Key)
+        {
+            for (const auto &child : children_)
+            {
+                if (child && child->visible() && child->enabled() && child->focused() && child->HandleEvent(event))
+                {
+                    return true;
+                }
+            }
+        }
+
+        for (const auto &child : children_)
+        {
+            if (child && child->visible() && child->enabled() && child->HandleEvent(event))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     void VerticalLayout::Layout(const Rect &bounds)
@@ -1053,7 +1393,7 @@ namespace tuix
     {
         for (const auto &child : children_)
         {
-            if (child)
+            if (child && child->visible())
             {
                 child->Render(frame);
             }
@@ -1088,7 +1428,7 @@ namespace tuix
     {
         for (const auto &child : children_)
         {
-            if (child)
+            if (child && child->visible())
             {
                 child->Render(frame);
             }
@@ -1112,12 +1452,13 @@ namespace tuix
 
     void Label::Render(FrameBuffer &frame) const
     {
-        DrawAsciiClipped(frame, bounds(), text_);
+        DrawUtf8Clipped(frame, bounds(), text_);
     }
 
     Button::Button(std::string text)
         : text_(std::move(text))
     {
+        Widget::SetFocusable(true);
     }
 
     void Button::SetText(std::string text)
@@ -1132,12 +1473,12 @@ namespace tuix
 
     void Button::SetFocused(bool focused) noexcept
     {
-        focused_ = focused;
+        Widget::SetFocused(focused);
     }
 
     bool Button::focused() const noexcept
     {
-        return focused_;
+        return Widget::focused();
     }
 
     void Button::SetOnClick(ClickHandler on_click)
@@ -1147,24 +1488,44 @@ namespace tuix
 
     void Button::Render(FrameBuffer &frame) const
     {
-        const std::string text = focused_ ? (">" + text_ + "<") : ("[" + text_ + "]");
-        DrawAsciiClipped(frame, bounds(), text);
+        const std::string text = focused() ? ("> " + text_ + " <") : ("[ " + text_ + " ]");
+        DrawUtf8Clipped(frame, bounds(), text);
     }
 
     bool Button::HandleEvent(const InputEvent &event)
     {
-        if (!focused_)
+        if (!enabled() || !visible())
         {
             return false;
         }
 
-        if (event.type == EventType::Key && event.key.key == Key::Enter)
+        const auto fire_click = [this]() -> bool
         {
             if (on_click_)
             {
                 on_click_();
             }
             return true;
+        };
+
+        if (event.type == EventType::Key && focused())
+        {
+            if (event.key.key == Key::Enter)
+            {
+                return fire_click();
+            }
+            if (event.key.key == Key::Character && event.key.ch == ' ')
+            {
+                return fire_click();
+            }
+        }
+
+        if (event.type == EventType::Mouse &&
+            event.mouse.button == MouseButton::Left &&
+            (event.mouse.action == MouseAction::Click || event.mouse.action == MouseAction::ButtonDown) &&
+            HitTest(event.mouse.x, event.mouse.y))
+        {
+            return fire_click();
         }
         return false;
     }
@@ -1543,15 +1904,20 @@ namespace tuix
             for (std::uint16_t y = 0; y < frame.height(); ++y)
             {
                 MoveTo(origin_x, static_cast<std::uint16_t>(origin_y + y));
-                for (std::uint16_t x = 0; x < frame.width(); ++x)
+                for (std::uint16_t x = 0; x < frame.width();)
                 {
                     const FrameCell *cell = frame.Get(x, y);
                     if (cell == nullptr)
                     {
+                        ++x;
                         continue;
                     }
-                    Print(cell->utf8);
-                    ++updates;
+                    if (!cell->continuation)
+                    {
+                        Print(cell->utf8);
+                        ++updates;
+                    }
+                    x = AdvanceDisplayCell(frame, x, y);
                 }
             }
             return updates;
@@ -1559,55 +1925,46 @@ namespace tuix
 
         for (std::uint16_t y = 0; y < frame.height(); ++y)
         {
-            for (std::uint16_t x = 0; x < frame.width(); ++x)
+            for (std::uint16_t x = 0; x < frame.width();)
             {
                 const FrameCell *now = frame.Get(x, y);
                 const FrameCell *old = previous->Get(x, y);
-                if (now == nullptr || old == nullptr)
+                if (CellsEquivalent(now, old))
                 {
-                    continue;
-                }
-                if (now->utf8 == old->utf8 && now->display_width == old->display_width)
-                {
+                    x = AdvanceDisplayCell(frame, x, y);
                     continue;
                 }
 
-                const std::uint16_t now_width = std::max<std::uint16_t>(1, now->display_width);
-                const std::uint16_t old_width = std::max<std::uint16_t>(1, old->display_width);
+                if (now == nullptr)
+                {
+                    ++x;
+                    continue;
+                }
+
+                if (now->continuation)
+                {
+                    ++x;
+                    continue;
+                }
 
                 MoveTo(static_cast<std::uint16_t>(origin_x + x), static_cast<std::uint16_t>(origin_y + y));
                 Print(now->utf8);
+                ++updates;
 
+                const std::uint16_t now_width = DisplayWidthOrOne(*now);
+                const std::uint16_t old_width = (old != nullptr && !old->continuation) ? DisplayWidthOrOne(*old) : 1;
                 if (old_width > now_width)
                 {
                     const std::uint16_t tail = static_cast<std::uint16_t>(old_width - now_width);
                     Print(std::string(tail, ' '));
-                    updates += tail;
+                    ++updates;
                 }
 
-                previous->Put(x, y, now->utf8, now->display_width);
-                for (std::uint16_t d = 1; d < old_width; ++d)
-                {
-                    const std::uint16_t tx = static_cast<std::uint16_t>(x + d);
-                    if (tx >= frame.width())
-                    {
-                        break;
-                    }
-                    previous->Put(tx, y, " ", 1);
-                }
-                for (std::uint16_t d = 1; d < now_width; ++d)
-                {
-                    const std::uint16_t tx = static_cast<std::uint16_t>(x + d);
-                    if (tx >= frame.width())
-                    {
-                        break;
-                    }
-                    previous->Put(tx, y, " ", 1);
-                }
-                ++updates;
+                x = AdvanceDisplayCell(frame, x, y);
             }
         }
 
+        *previous = frame;
         return updates;
     }
 
@@ -1637,12 +1994,68 @@ namespace tuix
 
     void Application::SetRoot(std::shared_ptr<Widget> root)
     {
+        if (focused_widget_ != nullptr)
+        {
+            focused_widget_->SetFocused(false);
+            focused_widget_ = nullptr;
+        }
         root_ = std::move(root);
+        previous_frame_.reset();
+        last_size_ = {};
+        needs_repaint_ = true;
     }
 
     void Application::SetInputSource(std::unique_ptr<InputSource> input_source)
     {
         input_source_ = std::move(input_source);
+    }
+
+    bool Application::SetFocusedWidget(Widget *widget)
+    {
+        if (widget != nullptr)
+        {
+            if (!widget->focusable() || !widget->visible() || !widget->enabled())
+            {
+                return false;
+            }
+        }
+
+        if (focused_widget_ == widget)
+        {
+            return true;
+        }
+
+        if (focused_widget_ != nullptr)
+        {
+            focused_widget_->SetFocused(false);
+        }
+        focused_widget_ = widget;
+        if (focused_widget_ != nullptr)
+        {
+            focused_widget_->SetFocused(true);
+        }
+        needs_repaint_ = true;
+        return true;
+    }
+
+    Widget *Application::FocusedWidget() const noexcept
+    {
+        return focused_widget_;
+    }
+
+    void Application::RequestRepaint() noexcept
+    {
+        needs_repaint_ = true;
+    }
+
+    bool Application::NeedsRepaint() const noexcept
+    {
+        return needs_repaint_;
+    }
+
+    std::size_t Application::render_count() const noexcept
+    {
+        return render_count_;
     }
 
     void Application::RequestExit() noexcept
@@ -1662,6 +2075,20 @@ namespace tuix
             return false;
         }
 
+        if (root_ && (focused_widget_ == nullptr || !focused_widget_->visible() || !focused_widget_->enabled()))
+        {
+            focused_widget_ = FindFocusedWidget(root_.get());
+            if (focused_widget_ == nullptr)
+            {
+                std::vector<Widget *> focusables;
+                CollectFocusableWidgets(root_.get(), &focusables);
+                if (!focusables.empty())
+                {
+                    (void)SetFocusedWidget(focusables.front());
+                }
+            }
+        }
+
         if (input_source_)
         {
             const PollResult polled = input_source_->Poll(timeout_ms);
@@ -1676,9 +2103,89 @@ namespace tuix
                 {
                     running_ = false;
                 }
-                if (root_)
+                else if (root_)
                 {
-                    (void)root_->HandleEvent(polled.event);
+                    bool handled = false;
+                    if (polled.event.type == EventType::Key && polled.event.key.key == Key::Tab)
+                    {
+                        std::vector<Widget *> focusables;
+                        CollectFocusableWidgets(root_.get(), &focusables);
+                        if (!focusables.empty())
+                        {
+                            std::size_t index = 0;
+                            for (std::size_t i = 0; i < focusables.size(); ++i)
+                            {
+                                if (focusables[i] == focused_widget_)
+                                {
+                                    index = i;
+                                    break;
+                                }
+                            }
+                            const bool reverse = HasModifier(polled.event.key.modifiers, KeyModifier::Shift);
+                            if (reverse)
+                            {
+                                index = (index == 0) ? (focusables.size() - 1) : (index - 1);
+                            }
+                            else
+                            {
+                                index = (index + 1) % focusables.size();
+                            }
+                            handled = SetFocusedWidget(focusables[index]);
+                        }
+                    }
+                    else if (polled.event.type == EventType::Key &&
+                             (polled.event.key.key == Key::ArrowLeft ||
+                              polled.event.key.key == Key::ArrowRight ||
+                              polled.event.key.key == Key::ArrowUp ||
+                              polled.event.key.key == Key::ArrowDown))
+                    {
+                        std::vector<Widget *> focusables;
+                        CollectFocusableWidgets(root_.get(), &focusables);
+                        if (focusables.size() > 1)
+                        {
+                            std::size_t index = 0;
+                            for (std::size_t i = 0; i < focusables.size(); ++i)
+                            {
+                                if (focusables[i] == focused_widget_)
+                                {
+                                    index = i;
+                                    break;
+                                }
+                            }
+                            if (polled.event.key.key == Key::ArrowLeft || polled.event.key.key == Key::ArrowUp)
+                            {
+                                index = (index == 0) ? (focusables.size() - 1) : (index - 1);
+                            }
+                            else
+                            {
+                                index = (index + 1) % focusables.size();
+                            }
+                            handled = SetFocusedWidget(focusables[index]);
+                        }
+                    }
+                    else if (polled.event.type == EventType::Mouse)
+                    {
+                        Widget *target = FindWidgetAt(root_.get(), polled.event.mouse.x, polled.event.mouse.y);
+                        if (target != nullptr && target->focusable())
+                        {
+                            (void)SetFocusedWidget(target);
+                        }
+                        if (target != nullptr)
+                        {
+                            handled = target->HandleEvent(polled.event);
+                        }
+                    }
+
+                    if (!handled && focused_widget_ != nullptr && polled.event.type == EventType::Key)
+                    {
+                        handled = focused_widget_->HandleEvent(polled.event);
+                    }
+                    if (!handled)
+                    {
+                        handled = root_->HandleEvent(polled.event);
+                    }
+                    (void)handled;
+                    needs_repaint_ = true;
                 }
             }
         }
@@ -1688,19 +2195,34 @@ namespace tuix
             TerminalSize size = terminal_->GetSize();
             const std::uint16_t width = (size.cols > 0) ? size.cols : 80;
             const std::uint16_t height = (size.rows > 0) ? size.rows : 25;
+            const bool size_changed = size.cols != last_size_.cols ||
+                                      size.rows != last_size_.rows ||
+                                      size.buffer_cols != last_size_.buffer_cols ||
+                                      size.buffer_rows != last_size_.buffer_rows;
 
-            FrameBuffer current(width, height, ' ');
-            root_->Layout(Rect{0, 0, width, height});
-            root_->Render(current);
-
-            if (!previous_frame_ || previous_frame_->width() != width || previous_frame_->height() != height)
+            if (size_changed)
             {
-                previous_frame_ = std::make_unique<FrameBuffer>(width, height, ' ');
+                needs_repaint_ = true;
             }
 
-            terminal_->RenderFrameDiff(current, previous_frame_.get(), 0, 0);
-            terminal_->Flush();
-            *previous_frame_ = current;
+            if (needs_repaint_)
+            {
+                FrameBuffer current(width, height, ' ');
+                root_->Layout(Rect{0, 0, width, height});
+                root_->Render(current);
+
+                if (!previous_frame_ || previous_frame_->width() != width || previous_frame_->height() != height)
+                {
+                    previous_frame_ = std::make_unique<FrameBuffer>(width, height, ' ');
+                }
+
+                terminal_->RenderFrameDiff(current, previous_frame_.get(), 0, 0);
+                terminal_->Flush();
+                *previous_frame_ = current;
+                last_size_ = size;
+                needs_repaint_ = false;
+                ++render_count_;
+            }
         }
 
         return running_;

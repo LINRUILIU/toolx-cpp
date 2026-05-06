@@ -3334,7 +3334,7 @@ namespace cfgx
             return ParseTomlText(text);
         }
 
-        return Result<Node>{false, Node{}, "format not implemented in remote loader: " + std::string(ToString(format))};
+        return Result<Node>{false, Node{}, "unsupported config format in remote loader: " + std::string(ToString(format))};
     }
 
     namespace
@@ -4651,7 +4651,7 @@ namespace cfgx
                 return ParseTomlText(text);
             }
 
-            return Result<Node>{false, Node{}, "format not implemented in parser dispatch: " + std::string(ToString(format))};
+            return Result<Node>{false, Node{}, "unsupported config format in parser dispatch: " + std::string(ToString(format))};
         }
 
         Result<std::string> RenderTextByFormat(const Node &root, ConfigFormat format, int indent)
@@ -4684,7 +4684,7 @@ namespace cfgx
                 return Result<std::string>{true, DumpTomlText(root), ""};
             }
 
-            return Result<std::string>{false, "", "format not implemented in render dispatch: " + std::string(ToString(format))};
+            return Result<std::string>{false, "", "unsupported config format in render dispatch: " + std::string(ToString(format))};
         }
 
     } // namespace
@@ -4733,7 +4733,7 @@ namespace cfgx
             return ParseTomlText(text);
         }
 
-        return Result<Node>{false, Node{}, "format not implemented in V1 bootstrap: " + std::string(ToString(format))};
+        return Result<Node>{false, Node{}, "unsupported config format in file loader: " + std::string(ToString(format))};
     }
 
     Status SaveToFile(const Node &root, std::string_view file_path, ConfigFormat preferred, int indent)
@@ -4788,7 +4788,7 @@ namespace cfgx
         }
         else if (!rendered_by_adapter)
         {
-            return FailStatus("format not implemented in V1 bootstrap: " + std::string(ToString(format)));
+            return FailStatus("unsupported config format in file writer: " + std::string(ToString(format)));
         }
 
         std::ofstream output(std::string(file_path), std::ios::binary | std::ios::trunc);

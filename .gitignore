@@ -4,14 +4,9 @@
 
 #构建产物
 build/
-build-vs/
-build-linux-miniob/
-build-vs-mbedtls-x64/
-build-vs-openssl-x64/
-build-vs-win32/
-build-vs-win32-mbedtls/
-build-vs-win32-openssl/
+build-*/
 temp/
+stage/
 
 #通用忽略
 CMakeFiles/
@@ -27,8 +22,4 @@ Testing/
 *.log
 
 # reference 本地实验/临时工具，不进入仓库
-/reference/class_cft.cpp
-/reference/class_cft.h
-/reference/cmd_console_tools.cpp
-/reference/cmd_console_tools.h
-/reference/txt_compare/
+/reference/

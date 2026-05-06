@@ -12,7 +12,7 @@ namespace
 
     std::filesystem::path TestRoot()
     {
-        return std::filesystem::temp_directory_path() / "fsx_tests_root";
+        return std::filesystem::current_path() / "toolx_test_tmp" / "fsx_tests_root";
     }
 
     void WriteText(const std::filesystem::path &p, const std::string &text)
@@ -293,6 +293,37 @@ TEST(FsxTests, DirectoryWatcherDetectsCreateAndRemove)
     std::filesystem::remove_all(root, ec);
 }
 
+TEST(FsxTests, PollingFileWatcherConsumesEventOnlyOnce)
+{
+    const auto root = TestRoot() / "watch_once";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    const auto file = root / "watch.txt";
+    WriteText(file, "v1");
+
+    auto watcher = fsx::CreateFileWatcher(file.string());
+    ASSERT_NE(watcher, nullptr);
+
+    const auto first = watcher->Poll(0);
+    ASSERT_TRUE(first.ok) << first.error;
+    EXPECT_FALSE(first.has_event);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    WriteText(file, "v2");
+
+    const auto changed = watcher->Poll(200);
+    ASSERT_TRUE(changed.ok) << changed.error;
+    ASSERT_TRUE(changed.has_event);
+    EXPECT_EQ(changed.event.kind, fsx::WatchEventKind::Modified);
+
+    const auto idle = watcher->Poll(0);
+    ASSERT_TRUE(idle.ok) << idle.error;
+    EXPECT_FALSE(idle.has_event);
+
+    std::filesystem::remove_all(root, ec);
+}
+
 TEST(FsxTests, CreateHardLinkWorksWhenSupported)
 {
     const auto root = TestRoot() / "link";
@@ -317,16 +348,33 @@ TEST(FsxTests, CreateHardLinkWorksWhenSupported)
     std::filesystem::remove_all(root, ec);
 }
 
-TEST(FsxTests, ArchivePlaceholderReturnsNotImplemented)
+TEST(FsxTests, CreateLinkFailsWhenDestinationExistsWithoutOverwrite)
 {
-    const auto root = TestRoot() / "archive";
+    const auto root = TestRoot() / "link_conflict";
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
-    std::filesystem::create_directories(root, ec);
 
-    const auto status = fsx::ArchivePlaceholder(root.string(), (root / "out.zip").string(), "zip");
-    EXPECT_FALSE(status.ok);
-    EXPECT_NE(status.error.find("not implemented"), std::string::npos);
+    const auto caps = fsx::QueryCapabilities();
+    if (!caps.hard_link)
+    {
+        GTEST_SKIP() << "hard link not supported";
+    }
+
+    const auto src = root / "src.txt";
+    const auto link = root / "linked.txt";
+    WriteText(src, "payload");
+    WriteText(link, "existing");
+
+    const auto created = fsx::CreateLink(src.string(), link.string(), fsx::LinkType::Hard, false);
+    EXPECT_FALSE(created.ok);
+    EXPECT_NE(created.error.find("already exists"), std::string::npos);
 
     std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, ArchiveCapabilitiesAreFutureWork)
+{
+    const auto caps = fsx::QueryCapabilities();
+    EXPECT_FALSE(caps.zip_archive);
+    EXPECT_FALSE(caps.tar_archive);
 }

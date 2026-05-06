@@ -64,6 +64,7 @@ TEST(SysxErrorTests, WouldBlockCheck)
 #else
     EXPECT_TRUE(sysx::IsWouldBlockCode(sysx::ErrorDomain::Network, EWOULDBLOCK));
 #endif
+    EXPECT_FALSE(sysx::IsWouldBlockCode(sysx::ErrorDomain::System, 0));
 }
 
 TEST(SysxErrorTests, LastSystemErrorCapturesNativeCode)
@@ -105,6 +106,13 @@ TEST(SysxTimeTests, SteadyClockMovesForward)
     EXPECT_GT(now_ms, 0);
 }
 
+TEST(SysxTimeTests, DeadlineAfterProducesFutureTimePoint)
+{
+    const auto begin = sysx::time::SteadyNow();
+    const auto deadline = sysx::time::DeadlineAfter(std::chrono::milliseconds(5));
+    EXPECT_GT(deadline, begin);
+}
+
 TEST(SysxThreadTests, ThreadRunsAndJoins)
 {
     std::atomic<int> value{0};
@@ -126,4 +134,28 @@ TEST(SysxSyncTests, ConditionVariableWaitForTimesOut)
     const bool ok = cv.wait_for(lock, std::chrono::milliseconds(10), [&ready]()
                                 { return ready; });
     EXPECT_FALSE(ok);
+}
+
+TEST(SysxErrorTests, NetworkErrorClassificationCoversReachabilityCases)
+{
+#if defined(_WIN32)
+    const auto net_unreachable = sysx::MakeError(sysx::ErrorDomain::Network, WSAENETUNREACH);
+    const auto host_unreachable = sysx::MakeError(sysx::ErrorDomain::Network, WSAEHOSTUNREACH);
+#else
+    const auto net_unreachable = sysx::MakeError(sysx::ErrorDomain::Network, ENETUNREACH);
+    const auto host_unreachable = sysx::MakeError(sysx::ErrorDomain::Network, EHOSTUNREACH);
+#endif
+
+    EXPECT_EQ(net_unreachable.kind, sysx::ErrorKind::NetworkUnreachable);
+    EXPECT_TRUE(net_unreachable.retryable);
+    EXPECT_EQ(host_unreachable.kind, sysx::ErrorKind::HostUnreachable);
+    EXPECT_TRUE(host_unreachable.retryable);
+}
+
+TEST(SysxErrorTests, MakeErrorProvidesOkMessageForZeroCode)
+{
+    const auto ok = sysx::MakeError(sysx::ErrorDomain::System, 0);
+    EXPECT_EQ(ok.kind, sysx::ErrorKind::None);
+    EXPECT_EQ(ok.message, "ok");
+    EXPECT_FALSE(ok.retryable);
 }

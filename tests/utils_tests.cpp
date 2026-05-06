@@ -141,7 +141,8 @@ TEST(UtilsPathTests, NormalizeSlashAndFileExists)
 {
     EXPECT_EQ(utils::path::normalize_slash("a\\b\\c"), "a/b/c");
 
-    const auto temp = std::filesystem::temp_directory_path() / "utils_exists_test.txt";
+    const auto temp = std::filesystem::current_path() / "toolx_test_tmp" / "utils_exists_test.txt";
+    std::filesystem::create_directories(temp.parent_path());
     {
         std::ofstream out(temp.string(), std::ios::binary);
         out << "ok";
@@ -156,7 +157,7 @@ TEST(UtilsPathTests, NormalizeSlashAndFileExists)
 
 TEST(UtilsPathTests, EnsureParentDir)
 {
-    const auto root = std::filesystem::temp_directory_path() / "utils_parent_dir_test";
+    const auto root = std::filesystem::current_path() / "toolx_test_tmp" / "utils_parent_dir_test";
     const auto file = root / "a" / "b" / "c.txt";
 
     std::error_code ec;

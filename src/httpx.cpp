@@ -57,6 +57,31 @@
 namespace
 {
 
+#if defined(_WIN32)
+    bool ParseWindowsAddressLiteral(int family, const std::string &text, void *addr)
+    {
+        sockaddr_storage storage{};
+        int storage_size = sizeof(storage);
+        std::string mutable_text = text;
+        if (WSAStringToAddressA(mutable_text.data(), family, nullptr, reinterpret_cast<sockaddr *>(&storage), &storage_size) != 0)
+        {
+            return false;
+        }
+
+        if (family == AF_INET)
+        {
+            *static_cast<in_addr *>(addr) = reinterpret_cast<sockaddr_in *>(&storage)->sin_addr;
+            return true;
+        }
+        if (family == AF_INET6)
+        {
+            *static_cast<in6_addr *>(addr) = reinterpret_cast<sockaddr_in6 *>(&storage)->sin6_addr;
+            return true;
+        }
+        return false;
+    }
+#endif
+
     struct ParsedUrl
     {
         std::string scheme;
@@ -1409,7 +1434,11 @@ namespace
 
         in_addr addr4{};
         const std::string text(host);
+#if defined(_WIN32)
+        if (!ParseWindowsAddressLiteral(AF_INET, text, &addr4))
+#else
         if (inet_pton(AF_INET, text.c_str(), &addr4) != 1)
+#endif
         {
             return false;
         }
@@ -1431,7 +1460,11 @@ namespace
 
         in6_addr addr6{};
         const std::string text(host);
+#if defined(_WIN32)
+        if (!ParseWindowsAddressLiteral(AF_INET6, text, &addr6))
+#else
         if (inet_pton(AF_INET6, text.c_str(), &addr6) != 1)
+#endif
         {
             return false;
         }

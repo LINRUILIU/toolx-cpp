@@ -1,0 +1,125 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - 'codex/**'
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+            enable_tidy: OFF
+            enable_coverage: ON
+          - os: ubuntu-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+            enable_tidy: ON
+            enable_coverage: OFF
+          - os: windows-latest
+            compiler: msvc
+            cc: cl
+            cxx: cl
+            enable_tidy: OFF
+            enable_coverage: OFF
+          - os: macos-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+            enable_tidy: OFF
+            enable_coverage: OFF
+
+    env:
+      BUILD_DIR: build-ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-tidy clang-format gcovr
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install ninja llvm gcovr
+          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/opt/llvm/bin" >> "$GITHUB_PATH"
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          choco install ninja llvm --no-progress -y
+
+      - name: Configure
+        shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: >
+          cmake -S . -B "${BUILD_DIR}"
+          -G Ninja
+          -DCOPILOT_BUILD_TESTS=ON
+          -DCOPILOT_BUILD_EXAMPLES=ON
+          -DCOPILOT_BUILD_BENCHMARKS=OFF
+          -DCOPILOT_ENABLE_CLANG_TIDY=${{ matrix.enable_tidy }}
+          -DCOPILOT_ENABLE_COVERAGE=${{ matrix.enable_coverage }}
+
+      - name: Format check
+        run: cmake --build "${BUILD_DIR}" --target format-check
+
+      - name: Lint check
+        if: matrix.enable_tidy == 'ON'
+        run: cmake --build "${BUILD_DIR}" --target lint-check
+
+      - name: Build
+        run: cmake --build "${BUILD_DIR}" --parallel
+
+      - name: Test
+        run: ctest --test-dir "${BUILD_DIR}" --output-on-failure
+
+      - name: Install package
+        run: cmake --install "${BUILD_DIR}" --prefix "${{ github.workspace }}/stage"
+
+      - name: Verify exported package
+        shell: bash
+        run: >
+          cmake -S examples/install_consumer -B build-consumer -G Ninja
+          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/stage" &&
+          cmake --build build-consumer --parallel
+
+      - name: Generate coverage
+        if: matrix.enable_coverage == 'ON'
+        run: cmake --build "${BUILD_DIR}" --target coverage
+
+      - name: Upload coverage artifacts
+        if: matrix.enable_coverage == 'ON'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}-${{ matrix.compiler }}
+          path: |
+            build-ci/coverage.xml
+            build-ci/coverage.html
+
+      - name: Upload coverage to Codecov
+        if: matrix.enable_coverage == 'ON'
+        uses: codecov/codecov-action@v4
+        with:
+          files: build-ci/coverage.xml
+          fail_ci_if_error: false

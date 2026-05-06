@@ -579,7 +579,31 @@ namespace fsx
             bool is_directory{false};
             std::uint64_t mtime{0};
             std::uintmax_t size{0};
+            std::uint64_t content_hash{0};
         };
+
+        std::uint64_t HashFileContent(const Path &path)
+        {
+            std::ifstream input(path, std::ios::binary);
+            if (!input.is_open())
+            {
+                return 0;
+            }
+
+            std::uint64_t hash = 1469598103934665603ull;
+            char buffer[4096] = {0};
+            while (input.good())
+            {
+                input.read(buffer, sizeof(buffer));
+                const auto count = input.gcount();
+                for (std::streamsize i = 0; i < count; ++i)
+                {
+                    hash ^= static_cast<unsigned char>(buffer[i]);
+                    hash *= 1099511628211ull;
+                }
+            }
+            return hash;
+        }
 
         PollingSnapshot CapturePollingSnapshot(const Path &path)
         {
@@ -602,6 +626,10 @@ namespace fsx
             if (ec)
             {
                 out.size = 0;
+            }
+            else if (out.size > 0)
+            {
+                out.content_hash = HashFileContent(path);
             }
 
             const auto mtime = std::filesystem::last_write_time(path, ec);
@@ -648,7 +676,8 @@ namespace fsx
             return before.exists != after.exists ||
                    before.is_directory != after.is_directory ||
                    before.mtime != after.mtime ||
-                   before.size != after.size;
+                   before.size != after.size ||
+                   before.content_hash != after.content_hash;
         }
 
         class PollingFileWatcher final : public IFileWatcher
@@ -1228,31 +1257,6 @@ namespace fsx
         }
 
         out.ok = true;
-        return out;
-    }
-
-    Status ArchivePlaceholder(std::string_view source_dir,
-                              std::string_view output_path,
-                              std::string_view format)
-    {
-        Status out;
-        const Path src{std::string(source_dir)};
-        const Path dst{std::string(output_path)};
-        std::error_code ec;
-        if (!std::filesystem::exists(src, ec) || ec)
-        {
-            out.error = utils::err::join_context("fsx", "archive", "source directory not found");
-            return out;
-        }
-
-        std::string ensure_error;
-        if (!ensure_parent(dst, &ensure_error))
-        {
-            out.error = ensure_error;
-            return out;
-        }
-
-        out.error = "archive format '" + std::string(format) + "' is not implemented yet";
         return out;
     }
 

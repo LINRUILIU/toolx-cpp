@@ -425,7 +425,7 @@ TEST(TuixFrameworkTests, ApplicationOnlyRepaintsWhenDirty)
     tuix::Terminal terminal(out, true);
     auto label = std::make_shared<tuix::Label>("steady");
 
-    std::istringstream in(std::string());
+    std::istringstream in{std::string()};
     auto source = tuix::CreateStreamInputSource(in);
     ASSERT_NE(source, nullptr);
 

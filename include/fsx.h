@@ -132,8 +132,8 @@ namespace fsx
         bool watcher_polling{true};
         bool hard_link{true};
         bool symbolic_link{false};
-        bool zip_archive{false};
-        bool tar_archive{false};
+        bool zip_archive{false}; // Future capability; stable API reports false until implemented.
+        bool tar_archive{false}; // Future capability; stable API reports false until implemented.
     };
 
     class IFileWatcher
@@ -181,11 +181,8 @@ namespace fsx
                       std::string_view link_path,
                       LinkType type,
                       bool overwrite = false); // 链接操作接口（phase D 骨架）。
-    Status ArchivePlaceholder(std::string_view source_dir,
-                              std::string_view output_path,
-                              std::string_view format);                // 压缩能力占位接口（phase D 骨架）。
     std::unique_ptr<IFileWatcher> CreateFileWatcher(std::string path); // 文件变更监控抽象（轮询实现）。
-    CapabilityInfo QueryCapabilities();                                // 查询当前可用能力（含压缩占位）。
+    CapabilityInfo QueryCapabilities();                                // 查询当前可用能力。
 
     const char *ToString(OpType op) noexcept;             // 将操作类型转换为字符串，参数为操作类型，返回对应的字符串表示。
     const char *ToString(RollbackMode mode) noexcept;     // 将回滚模式转换为字符串，参数为回滚模式，返回对应的字符串表示。

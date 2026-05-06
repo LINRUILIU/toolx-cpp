@@ -131,6 +131,12 @@ namespace logsys
         Hour,
     };
 
+    enum class FatalPolicy : std::uint8_t
+    {
+        FlushOnly = 0,
+        AbortAfterFlush,
+    };
+
     struct RollingConfigV2
     {
         bool enabled{true};                                   // 是否启用基于大小的文件滚动。
@@ -199,6 +205,7 @@ namespace logsys
         bool global_enable_file{false};                                                       // 是否启用文件输出。
         bool global_enable_debugger{false};                                                   // 是否启用调试器输出。
         OutputOrderMode output_order{OutputOrderMode::ByTimeMixed};                           // 输出顺序模式。
+        FatalPolicy fatal_policy{FatalPolicy::FlushOnly};                                      // Fatal 日志策略，默认只刷新不终止宿主进程。
 
         RollingConfigV2 rolling{};               // 文件滚动配置。
         ScheduleConfigV2 schedule{};             // 定期刷新配置。
@@ -490,6 +497,8 @@ namespace logsys
 
         void SetFlushOnFatal(bool enabled); // 设置是否在记录 Fatal 级别日志时自动刷新输出的函数，接受一个布尔值参数，控制该行为的启用与禁用。
         bool FlushOnFatal() const noexcept; // 获取当前是否在记录 Fatal 级别日志时自动刷新输出的函数，返回一个布尔值。
+        void SetFatalPolicy(FatalPolicy policy);
+        FatalPolicy GetFatalPolicy() const noexcept;
 
         void SetDefaultOrigin(ErrorSource source, ModuleId module, ErrorCategory category); // 设置默认错误来源、模块和类别的函数，接受一个错误来源、一个模块 ID 和一个错误类别参数，用于指定默认的日志事件来源信息。
         ErrorCategory DefaultCategory() const noexcept;                                     // 获取当前默认错误类别的函数，返回一个错误类别值。
@@ -614,13 +623,14 @@ namespace logsys
         std::atomic<LogLevel> record_level_{LogLevel::Info};                                             // 记录级别阈值，控制哪些日志事件会被接受进入日志系统进行处理。
         std::atomic<LogLevel> level_{LogLevel::Fatal};                                                   // 输出级别阈值，控制哪些日志会被发送到输出端（sink）。
         std::atomic<bool> flush_on_fatal_{true};                                                         // 是否在记录 Fatal 级别日志时自动刷新输出。
+        std::atomic<std::uint8_t> fatal_policy_{static_cast<std::uint8_t>(FatalPolicy::FlushOnly)};
         std::atomic<std::uint32_t> text_field_mask_{kTextFieldMaskDefault};                              // 文本字段掩码，控制输出哪些字段（位掩码）。
         std::atomic<bool> auto_fill_missing_metadata_{true};                                             // 是否自动填充缺失元数据。
         std::atomic<std::uint8_t> default_source_{static_cast<std::uint8_t>(ErrorSource::Business)};     // 默认错误来源，使用 uint8_t 存储以节省空间。
         std::atomic<std::uint8_t> default_module_{static_cast<std::uint8_t>(ModuleId::BusinessCommon)};  // 默认模块 ID，使用 uint8_t 存储以节省空间。
         std::atomic<std::uint8_t> default_category_{static_cast<std::uint8_t>(ErrorCategory::Business)}; // 默认错误类别，使用 uint8_t 存储以节省空间。
         std::atomic<bool> periodic_flush_running_{false};                                                // 定期刷新线程是否正在运行的标志。
-        std::jthread periodic_flush_thread_{};                                                           // 定期刷新线程，使用 jthread 自动管理线程生命周期。
+        std::thread periodic_flush_thread_{};                                                            // 定期刷新线程。
         std::atomic<std::uint64_t> pending_event_count_{0};                                              // 当前待处理日志事件的数量，用于回压策略。
         std::atomic<std::uint64_t> dropped_by_backpressure_{0};                                          // 因回压策略而被丢弃的日志事件数量。
         std::vector<PendingOutputV2> grouped_outputs_{};                                                 // 分组待输出日志事件列表，用于批量处理和输出。
@@ -631,7 +641,7 @@ namespace logsys
         bool async_worker_stop_requested_{false};                                                        // 异步线程停止标志。
         bool async_worker_processing_{false};                                                            // 异步线程是否正在处理一个事件。
         std::thread::id async_worker_thread_id_{};                                                       // 异步线程 id，用于避免线程内 Flush 死锁。
-        std::jthread async_worker_thread_{};                                                             // 异步日志工作线程。
+        std::thread async_worker_thread_{};                                                              // 异步日志工作线程。
 
         // Category counters are fixed-size atomics to avoid runtime map allocations.
         std::array<std::atomic<std::uint64_t>, static_cast<std::size_t>(ErrorCategory::Count)> category_counts_{}; // 错误类别计数数组，使用固定大小的原子变量存储每个错误类别的事件数量，避免运行时的 map 分配。

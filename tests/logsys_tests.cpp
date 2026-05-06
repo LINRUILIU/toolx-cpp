@@ -20,6 +20,11 @@ TEST(ErrorCodeTests, BuildAndParse)
 
 namespace
 {
+    std::filesystem::path TestTempPath(std::string_view name)
+    {
+        return std::filesystem::current_path() / "toolx_test_tmp" / std::string(name);
+    }
+
     class MemorySink final : public logsys::ISink
     {
     public:
@@ -52,6 +57,7 @@ TEST(LoggerTests, CounterByCodeAndCategory)
 
     const auto code = LOGSYS_MAKE_ERROR_CODE(ErrorSource::Business, ModuleId::BusinessCommon, 7);
     logger.Logf(LogLevel::Error, code, ErrorCategory::Business, __FILE__, __LINE__, __func__, 0, "", "", "hello %d", 1);
+    logger.Flush();
 
     EXPECT_EQ(logger.GetErrorCountByCode(code), 1u);
     EXPECT_EQ(logger.GetErrorCountByCategory(ErrorCategory::Business), 1u);
@@ -82,6 +88,7 @@ TEST(LoggerTests, SimpleDefaultApiUsesConfiguredOrigin)
     logger.SetDefaultOrigin(ErrorSource::Business, ModuleId::BusinessCommon, ErrorCategory::Business);
 
     logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, __func__, "simple-api %d", 7);
+    logger.Flush();
 
     const auto expected = LOGSYS_MAKE_ERROR_CODE(ErrorSource::Business, ModuleId::BusinessCommon, 3);
     EXPECT_EQ(logger.GetErrorCountByCode(expected), 1u);
@@ -109,6 +116,7 @@ TEST(LoggerTests, TextFieldMaskCanHideTimestampAndCode)
     logger.SetTextFieldEnabled(TextField::Code, false);
 
     logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, __func__, "field-mask-test");
+    logger.Flush();
 
     ASSERT_FALSE(sink->lines.empty());
     const std::string line = sink->lines.back();
@@ -156,6 +164,7 @@ TEST(LoggerTests, SimpleLoggerDefaultsToMessageAndLevel)
     logger.AddDefaultSink(sink);
 
     logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, __func__, "mini-mode");
+    logger.Flush();
 
     ASSERT_FALSE(sink->lines.empty());
     const std::string line = sink->lines.back();
@@ -202,6 +211,7 @@ TEST(LoggerTests, DefaultSimpleModeRecordsInfoButOutputsFatal)
 
     logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, __func__, "info-stored");
     logger.LogDefaultf(LogLevel::Critical, __FILE__, __LINE__, __func__, "critical-output");
+    logger.Flush();
 
     const auto info_code = logger.DefaultCodeForLevel(LogLevel::Info);
     EXPECT_EQ(logger.RecordLevel(), LogLevel::Info);
@@ -276,7 +286,8 @@ TEST(LoggerTests, LoadConfigV2FromJsonFileAppliesSettings)
     using namespace logsys;
 
     auto &logger = Logger::Instance();
-    const auto cfg_path = std::filesystem::temp_directory_path() / "logsys_v2_test.json";
+    const auto cfg_path = TestTempPath("logsys_v2_test.json");
+    std::filesystem::create_directories(cfg_path.parent_path());
 
     std::ofstream out(cfg_path.string(), std::ios::trunc);
     out << R"({
@@ -341,6 +352,7 @@ TEST(LoggerTests, BackpressureDropsLowLevelEvents)
     EXPECT_EQ(logger.DroppedByBackpressureCount(), 1u);
 
     logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, __func__, "info-kept");
+    logger.Flush();
     const auto info_code = logger.DefaultCodeForLevel(LogLevel::Info);
     EXPECT_EQ(logger.GetErrorCountByCode(info_code), 1u);
 }
@@ -372,12 +384,92 @@ TEST(LoggerTests, OutputOrderGroupedFlushesByLevel)
     EXPECT_NE(sink->lines[1].find("ERROR"), std::string::npos);
 }
 
+TEST(LoggerTests, FlushDrainsAsyncQueueIntoSink)
+{
+    using namespace logsys;
+
+    auto &logger = Logger::Instance();
+    LoggerConfigV2 cfg;
+    cfg.global_record_level = LogLevel::Trace;
+    cfg.global_output_level = LogLevel::Trace;
+    cfg.global_enable_console = false;
+    cfg.global_enable_file = false;
+    cfg.global_enable_debugger = false;
+    cfg.schedule.periodic_flush_enabled = false;
+    logger.ApplyConfigV2(cfg);
+
+    auto sink = std::make_shared<MemorySink>();
+    logger.AddDefaultSink(sink);
+
+    for (int i = 0; i < 5; ++i)
+    {
+        logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, __func__, "queued-%d", i);
+    }
+
+    logger.Flush();
+
+    ASSERT_EQ(sink->lines.size(), 5u);
+    EXPECT_NE(sink->lines.back().find("queued-4"), std::string::npos);
+}
+
+TEST(LoggerTests, FatalFlushOnlyPolicyDoesNotAbort)
+{
+    using namespace logsys;
+
+    auto &logger = Logger::Instance();
+    LoggerConfigV2 cfg;
+    cfg.global_record_level = LogLevel::Trace;
+    cfg.global_output_level = LogLevel::Trace;
+    cfg.global_enable_console = false;
+    cfg.global_enable_file = false;
+    cfg.global_enable_debugger = false;
+    cfg.schedule.periodic_flush_enabled = false;
+    cfg.fatal_policy = FatalPolicy::FlushOnly;
+    logger.ApplyConfigV2(cfg);
+
+    auto sink = std::make_shared<MemorySink>();
+    logger.AddDefaultSink(sink);
+
+    logger.LogDefaultf(LogLevel::Fatal, __FILE__, __LINE__, __func__, "fatal-but-library-stays-alive");
+    logger.Flush();
+
+    ASSERT_EQ(sink->lines.size(), 1u);
+    EXPECT_NE(sink->lines.front().find("fatal-but-library-stays-alive"), std::string::npos);
+    EXPECT_EQ(logger.GetFatalPolicy(), FatalPolicy::FlushOnly);
+}
+
+TEST(LoggerTests, ReapplyingConfigCanDisablePeriodicFlush)
+{
+    using namespace logsys;
+
+    auto &logger = Logger::Instance();
+
+    LoggerConfigV2 enabled;
+    enabled.global_record_level = LogLevel::Info;
+    enabled.global_output_level = LogLevel::Fatal;
+    enabled.global_enable_console = false;
+    enabled.global_enable_file = false;
+    enabled.global_enable_debugger = false;
+    enabled.schedule.periodic_flush_enabled = true;
+    enabled.schedule.flush_interval = std::chrono::milliseconds(25);
+    logger.ApplyConfigV2(enabled);
+
+    LoggerConfigV2 disabled = enabled;
+    disabled.schedule.periodic_flush_enabled = false;
+    logger.ApplyConfigV2(disabled);
+
+    const auto current = logger.CurrentConfigV2();
+    EXPECT_FALSE(current.schedule.periodic_flush_enabled);
+    EXPECT_EQ(current.schedule.flush_interval, std::chrono::milliseconds(25));
+}
+
 TEST(LoggerTests, JsonProfilesSupportModuleAndFileOverrides)
 {
     using namespace logsys;
 
     auto &logger = Logger::Instance();
-    const auto cfg_path = std::filesystem::temp_directory_path() / "logsys_v2_profiles_test.json";
+    const auto cfg_path = TestTempPath("logsys_v2_profiles_test.json");
+    std::filesystem::create_directories(cfg_path.parent_path());
 
     std::ofstream out(cfg_path.string(), std::ios::trunc);
     out << R"({

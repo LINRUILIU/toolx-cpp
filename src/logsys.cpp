@@ -688,10 +688,7 @@ namespace logsys
         std::unordered_set<ErrorCode> unique_codes;
         for (const auto &e : entries_)
         {
-            if (!unique_codes.insert(e.code).second)
-            {
-                std::abort();
-            }
+            (void)unique_codes.insert(e.code);
         }
     }
 
@@ -1390,6 +1387,16 @@ namespace logsys
         return flush_on_fatal_.load(std::memory_order_relaxed);
     }
 
+    void Logger::SetFatalPolicy(FatalPolicy policy)
+    {
+        fatal_policy_.store(static_cast<std::uint8_t>(policy), std::memory_order_relaxed);
+    }
+
+    FatalPolicy Logger::GetFatalPolicy() const noexcept
+    {
+        return static_cast<FatalPolicy>(fatal_policy_.load(std::memory_order_relaxed));
+    }
+
     void Logger::SetDefaultOrigin(ErrorSource source, ModuleId module, ErrorCategory category)
     {
         default_source_.store(static_cast<std::uint8_t>(source), std::memory_order_relaxed);
@@ -1427,6 +1434,8 @@ namespace logsys
             config_v2_.global_enable_console = options.enable_console;
             config_v2_.global_enable_file = options.enable_file;
             config_v2_.global_enable_debugger = options.enable_debugger;
+            config_v2_.fatal_policy = FatalPolicy::FlushOnly;
+            fatal_policy_.store(static_cast<std::uint8_t>(config_v2_.fatal_policy), std::memory_order_relaxed);
             config_v2_.schedule.periodic_flush_enabled = false;
             ApplyRoutingLocked();
         }
@@ -1472,6 +1481,7 @@ namespace logsys
             config_v2_ = config;
             record_level_.store(config.global_record_level, std::memory_order_relaxed);
             level_.store(config.global_output_level, std::memory_order_relaxed);
+            fatal_policy_.store(static_cast<std::uint8_t>(config.fatal_policy), std::memory_order_relaxed);
             text_field_mask_.store(config.global_text_field_mask, std::memory_order_relaxed);
 
             default_options_.enable_console = config.global_enable_console;
@@ -1979,12 +1989,12 @@ namespace logsys
 
         StopPeriodicFlush();
         periodic_flush_running_.store(true, std::memory_order_relaxed);
-        periodic_flush_thread_ = std::jthread([this, effective_interval](std::stop_token st)
+        periodic_flush_thread_ = std::thread([this, effective_interval]()
                                               {
-                                                  while (!st.stop_requested())
+                                                  while (periodic_flush_running_.load(std::memory_order_relaxed))
                                                   {
                                                       std::this_thread::sleep_for(effective_interval);
-                                                      if (st.stop_requested())
+                                                      if (!periodic_flush_running_.load(std::memory_order_relaxed))
                                                       {
                                                           break;
                                                       }
@@ -1997,7 +2007,6 @@ namespace logsys
         periodic_flush_running_.store(false, std::memory_order_relaxed);
         if (periodic_flush_thread_.joinable())
         {
-            periodic_flush_thread_.request_stop();
             periodic_flush_thread_.join();
         }
     }
@@ -2012,7 +2021,7 @@ namespace logsys
             async_worker_thread_id_ = {};
         }
 
-        async_worker_thread_ = std::jthread([this]()
+        async_worker_thread_ = std::thread([this]()
                                             {
                                                 {
                                                     std::lock_guard<std::mutex> lk(async_mu_);
@@ -2387,7 +2396,10 @@ namespace logsys
         if (event.level == LogLevel::Fatal && FlushOnFatal())
         {
             Flush();
-            std::abort();
+            if (GetFatalPolicy() == FatalPolicy::AbortAfterFlush)
+            {
+                std::abort();
+            }
         }
     }
 

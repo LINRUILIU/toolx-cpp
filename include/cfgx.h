@@ -396,7 +396,7 @@ namespace cfgx
         std::uint64_t audit_sequence_{1};
     };
 
-    ConfigFormat DetectFormatFromPath(std::string_view file_path);                // 从文件路径检测配置格式，基于文件扩展名进行判断，支持.json、.ini、.cfg、.yaml、.yml和.toml扩展名
+    ConfigFormat DetectFormatFromPath(std::string_view file_path);                // 从文件路径检测配置格式；Json/Ini 为稳定支持，Yaml/Toml 为实用子集。
     Status RegisterParserAdapter(ParserAdapter adapter, bool set_active = false); // 注册解析器适配器，如果set_active为true则同时设置为活动适配器
     Status UnregisterParserAdapter(std::string_view name);                        // 注销解析器适配器，根据名称进行注销，如果适配器不存在则返回错误状态
     Status SetActiveParserAdapter(std::string_view name);                         // 设置活动的解析器适配器，根据名称进行设置，如果名称为空则清除活动适配器，如果适配器不存在则返回错误状态
@@ -429,9 +429,9 @@ namespace cfgx
                                std::string_view file_path,
                                std::string_view key,
                                ConfigFormat preferred = ConfigFormat::Unknown,
-                               int indent = 2); // 使用静态密钥加密后写入配置文件。
+                               int indent = 2); // 使用轻量本地保护格式写入配置文件；不提供认证加密安全保证。
     Result<Node> LoadEncryptedFromFile(std::string_view file_path,
                                        std::string_view key,
-                                       ConfigFormat preferred = ConfigFormat::Unknown); // 使用静态密钥解密并加载配置文件。
+                                       ConfigFormat preferred = ConfigFormat::Unknown); // 读取轻量本地保护格式；不适合生产凭证/密钥。
 
 } // namespace cfgx

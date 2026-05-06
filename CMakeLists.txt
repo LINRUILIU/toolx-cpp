@@ -1,13 +1,20 @@
 cmake_minimum_required(VERSION 3.20)
-project(copilot_tools LANGUAGES CXX)
+
+project(copilot_tools VERSION 0.1.0 LANGUAGES CXX)
+
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(COPILOT_BUILD_TESTS "Build tests" ON)
 option(COPILOT_BUILD_EXAMPLES "Build examples" ON)
 option(COPILOT_BUILD_BENCHMARKS "Build benchmark examples" ON)
+option(COPILOT_ENABLE_CLANG_TIDY "Enable clang-tidy during compilation" OFF)
+option(COPILOT_ENABLE_COVERAGE "Enable compiler coverage instrumentation" OFF)
 option(HTTPX_ENABLE_OPENSSL "Enable OpenSSL backend for httpx TLS" OFF)
 option(HTTPX_ENABLE_MBEDTLS "Enable mbedTLS backend for httpx TLS" OFF)
 
@@ -23,35 +30,132 @@ if(WIN32)
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
-add_library(utils src/utils.cpp)
-target_include_directories(utils PUBLIC include)
+if(COPILOT_ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(-O0 -g --coverage)
+        add_link_options(--coverage)
+    else()
+        message(WARNING "Coverage instrumentation is only configured for GCC/Clang-like compilers.")
+    endif()
+endif()
 
-add_library(sysx src/sysx.cpp)
-target_include_directories(sysx PUBLIC include)
+find_program(CLANG_FORMAT_BIN NAMES clang-format)
+find_program(CLANG_TIDY_BIN NAMES clang-tidy)
+find_program(GCOVR_BIN NAMES gcovr)
+
+set(TOOLX_FORMAT_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples"
+)
+
+set(TOOLX_FORMAT_FILES)
+foreach(dir IN LISTS TOOLX_FORMAT_DIRS)
+    if(EXISTS "${dir}")
+        file(GLOB_RECURSE dir_files CONFIGURE_DEPENDS
+            "${dir}/*.h"
+            "${dir}/*.hpp"
+            "${dir}/*.c"
+            "${dir}/*.cc"
+            "${dir}/*.cpp"
+            "${dir}/*.cxx")
+        list(APPEND TOOLX_FORMAT_FILES ${dir_files})
+    endif()
+endforeach()
+list(REMOVE_DUPLICATES TOOLX_FORMAT_FILES)
+
+set(TOOLX_LINT_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/utils.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/sysx.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/argtool.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/asyncx.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cfgx.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/fsx.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hashx.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/httpx.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/logsys.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/textcodec.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/tuix.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/resultx_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_integration_tests.cpp"
+)
+
+if(CLANG_FORMAT_BIN)
+    add_custom_target(format
+        COMMAND "${CLANG_FORMAT_BIN}" -i ${TOOLX_FORMAT_FILES}
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "Formatting ToolX source files with clang-format"
+        VERBATIM)
+
+    add_custom_target(format-check
+        COMMAND "${CLANG_FORMAT_BIN}" --dry-run --Werror ${TOOLX_FORMAT_FILES}
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "Checking ToolX source formatting with clang-format"
+        VERBATIM)
+endif()
+
+if(COPILOT_ENABLE_CLANG_TIDY)
+    if(NOT CLANG_TIDY_BIN)
+        message(FATAL_ERROR "COPILOT_ENABLE_CLANG_TIDY=ON but clang-tidy was not found.")
+    endif()
+    set(CMAKE_CXX_CLANG_TIDY
+        "${CLANG_TIDY_BIN};--config-file=${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy")
+endif()
+
+if(CLANG_TIDY_BIN)
+    add_custom_target(lint-check
+        COMMAND "${CLANG_TIDY_BIN}"
+            -p "${CMAKE_BINARY_DIR}"
+            --config-file="${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy"
+            ${TOOLX_LINT_FILES}
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "Running clang-tidy on ToolX module sources"
+        VERBATIM)
+endif()
+
+function(toolx_add_module name)
+    add_library(${name} src/${name}.cpp)
+    add_library(toolx::${name} ALIAS ${name})
+    target_include_directories(${name}
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    set_target_properties(${name} PROPERTIES
+        EXPORT_NAME ${name}
+        POSITION_INDEPENDENT_CODE ON)
+endfunction()
+
+toolx_add_module(utils)
+toolx_add_module(sysx)
 if(WIN32)
     target_link_libraries(sysx PUBLIC ws2_32)
 endif()
 
-add_library(argtool src/argtool.cpp)
-target_include_directories(argtool PUBLIC include)
+add_library(resultx INTERFACE)
+add_library(toolx::resultx ALIAS resultx)
+target_include_directories(resultx
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(resultx INTERFACE sysx)
+set_target_properties(resultx PROPERTIES
+    EXPORT_NAME resultx)
 
-add_library(asyncx src/asyncx.cpp)
-target_include_directories(asyncx PUBLIC include)
+toolx_add_module(argtool)
+
+toolx_add_module(asyncx)
 target_link_libraries(asyncx PUBLIC sysx)
 
-add_library(cfgx src/cfgx.cpp)
-target_include_directories(cfgx PUBLIC include)
+toolx_add_module(cfgx)
 
-add_library(fsx src/fsx.cpp)
-target_include_directories(fsx PUBLIC include)
+toolx_add_module(fsx)
 target_link_libraries(fsx PUBLIC utils)
 
-add_library(hashx src/hashx.cpp)
-target_include_directories(hashx PUBLIC include)
+toolx_add_module(hashx)
 target_link_libraries(hashx PUBLIC utils)
 
-add_library(httpx src/httpx.cpp)
-target_include_directories(httpx PUBLIC include)
+toolx_add_module(httpx)
 target_link_libraries(httpx PUBLIC utils)
 if(WIN32)
     target_link_libraries(httpx PUBLIC ws2_32)
@@ -96,18 +200,30 @@ elseif(HTTPX_ENABLE_MBEDTLS)
     target_link_libraries(httpx PUBLIC ${MBEDTLS_LIBRARY} ${MBEDX509_LIBRARY} ${MBEDCRYPTO_LIBRARY})
 endif()
 
-add_library(logsys src/logsys.cpp)
-target_include_directories(logsys PUBLIC include)
+toolx_add_module(logsys)
 if(WIN32)
     target_link_libraries(logsys PUBLIC ws2_32)
 endif()
 
-add_library(textcodec src/textcodec.cpp)
-target_include_directories(textcodec PUBLIC include)
+toolx_add_module(textcodec)
 target_link_libraries(textcodec PUBLIC utils)
 
-add_library(tuix src/tuix.cpp)
-target_include_directories(tuix PUBLIC include)
+toolx_add_module(tuix)
+
+set(TOOLX_EXPORT_TARGETS
+    utils
+    sysx
+    resultx
+    argtool
+    asyncx
+    cfgx
+    fsx
+    hashx
+    httpx
+    logsys
+    textcodec
+    tuix
+)
 
 if(COPILOT_BUILD_EXAMPLES)
     add_executable(argtool_example examples/argtool_example.cpp)
@@ -128,6 +244,9 @@ if(COPILOT_BUILD_EXAMPLES)
     add_executable(cfgx_example examples/cfgx_example.cpp)
     target_link_libraries(cfgx_example PRIVATE cfgx)
 
+    add_executable(cfgx_httpx_remote_example examples/cfgx_httpx_remote_example.cpp)
+    target_link_libraries(cfgx_httpx_remote_example PRIVATE cfgx httpx)
+
     add_executable(cfgtool examples/cfgtool_example.cpp)
     target_link_libraries(cfgtool PRIVATE argtool cfgx)
 
@@ -142,6 +261,9 @@ if(COPILOT_BUILD_EXAMPLES)
 
     add_executable(logsys_example examples/logsys_example.cpp)
     target_link_libraries(logsys_example PRIVATE logsys)
+
+    add_executable(logsys_cfgx_configured_example examples/logsys_cfgx_configured_example.cpp)
+    target_link_libraries(logsys_cfgx_configured_example PRIVATE cfgx logsys)
 
     add_executable(sysx_example examples/sysx_example.cpp)
     target_link_libraries(sysx_example PRIVATE sysx)
@@ -158,6 +280,9 @@ if(COPILOT_BUILD_EXAMPLES)
     add_executable(utils_example examples/utils_example.cpp)
     target_link_libraries(utils_example PRIVATE utils)
 
+    add_executable(toolx_cli_showcase examples/toolx_cli_showcase.cpp)
+    target_link_libraries(toolx_cli_showcase PRIVATE argtool asyncx cfgx fsx logsys textcodec)
+
     if(COPILOT_BUILD_BENCHMARKS)
         add_executable(asyncx_benchmark examples/asyncx_benchmark.cpp)
         target_link_libraries(asyncx_benchmark PRIVATE asyncx)
@@ -170,6 +295,8 @@ endif()
 if(COPILOT_BUILD_TESTS)
     include(FetchContent)
 
+    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
         googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
@@ -209,6 +336,10 @@ if(COPILOT_BUILD_TESTS)
     target_link_libraries(logsys_tests PRIVATE logsys GTest::gtest_main)
     add_test(NAME logsys_tests COMMAND logsys_tests)
 
+    add_executable(resultx_tests tests/resultx_tests.cpp)
+    target_link_libraries(resultx_tests PRIVATE resultx GTest::gtest_main)
+    add_test(NAME resultx_tests COMMAND resultx_tests)
+
     add_executable(sysx_tests tests/sysx_tests.cpp)
     target_link_libraries(sysx_tests PRIVATE sysx GTest::gtest_main)
     add_test(NAME sysx_tests COMMAND sysx_tests)
@@ -224,4 +355,68 @@ if(COPILOT_BUILD_TESTS)
     add_executable(utils_tests tests/utils_tests.cpp)
     target_link_libraries(utils_tests PRIVATE utils GTest::gtest_main)
     add_test(NAME utils_tests COMMAND utils_tests)
+
+    add_executable(toolx_integration_tests tests/toolx_integration_tests.cpp)
+    target_link_libraries(toolx_integration_tests PRIVATE argtool asyncx cfgx fsx httpx logsys resultx GTest::gtest_main)
+    add_test(NAME toolx_integration_tests COMMAND toolx_integration_tests)
+
+    if(COPILOT_ENABLE_COVERAGE AND GCOVR_BIN)
+        add_custom_target(coverage
+            COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
+            COMMAND "${GCOVR_BIN}"
+                --root "${CMAKE_CURRENT_SOURCE_DIR}"
+                --filter "${CMAKE_CURRENT_SOURCE_DIR}/src"
+                --filter "${CMAKE_CURRENT_SOURCE_DIR}/include"
+                --exclude "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+                --exclude "${CMAKE_CURRENT_SOURCE_DIR}/examples"
+                --xml-pretty
+                --output "${CMAKE_BINARY_DIR}/coverage.xml"
+                --html-details
+                --html-title "ToolX Coverage"
+                --output "${CMAKE_BINARY_DIR}/coverage.html"
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+            COMMENT "Running tests and generating gcovr coverage reports"
+            VERBATIM)
+    endif()
 endif()
+
+install(
+    TARGETS ${TOOLX_EXPORT_TARGETS}
+    EXPORT ToolXTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    FILES_MATCHING PATTERN "*.h"
+)
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/ToolXConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ToolXConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/ToolXConfig.cmake"
+    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ToolX"
+)
+
+install(
+    EXPORT ToolXTargets
+    FILE ToolXTargets.cmake
+    NAMESPACE toolx::
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ToolX"
+)
+
+install(
+    FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/ToolXConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/ToolXConfigVersion.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ToolX"
+)

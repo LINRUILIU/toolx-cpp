@@ -8,6 +8,12 @@
 
 namespace
 {
+    std::filesystem::path TestTempPath(const char *name)
+    {
+        const auto root = std::filesystem::current_path() / "toolx_test_tmp";
+        std::filesystem::create_directories(root);
+        return root / name;
+    }
 
     class ParserAdapterScope
     {
@@ -289,7 +295,7 @@ TEST(CfgxV2ComposeTests, ComposeLayersProvidesSourceAttribution)
 
 TEST(CfgxV2ReloadTests, TickSupportsDebounceAndRollback)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_v2_reload_debounce.json";
+    const auto file = TestTempPath("cfgx_v2_reload_debounce.json");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"({"svc":{"port":1000}})";
@@ -351,7 +357,7 @@ TEST(CfgxV2ReloadTests, TickSupportsDebounceAndRollback)
 
 TEST(CfgxV2ReloadTests, MtimeDriftWithSameContentDoesNotTriggerReload)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_v2_reload_same_content.json";
+    const auto file = TestTempPath("cfgx_v2_reload_same_content.json");
     const std::string text = R"({"svc":{"port":1000}})";
     {
         std::ofstream out(file.string(), std::ios::trunc);
@@ -382,7 +388,7 @@ TEST(CfgxV2ReloadTests, MtimeDriftWithSameContentDoesNotTriggerReload)
 
 TEST(CfgxV2ReloadTests, CallbackCarriesDiffAndSourceTrace)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_v2_reload_callback.json";
+    const auto file = TestTempPath("cfgx_v2_reload_callback.json");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"({"svc":{"port":1000,"host":"127.0.0.1"}})";
@@ -520,7 +526,7 @@ TEST(CfgxValidationTests, ValidateCollectsIssues)
 
 TEST(CfgxIoTests, LoadAndSaveJsonFileWork)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_io_test.json";
+    const auto file = TestTempPath("cfgx_io_test.json");
 
     cfgx::Node root = cfgx::Node::MakeObject();
     ASSERT_TRUE(cfgx::SetNode(root, "demo.value", cfgx::Node("ok")).ok);
@@ -541,7 +547,7 @@ TEST(CfgxIoTests, LoadAndSaveJsonFileWork)
 
 TEST(CfgxIniTests, LoadIniWithSectionsAndScalars)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_ini_load_test.ini";
+    const auto file = TestTempPath("cfgx_ini_load_test.ini");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"(name = demo
@@ -577,7 +583,7 @@ tls = true
 
 TEST(CfgxIniTests, SaveIniAndReloadWork)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_ini_save_test.ini";
+    const auto file = TestTempPath("cfgx_ini_save_test.ini");
 
     cfgx::Node root = cfgx::Node::MakeObject();
     ASSERT_TRUE(cfgx::SetNode(root, "meta.env", cfgx::Node("prod")).ok);
@@ -603,7 +609,7 @@ TEST(CfgxIniTests, SaveIniAndReloadWork)
 
 TEST(CfgxIniTests, SaveIniPreservesCommentsOnWriteback)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_ini_comment_preserve.ini";
+    const auto file = TestTempPath("cfgx_ini_comment_preserve.ini");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"(; global comment
@@ -632,7 +638,7 @@ host = 127.0.0.1
 
 TEST(CfgxYamlTests, LoadYamlSubsetWorks)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_yaml_load_test.yaml";
+    const auto file = TestTempPath("cfgx_yaml_load_test.yaml");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"(app:
@@ -668,7 +674,7 @@ servers:
 
 TEST(CfgxYamlTests, SaveYamlAndReloadWork)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_yaml_save_test.yaml";
+    const auto file = TestTempPath("cfgx_yaml_save_test.yaml");
 
     cfgx::Node root = cfgx::Node::MakeObject();
     ASSERT_TRUE(cfgx::SetNode(root, "service.name", cfgx::Node("alpha")).ok);
@@ -695,7 +701,7 @@ TEST(CfgxYamlTests, SaveYamlAndReloadWork)
 
 TEST(CfgxYamlTests, SaveYamlPreservesCommentsForScalarMappings)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_yaml_comment_preserve.yaml";
+    const auto file = TestTempPath("cfgx_yaml_comment_preserve.yaml");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"(# app config
@@ -821,7 +827,7 @@ TEST(CfgxValidationFactoryTests, ExtendedRulesPassWhenValid)
 
 TEST(CfgxV2SnapshotTests, PollReloaderSnapshotRestoreWorks)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_v2_snapshot_restore.json";
+    const auto file = TestTempPath("cfgx_v2_snapshot_restore.json");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"({"svc":{"port":1000}})";
@@ -870,8 +876,8 @@ TEST(CfgxV2SnapshotTests, PollReloaderSnapshotRestoreWorks)
 
 TEST(CfgxV2SnapshotTests, SnapshotFileExportImportAndAuditTrailWork)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_v2_snapshot_file.json";
-    const auto snapshot_file = std::filesystem::temp_directory_path() / "cfgx_v2_snapshot_export.json";
+    const auto file = TestTempPath("cfgx_v2_snapshot_file.json");
+    const auto snapshot_file = TestTempPath("cfgx_v2_snapshot_export.json");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"({"svc":{"port":1000}})";
@@ -993,7 +999,7 @@ TEST(CfgxParserAdapterTests, LoadUsesActiveAdapterWhenParseSucceeds)
 
     ASSERT_TRUE(cfgx::RegisterParserAdapter(std::move(adapter), true).ok);
 
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_adapter_load.json";
+    const auto file = TestTempPath("cfgx_adapter_load.json");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"({"svc":{"port":1000}})";
@@ -1037,7 +1043,7 @@ TEST(CfgxParserAdapterTests, SaveUsesActiveAdapterWhenDumpSucceeds)
 
     ASSERT_TRUE(cfgx::RegisterParserAdapter(std::move(adapter), true).ok);
 
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_adapter_save.json";
+    const auto file = TestTempPath("cfgx_adapter_save.json");
     cfgx::Node root = cfgx::Node::MakeObject();
     ASSERT_TRUE(cfgx::SetNode(root, "demo.value", cfgx::Node("builtin")).ok);
 
@@ -1070,7 +1076,7 @@ TEST(CfgxParserAdapterTests, LoadFallsBackToBuiltinWhenAdapterParseFails)
 
     ASSERT_TRUE(cfgx::RegisterParserAdapter(std::move(adapter), true).ok);
 
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_adapter_fallback_load.json";
+    const auto file = TestTempPath("cfgx_adapter_fallback_load.json");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"({"svc":{"port":1234}})";
@@ -1105,7 +1111,7 @@ TEST(CfgxParserAdapterTests, SaveFallsBackToBuiltinWhenAdapterDumpFails)
 
     ASSERT_TRUE(cfgx::RegisterParserAdapter(std::move(adapter), true).ok);
 
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_adapter_fallback_save.json";
+    const auto file = TestTempPath("cfgx_adapter_fallback_save.json");
     cfgx::Node root = cfgx::Node::MakeObject();
     ASSERT_TRUE(cfgx::SetNode(root, "demo.value", cfgx::Node("ok")).ok);
 
@@ -1128,9 +1134,26 @@ TEST(CfgxTomlTests, DetectFormatSupportsTomlExtension)
     EXPECT_EQ(cfgx::DetectFormatFromPath("settings.toml"), cfgx::ConfigFormat::Toml);
 }
 
+TEST(CfgxFormatTests, UnsupportedExplicitFormatReportsStableError)
+{
+    ParserAdapterScope adapters;
+    const auto file = TestTempPath("cfgx_unsupported_format.demo");
+    {
+        std::ofstream out(file.string(), std::ios::trunc);
+        out << "{}";
+    }
+
+    const auto loaded = cfgx::LoadFromFile(file.string(), static_cast<cfgx::ConfigFormat>(99));
+    ASSERT_FALSE(loaded.ok);
+    EXPECT_NE(loaded.error.find("unsupported config format"), std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
 TEST(CfgxTomlTests, LoadAndSaveTomlRoundTrip)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_toml_roundtrip.toml";
+    const auto file = TestTempPath("cfgx_toml_roundtrip.toml");
 
     {
         std::ofstream out(file.string(), std::ios::trunc);
@@ -1242,7 +1265,7 @@ TEST(CfgxRemoteTests, PollReloaderReloadNowAppliesRemoteLayer)
 {
     RemoteFetcherScope scope;
 
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_remote_reload_now.json";
+    const auto file = TestTempPath("cfgx_remote_reload_now.json");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"({"svc":{"host":"127.0.0.1","port":8080}})";
@@ -1290,7 +1313,7 @@ TEST(CfgxRemoteTests, PollReloaderTickPollsRemoteByInterval)
 {
     RemoteFetcherScope scope;
 
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_remote_tick_poll.json";
+    const auto file = TestTempPath("cfgx_remote_tick_poll.json");
     {
         std::ofstream out(file.string(), std::ios::trunc);
         out << R"({"svc":{"port":1000}})";
@@ -1340,7 +1363,7 @@ TEST(CfgxRemoteTests, PollReloaderTickPollsRemoteByInterval)
 
 TEST(CfgxEncryptedTests, SaveAndLoadEncryptedJson)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_secure.json";
+    const auto file = TestTempPath("cfgx_secure.json");
 
     cfgx::Node root = cfgx::Node::MakeObject();
     ASSERT_TRUE(cfgx::SetNode(root, "svc.token", cfgx::Node("top-secret")).ok);
@@ -1370,7 +1393,7 @@ TEST(CfgxEncryptedTests, SaveAndLoadEncryptedJson)
 
 TEST(CfgxEncryptedTests, WrongKeyFailsToLoad)
 {
-    const auto file = std::filesystem::temp_directory_path() / "cfgx_secure_wrong_key.json";
+    const auto file = TestTempPath("cfgx_secure_wrong_key.json");
 
     cfgx::Node root = cfgx::Node::MakeObject();
     ASSERT_TRUE(cfgx::SetNode(root, "svc.name", cfgx::Node("demo")).ok);

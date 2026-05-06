@@ -1,0 +1,11 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+if("@HTTPX_ENABLE_OPENSSL@" STREQUAL "ON")
+    find_dependency(OpenSSL REQUIRED)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/ToolXTargets.cmake")
+
+check_required_components(ToolX)

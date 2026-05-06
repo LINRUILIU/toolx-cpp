@@ -462,7 +462,7 @@ M3 additions:
 - Polling watcher abstraction (`CreateFileWatcher`) now supports file and directory paths.
 - Directory watcher emits child-level `Created/Modified/Removed` events with relative paths.
 - Link API (`CreateLink`) for hard/symbolic link operations.
-- Capability query (`QueryCapabilities`) and archive placeholder (`ArchivePlaceholder`).
+- Capability query (`QueryCapabilities`). Archive creation is future work and is not part of the stable API surface.
 
 ### fsx quick start
 
@@ -875,8 +875,8 @@ This repository now treats Phase B/C/D as integrated and stable under Phase E cl
 
 Closeout status:
 
-- Phase B (`logsys`): async queue backend, time rotation, UDP syslog sink, dynamic level apply, and regression tests are all landed.
-- Phase C (`cfgx`/`cfgtool`): TOML + remote reload + encrypted persistence + snapshot/audit + `snapshot-export`/`snapshot-restore` CLI landed.
+- Phase B (`logsys`): async queue backend, time rotation, UDP syslog sink, dynamic level apply, configurable fatal handling, and regression tests are all landed.
+- Phase C (`cfgx`/`cfgtool`): JSON/INI stable config, YAML/TOML subset parsing, remote reload, lightweight protected persistence, snapshot/audit, and `snapshot-export`/`snapshot-restore` CLI landed.
 - Phase D (`fsx`/`tuix`): directory watcher semantics + link/capability API + interactive M4 widget/layout/control framework landed.
 
 Migration notes (non-breaking):
@@ -939,9 +939,10 @@ Notes:
 - remote pull entrypoint:
 	- `SetRemoteFetcher(...)` + `LoadFromRemote(...)`
 	- recommended to plug `httpx::Client` in the callback
-- encrypted persistence:
+- lightweight protected persistence:
 	- `SaveEncryptedToFile(...)` + `LoadEncryptedFromFile(...)`
-	- static key based encryption for at-rest config protection
+	- static-key local obfuscation for low-risk at-rest config protection
+	- not authenticated encryption; do not use it for production secrets or credentials
 - validation: rule pipeline + built-in factories
 	- `RequirePathRule`
 	- `ExpectKindRule`
@@ -1011,6 +1012,9 @@ ctest --test-dir build-vs-win32 -C Debug --output-on-failure -R cfgx_tests
 - YAML is intentionally a subset parser in V1:
 	- supported: map/list/scalar, indentation blocks, basic comments
 	- not supported: anchors, tags, advanced schema semantics
+- TOML is intentionally a subset parser in V1:
+	- supported: basic tables and scalar values
+	- not supported: array-of-tables or full TOML schema semantics
 - high-fidelity write-back currently focuses on existing scalar lines in INI/YAML.
 	- complex structural rewrites (especially YAML list/object reshaping) may fall back to canonical dump.
 

@@ -75,11 +75,12 @@ jobs:
         run: >
           cmake -S . -B "${BUILD_DIR}"
           -G Ninja
-          -DCOPILOT_BUILD_TESTS=ON
-          -DCOPILOT_BUILD_EXAMPLES=ON
-          -DCOPILOT_BUILD_BENCHMARKS=OFF
-          -DCOPILOT_ENABLE_CLANG_TIDY=${{ matrix.enable_tidy }}
-          -DCOPILOT_ENABLE_COVERAGE=${{ matrix.enable_coverage }}
+          -DTOOLX_BUILD_TESTS=ON
+          -DTOOLX_BUILD_EXAMPLES=ON
+          -DTOOLX_BUILD_TOOLS=ON
+          -DTOOLX_BUILD_BENCHMARKS=OFF
+          -DTOOLX_ENABLE_CLANG_TIDY=${{ matrix.enable_tidy }}
+          -DTOOLX_ENABLE_COVERAGE=${{ matrix.enable_coverage }}
 
       - name: Format check
         run: cmake --build "${BUILD_DIR}" --target format-check
@@ -103,6 +104,12 @@ jobs:
           cmake -S examples/install_consumer -B build-consumer -G Ninja
           -DCMAKE_PREFIX_PATH="${{ github.workspace }}/stage" &&
           cmake --build build-consumer --parallel
+
+      - name: Release smoke
+        run: >
+          cmake
+          -DTOOLX_STAGE_PREFIX="${{ github.workspace }}/stage"
+          -P cmake/release_smoke.cmake
 
       - name: Generate coverage
         if: matrix.enable_coverage == 'ON'

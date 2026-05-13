@@ -12,9 +12,10 @@
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_CXX_STANDARD": "20",
-        "COPILOT_BUILD_TESTS": "ON",
-        "COPILOT_BUILD_EXAMPLES": "ON",
-        "COPILOT_BUILD_BENCHMARKS": "OFF"
+        "TOOLX_BUILD_TESTS": "ON",
+        "TOOLX_BUILD_EXAMPLES": "ON",
+        "TOOLX_BUILD_TOOLS": "ON",
+        "TOOLX_BUILD_BENCHMARKS": "OFF"
       }
     },
     {
@@ -29,7 +30,7 @@
       "displayName": "ToolX Clang-Tidy",
       "description": "Development preset with clang-tidy enabled.",
       "cacheVariables": {
-        "COPILOT_ENABLE_CLANG_TIDY": "ON"
+        "TOOLX_ENABLE_CLANG_TIDY": "ON"
       }
     },
     {
@@ -38,7 +39,7 @@
       "displayName": "ToolX Coverage",
       "description": "Coverage-instrumented configure preset for GCC/Clang-like toolchains.",
       "cacheVariables": {
-        "COPILOT_ENABLE_COVERAGE": "ON"
+        "TOOLX_ENABLE_COVERAGE": "ON"
       }
     }
   ],

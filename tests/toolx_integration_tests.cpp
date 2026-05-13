@@ -413,3 +413,129 @@ TEST(ToolxIntegrationTests, ArgtoolOverridesCanBeAppliedToCfgxTree)
     ASSERT_TRUE(verbose.ok) << verbose.error;
     EXPECT_TRUE(verbose.value->AsBool(false));
 }
+
+TEST(ToolxIntegrationTests, ReleaseScenarioRemoteConfigSyncUsesCoreModules)
+{
+    namespace fs = std::filesystem;
+    RemoteFetcherScope remote_scope;
+
+    const fs::path root = IntegrationRoot() / "release_sync";
+    const fs::path base_file = root / "base.json";
+    const fs::path out_file = root / "resolved.json";
+    const fs::path snapshot_file = root / "snapshot.json";
+    const fs::path journal_file = root / "resolved.journal";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+
+    cfgx::Node base = cfgx::Node::MakeObject();
+    ASSERT_TRUE(cfgx::SetNode(base, "svc.host", cfgx::Node("127.0.0.1")).ok);
+    ASSERT_TRUE(cfgx::SetNode(base, "svc.port", cfgx::Node(std::int64_t(8080))).ok);
+    ASSERT_TRUE(cfgx::SaveToFile(base, base_file.string()).ok);
+
+    using namespace logsys;
+    DefaultLoggerOptions log_options;
+    log_options.level = LogLevel::Info;
+    log_options.record_level = LogLevel::Info;
+    log_options.enable_console = false;
+    log_options.enable_file = false;
+    log_options.enable_debugger = false;
+
+    auto &logger = Logger::Instance();
+    logger.ConfigureDefaultLogger(log_options);
+    auto sink = std::make_shared<MemorySink>();
+    logger.AddDefaultSink(sink);
+
+    httpx::ClientOptions client_options;
+    client_options.transport = [](const httpx::Request &request, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    {
+        httpx::Result<httpx::Response> out;
+        out.ok = true;
+        out.value.status_code = 200;
+        out.value.body = std::string("{\"remote\":\"") + request.url + "\",\"svc\":{\"port\":9443}}";
+        return out;
+    };
+    httpx::Client client(client_options);
+
+    cfgx::SetRemoteFetcher([&client](const cfgx::RemoteFetchRequest &request)
+                           {
+                               cfgx::Result<cfgx::RemoteFetchResponse> out;
+                               const auto response = client.Get(request.url, request.headers);
+                               if (!response.ok)
+                               {
+                                   out.ok = false;
+                                   out.error = response.error.message;
+                                   return out;
+                               }
+
+                               out.ok = true;
+                               out.value.body = response.value.body;
+                               out.value.status_code = response.value.status_code;
+                               out.value.headers = response.value.headers;
+                               return out;
+                           });
+
+    asyncx::PoolOptions pool_options;
+    pool_options.worker_count = 2;
+    pool_options.queue_capacity = 8;
+    asyncx::ThreadPool pool(pool_options);
+
+    auto base_task = pool.Submit([base_file]()
+                                 { return cfgx::LoadFromFile(base_file.string()); });
+    ASSERT_TRUE(base_task.ok) << base_task.error.message;
+
+    auto remote_task = pool.Submit([]()
+                                   { return cfgx::LoadFromRemote("https://config.test/release.json"); });
+    ASSERT_TRUE(remote_task.ok) << remote_task.error.message;
+
+    auto loaded_base = base_task.value.get();
+    ASSERT_TRUE(loaded_base.ok) << loaded_base.error;
+    auto loaded_remote = remote_task.value.get();
+    ASSERT_TRUE(loaded_remote.ok) << loaded_remote.error;
+
+    const auto composed = cfgx::ComposeLayers(loaded_base.value,
+                                             std::nullopt,
+                                             std::nullopt,
+                                             nullptr,
+                                             cfgx::ComposeOptions{},
+                                             nullptr,
+                                             loaded_remote.value);
+    ASSERT_TRUE(composed.ok) << composed.error;
+
+    const auto validation = cfgx::Validate(composed.value,
+                                           {
+                                               cfgx::RequirePathRule("svc.host"),
+                                               cfgx::NumericRangeRule("svc.port", 1, 65535),
+                                           });
+    ASSERT_TRUE(validation.ok);
+
+    fsx::BatchPlan plan;
+    const std::string serialized = cfgx::ToJson(composed.value, 2);
+    plan.AddAtomicWrite(out_file.string(), serialized)
+        .AddAtomicWrite(snapshot_file.string(), serialized);
+
+    fsx::RunOptions run_options;
+    run_options.journal_path = journal_file.string();
+    run_options.conflict_policy = fsx::ConflictPolicy::Overwrite;
+    run_options.rollback_mode = fsx::RollbackMode::BestEffort;
+    const auto run = fsx::Run(plan, run_options);
+    ASSERT_TRUE(run.ok) << run.error;
+
+    LOGI("release-scenario config sync wrote %s", out_file.string().c_str());
+    logger.Flush();
+
+    const auto loaded_out = cfgx::LoadFromFile(out_file.string());
+    ASSERT_TRUE(loaded_out.ok) << loaded_out.error;
+    const auto port = cfgx::GetNode(loaded_out.value, "svc.port");
+    ASSERT_TRUE(port.ok) << port.error;
+    EXPECT_EQ(port.value->AsInt(-1), 9443);
+    EXPECT_TRUE(fs::exists(snapshot_file));
+
+    const auto lines = sink->Snapshot();
+    const auto found_log = std::find_if(lines.begin(), lines.end(), [](const std::string &line)
+                                        { return line.find("release-scenario config sync wrote") != std::string::npos; });
+    EXPECT_NE(found_log, lines.end());
+
+    EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::Drain).ok);
+    fs::remove_all(root, ec);
+}

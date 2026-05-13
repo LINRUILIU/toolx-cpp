@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(copilot_tools VERSION 0.1.0 LANGUAGES CXX)
+project(ToolX VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -10,11 +10,41 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(COPILOT_BUILD_TESTS "Build tests" ON)
-option(COPILOT_BUILD_EXAMPLES "Build examples" ON)
-option(COPILOT_BUILD_BENCHMARKS "Build benchmark examples" ON)
-option(COPILOT_ENABLE_CLANG_TIDY "Enable clang-tidy during compilation" OFF)
-option(COPILOT_ENABLE_COVERAGE "Enable compiler coverage instrumentation" OFF)
+function(toolx_bool_option new_name old_name description default_value)
+    set(new_was_defined FALSE)
+    set(old_was_defined FALSE)
+    if(DEFINED ${new_name})
+        set(new_was_defined TRUE)
+    endif()
+    if(DEFINED ${old_name})
+        set(old_was_defined TRUE)
+    endif()
+
+    if(DEFINED ${new_name})
+        set(option_default "${${new_name}}")
+    elseif(DEFINED ${old_name})
+        set(option_default "${${old_name}}")
+    else()
+        set(option_default "${default_value}")
+    endif()
+
+    option(${new_name} "${description}" "${option_default}")
+
+    if(old_was_defined AND NOT new_was_defined)
+        message(DEPRECATION "${old_name} is deprecated; use ${new_name} instead.")
+    elseif(old_was_defined AND new_was_defined AND NOT "${${old_name}}" STREQUAL "${${new_name}}")
+        message(DEPRECATION "${old_name} is deprecated and differs from ${new_name}; ${new_name} takes precedence.")
+    endif()
+    set(${old_name} "${${new_name}}" CACHE BOOL "Deprecated alias for ${new_name}." FORCE)
+    mark_as_advanced(${old_name})
+endfunction()
+
+toolx_bool_option(TOOLX_BUILD_TESTS COPILOT_BUILD_TESTS "Build tests" ON)
+toolx_bool_option(TOOLX_BUILD_EXAMPLES COPILOT_BUILD_EXAMPLES "Build examples" ON)
+toolx_bool_option(TOOLX_BUILD_BENCHMARKS COPILOT_BUILD_BENCHMARKS "Build benchmark examples" ON)
+toolx_bool_option(TOOLX_ENABLE_CLANG_TIDY COPILOT_ENABLE_CLANG_TIDY "Enable clang-tidy during compilation" OFF)
+toolx_bool_option(TOOLX_ENABLE_COVERAGE COPILOT_ENABLE_COVERAGE "Enable compiler coverage instrumentation" OFF)
+option(TOOLX_BUILD_TOOLS "Build installable ToolX command-line tools" ON)
 option(HTTPX_ENABLE_OPENSSL "Enable OpenSSL backend for httpx TLS" OFF)
 option(HTTPX_ENABLE_MBEDTLS "Enable mbedTLS backend for httpx TLS" OFF)
 
@@ -30,7 +60,7 @@ if(WIN32)
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
-if(COPILOT_ENABLE_COVERAGE)
+if(TOOLX_ENABLE_COVERAGE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         add_compile_options(-O0 -g --coverage)
         add_link_options(--coverage)
@@ -46,6 +76,7 @@ find_program(GCOVR_BIN NAMES gcovr)
 set(TOOLX_FORMAT_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests"
     "${CMAKE_CURRENT_SOURCE_DIR}/examples"
 )
@@ -77,6 +108,8 @@ set(TOOLX_LINT_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/logsys.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/textcodec.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tuix.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/cfgtool_example.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_sync.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/resultx_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_integration_tests.cpp"
 )
@@ -95,9 +128,9 @@ if(CLANG_FORMAT_BIN)
         VERBATIM)
 endif()
 
-if(COPILOT_ENABLE_CLANG_TIDY)
+if(TOOLX_ENABLE_CLANG_TIDY)
     if(NOT CLANG_TIDY_BIN)
-        message(FATAL_ERROR "COPILOT_ENABLE_CLANG_TIDY=ON but clang-tidy was not found.")
+        message(FATAL_ERROR "TOOLX_ENABLE_CLANG_TIDY=ON but clang-tidy was not found.")
     endif()
     set(CMAKE_CXX_CLANG_TIDY
         "${CLANG_TIDY_BIN};--config-file=${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy")
@@ -225,7 +258,16 @@ set(TOOLX_EXPORT_TARGETS
     tuix
 )
 
-if(COPILOT_BUILD_EXAMPLES)
+if(TOOLX_BUILD_TOOLS)
+    add_executable(cfgtool examples/cfgtool_example.cpp)
+    target_link_libraries(cfgtool PRIVATE argtool cfgx)
+
+    add_executable(toolx_sync tools/toolx_sync.cpp)
+    set_target_properties(toolx_sync PROPERTIES OUTPUT_NAME "toolx-sync")
+    target_link_libraries(toolx_sync PRIVATE argtool asyncx cfgx fsx httpx logsys)
+endif()
+
+if(TOOLX_BUILD_EXAMPLES)
     add_executable(argtool_example examples/argtool_example.cpp)
     target_link_libraries(argtool_example PRIVATE argtool)
 
@@ -246,9 +288,6 @@ if(COPILOT_BUILD_EXAMPLES)
 
     add_executable(cfgx_httpx_remote_example examples/cfgx_httpx_remote_example.cpp)
     target_link_libraries(cfgx_httpx_remote_example PRIVATE cfgx httpx)
-
-    add_executable(cfgtool examples/cfgtool_example.cpp)
-    target_link_libraries(cfgtool PRIVATE argtool cfgx)
 
     add_executable(fsx_example examples/fsx_example.cpp)
     target_link_libraries(fsx_example PRIVATE fsx)
@@ -283,7 +322,7 @@ if(COPILOT_BUILD_EXAMPLES)
     add_executable(toolx_cli_showcase examples/toolx_cli_showcase.cpp)
     target_link_libraries(toolx_cli_showcase PRIVATE argtool asyncx cfgx fsx logsys textcodec)
 
-    if(COPILOT_BUILD_BENCHMARKS)
+    if(TOOLX_BUILD_BENCHMARKS)
         add_executable(asyncx_benchmark examples/asyncx_benchmark.cpp)
         target_link_libraries(asyncx_benchmark PRIVATE asyncx)
 
@@ -292,7 +331,7 @@ if(COPILOT_BUILD_EXAMPLES)
     endif()
 endif()
 
-if(COPILOT_BUILD_TESTS)
+if(TOOLX_BUILD_TESTS)
     include(FetchContent)
 
     set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
@@ -360,7 +399,23 @@ if(COPILOT_BUILD_TESTS)
     target_link_libraries(toolx_integration_tests PRIVATE argtool asyncx cfgx fsx httpx logsys resultx GTest::gtest_main)
     add_test(NAME toolx_integration_tests COMMAND toolx_integration_tests)
 
-    if(COPILOT_ENABLE_COVERAGE AND GCOVR_BIN)
+    if(TARGET cfgtool)
+        add_test(
+            NAME cfgtool_cli_contracts
+            COMMAND "${CMAKE_COMMAND}"
+                -DCFGTOOL_EXE=$<TARGET_FILE:cfgtool>
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cfgtool_cli_contracts.cmake")
+    endif()
+
+    if(TARGET toolx_sync)
+        add_test(
+            NAME toolx_sync_cli_scenario
+            COMMAND "${CMAKE_COMMAND}"
+                -DTOOLX_SYNC_EXE=$<TARGET_FILE:toolx_sync>
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolx_sync_cli_scenario.cmake")
+    endif()
+
+    if(TOOLX_ENABLE_COVERAGE AND GCOVR_BIN)
         add_custom_target(coverage
             COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
             COMMAND "${GCOVR_BIN}"
@@ -388,6 +443,13 @@ install(
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
+
+if(TOOLX_BUILD_TOOLS)
+    install(
+        TARGETS cfgtool toolx_sync
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
 
 install(
     DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"

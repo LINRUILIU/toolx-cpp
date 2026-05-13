@@ -1,60 +1,36 @@
 # ToolX C++ Toolkit
 
-ToolX is a practical C++20 toolkit for beginners and small-to-medium projects.
-ToolX 是一套面向新手和中小项目开发者的 C++20 工具集，目标是快速上手、渐进扩展。
+ToolX is a practical C++20 toolkit for small tools and small-to-medium projects.
+It ships as a set of focused libraries plus installable command-line tools.
 
-## Why ToolX / 为什么选 ToolX
+Current release focus: **ToolX libraries + `cfgtool` CLI**, with `toolx-sync` as
+an end-to-end scenario tool for config validation and atomic publishing.
 
-- Ready-to-use modules for common engineering tasks.
-- Practical examples and tests in one repository.
-- Clean CMake targets, easy to integrate module by module.
-- 提供开箱即用的基础模块，避免重复造轮子。
-- 示例和测试齐全，便于理解和回归。
-- 按模块接入，不需要一次性“全家桶”。
+## Modules
 
-## Modules / 模块总览
+| Module | Status | Purpose |
+| --- | --- | --- |
+| `argtool` | Stable core | CLI argument parsing, help, constraints, JSON parse output |
+| `cfgx` | Stable core | Config parsing, path edits, validation, reload, snapshots |
+| `asyncx` | Stable core | Thread pool, scheduling, priority, wait helpers |
+| `fsx` | Stable core | Atomic writes, batch plans, rollback reports, watcher basics |
+| `logsys` | Stable core | Logging, rolling files, async queue, structured fields |
+| `resultx` | Stable core | Cross-module result/status adapters |
+| `utils`, `sysx`, `hashx`, `textcodec` | Stable support | Common helpers, platform wrappers, hashes, text codecs |
+| `httpx` | Bounded stable | HTTP client utilities; TLS depends on selected backend |
+| `tuix` | Experimental foundation | Terminal UI building blocks, not a committed TUI framework |
 
-| Module      | Purpose                         | Example Target                  | Test Target       |
-| ----------- | ------------------------------- | ------------------------------- | ----------------- |
-| `logsys`    | Logging                         | `logsys_example`                | `logsys_tests`    |
-| `argtool`   | CLI argument parsing            | `argtool_example`               | `argtool_tests`   |
-| `cfgx`      | Config loading/compose/reload   | `cfgx_example`, `cfgtool`       | `cfgx_tests`      |
-| `fsx`       | File operations and batch tasks | `fsx_example`                   | `fsx_tests`       |
-| `hashx`     | Hash helpers                    | `hashx_example`                 | `hashx_tests`     |
-| `httpx`     | HTTP client utilities           | `httpx_example`                 | `httpx_tests`     |
-| `asyncx`    | Thread pool and scheduling      | `asyncx_example`                | `asyncx_tests`    |
-| `utils`     | String/time/path/common helpers | `utils_example`                 | `utils_tests`     |
-| `sysx`      | System/network primitives       | `sysx_example`                  | `sysx_tests`      |
-| `resultx`   | Unified result/status adapters  | -                               | `resultx_tests`   |
-| `textcodec` | Text encoding utilities         | `textcodec_example`             | `textcodec_tests` |
-| `tuix`      | Terminal UI building blocks     | `tuix_example`, `tuix_showcase` | `tuix_tests`      |
+See [docs/stability.md](docs/stability.md) for the public stability boundary.
 
-## Quick Start / 快速开始
-
-### 1) Requirements / 环境要求
+## Requirements
 
 - CMake >= 3.20
-- A C++20 compiler (MSVC 2022+ / Clang 14+ / GCC 9+; GCC 11+ recommended for CI parity)
+- C++20 compiler
 - Git
 
-### 2) Clone / 克隆
+CI covers Linux GCC, Linux Clang, Windows MSVC, and macOS Clang.
 
-```bash
-git clone https://github.com/LINRUILIU/toolx-cpp.git
-cd toolx-cpp
-```
-
-### 3) Configure / 配置
-
-Default options build tests and examples.
-默认会构建测试与示例。
-
-```bash
-cmake -S . -B build -DCOPILOT_BUILD_TESTS=ON -DCOPILOT_BUILD_EXAMPLES=ON -DCOPILOT_BUILD_BENCHMARKS=ON
-```
-
-Or use presets:
-也可以直接使用预设：
+## Build
 
 ```bash
 cmake --preset dev
@@ -62,147 +38,77 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-### 4) Build / 编译
-
-Single-config generators (Ninja/Makefiles):
+Equivalent explicit configure:
 
 ```bash
-cmake --build build -j
-```
-
-Multi-config generators (Visual Studio):
-
-```powershell
-cmake --build build --config Debug
-```
-
-### 5) Run Tests / 运行测试
-
-```bash
+cmake -S . -B build -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON
+cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-For Visual Studio generators:
+The old `COPILOT_*` CMake options remain as deprecated aliases for one
+compatibility cycle. New integrations should use `TOOLX_*`.
 
-```powershell
-ctest --test-dir build -C Debug --output-on-failure
-```
-
-## Build Profiles / 构建配置
-
-### Minimal local build / 最小本地构建
+## Install And Consume
 
 ```bash
-cmake -S . -B build-min -DCOPILOT_BUILD_TESTS=OFF -DCOPILOT_BUILD_EXAMPLES=ON -DCOPILOT_BUILD_BENCHMARKS=OFF
-cmake --build build-min
+cmake --install build --prefix stage
 ```
 
-### Full CI-like build / 全量构建（接近 CI）
-
-```bash
-cmake -S . -B build-ci -DCOPILOT_BUILD_TESTS=ON -DCOPILOT_BUILD_EXAMPLES=ON -DCOPILOT_BUILD_BENCHMARKS=ON
-cmake --build build-ci
-ctest --test-dir build-ci --output-on-failure
-```
-
-## Stable Capability Notes / 稳定能力边界
-
-- `cfgx` stable formats are JSON and INI/CFG. YAML and TOML are practical subset parsers for simple map/list/scalar configuration.
-- `fsx` does not expose archive creation as a stable feature yet; `QueryCapabilities()` reports archive support as unavailable.
-- `cfgx` encrypted persistence is lightweight local protection, not authenticated encryption for production secrets or credentials.
-- `logsys` does not terminate the host process on fatal logs by default; opt into abort behavior with `FatalPolicy::AbortAfterFlush`.
-
-## Quality Gates / 质量门禁
-
-Configure with optional static analysis:
-使用可选静态分析进行配置：
-
-```bash
-cmake -S . -B build-ci -DCOPILOT_BUILD_TESTS=ON -DCOPILOT_ENABLE_CLANG_TIDY=ON
-```
-
-Formatting and lint entrypoints:
-格式与静态检查入口：
-
-```bash
-cmake --build build-ci --target format-check
-cmake --build build-ci --target lint-check
-```
-
-Coverage baseline on GCC/Clang-like toolchains:
-在 GCC/Clang 类工具链上生成覆盖率基线：
-
-```bash
-cmake -S . -B build-cov -DCOPILOT_BUILD_TESTS=ON -DCOPILOT_ENABLE_COVERAGE=ON
-cmake --build build-cov --target coverage
-```
-
-## Optional TLS Backends For `httpx` / `httpx` 可选 TLS 后端
-
-`httpx` supports one TLS backend at a time.
-`httpx` 一次只能启用一个 TLS 后端。
-
-### OpenSSL
-
-```bash
-cmake -S . -B build-ossl -DHTTPX_ENABLE_OPENSSL=ON
-```
-
-### mbedTLS
-
-```bash
-cmake -S . -B build-mbedtls -DHTTPX_ENABLE_MBEDTLS=ON -DMBEDTLS_ROOT=/path/to/mbedtls/install
-```
-
-## Integration Example / 集成示例
-
-Use as a subdirectory in your own project:
-在你的项目中通过 `add_subdirectory` 接入：
-
-```cmake
-add_subdirectory(external/toolx-cpp)
-add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE logsys cfgx httpx)
-```
-
-Use the installed package export:
-使用安装后的包导出：
+Consumer project:
 
 ```cmake
 find_package(ToolX CONFIG REQUIRED)
+
 add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE toolx::logsys toolx::cfgx)
+target_link_libraries(my_app PRIVATE toolx::cfgx toolx::logsys)
 ```
 
-Minimal `logsys` usage:
+Installed tools:
 
-```cpp
-#include "logsys.h"
-
-int main() {
-    auto& logger = logsys::Logger::Instance();
-    logger.ConfigureSimpleLogger();
-    LOGI("hello from toolx");
-    logger.Flush();
-    return 0;
-}
+```bash
+stage/bin/cfgtool --help
+stage/bin/toolx-sync --help
 ```
 
-## Repository Layout / 目录结构
+## `cfgtool`
 
-- `include/`: public headers
-- `src/`: module implementations
-- `examples/`: runnable demos
-- `tests/`: unit tests
+`cfgtool` is the first productized CLI on top of ToolX. It supports config
+inspection, editing, merge, validation, reload dry-runs, snapshots, and stable
+machine-readable output.
 
-## Developer Guide / 开发者说明
+```bash
+cfgtool set --file app.json --path svc.port --value 8080 --type int
+cfgtool get --file app.json --path svc.port
+cfgtool validate --file app.json --require svc.host --range svc.port=1:65535
+cfgtool reload-dryrun --current current.json --candidate candidate.json --json
+```
 
-Maintainer-focused notes and local development workflow are in:
-面向维护者的本地开发规则与详细说明见：
+`--json` output uses `schema=cfgtool.result` and `schema_version=2`. Fields may
+be added, but existing fields should not be removed or redefined within the
+0.1.x line.
 
-- `README.dev.md`
+## `toolx-sync`
 
-## License / 许可证
+`toolx-sync` demonstrates a real module composition path: config load, optional
+HTTP remote layer, async execution, validation, atomic write, snapshot, and audit
+logging.
 
-This repository currently includes a `LICENSE` file.
-仓库已包含 `LICENSE` 文件，请按其中条款使用。
+```bash
+toolx-sync --base app.json --out resolved.json --snapshot snapshot.json \
+  --require svc.port --range svc.port=1:65535 --json
+```
+
+## Quality Gates
+
+Release candidates should pass:
+
+```bash
+cmake --build build --target format-check
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+cmake --install build --prefix stage
+cmake -DTOOLX_STAGE_PREFIX=stage -P cmake/release_smoke.cmake
+```
+
+Maintainer workflow details are in [README.dev.md](README.dev.md).

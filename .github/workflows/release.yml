@@ -170,7 +170,7 @@ jobs:
         shell: bash
         run: |
           cd release-artifacts
-          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          find . -type f \( -name '*.zip' -o -name '*.tar.gz' \) -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 
       - name: Prepare release notes
         shell: bash
@@ -191,5 +191,6 @@ jobs:
         with:
           body_path: release-body.md
           files: |
-            release-artifacts/**/*
+            release-artifacts/**/*.zip
+            release-artifacts/**/*.tar.gz
             release-artifacts/SHA256SUMS

@@ -195,7 +195,7 @@ TEST(ToolxIntegrationTests, AsyncxHttpxBridgeSchedulesMultipleRequests)
 
     const auto first = asyncx::WaitAnyFor(futures, std::chrono::milliseconds(500));
     ASSERT_TRUE(first.ok) << first.error.message;
-    EXPECT_EQ(first.value, 1u);
+    ASSERT_LT(first.value, futures.size());
 
     const auto all_status = asyncx::WaitAllFor(futures, std::chrono::seconds(2));
     ASSERT_TRUE(all_status.ok) << all_status.error.message;

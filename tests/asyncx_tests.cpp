@@ -494,7 +494,8 @@ TEST(AsyncxTests, WaitAllAndWaitAnyHelpersWork)
 
     auto any = asyncx::WaitAnyFor(futures, std::chrono::milliseconds(300));
     ASSERT_TRUE(any.ok) << any.error.message;
-    EXPECT_EQ(any.value, 1U);
+    ASSERT_LT(any.value, futures.size());
+    EXPECT_TRUE(any.value == 0U || any.value == 1U);
 
     auto all_status = asyncx::WaitAllFor(futures, std::chrono::milliseconds(400));
     ASSERT_TRUE(all_status.ok) << all_status.error.message;

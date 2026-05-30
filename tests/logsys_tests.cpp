@@ -20,30 +20,30 @@ TEST(ErrorCodeTests, BuildAndParse)
 
 namespace
 {
-    std::filesystem::path TestTempPath(std::string_view name)
+std::filesystem::path TestTempPath(std::string_view name)
+{
+    return std::filesystem::current_path() / "toolx_test_tmp" / std::string(name);
+}
+
+class MemorySink final : public logsys::ISink
+{
+  public:
+    void Write(const std::string& line) override
     {
-        return std::filesystem::current_path() / "toolx_test_tmp" / std::string(name);
+        lines.push_back(line);
     }
 
-    class MemorySink final : public logsys::ISink
-    {
-    public:
-        void Write(const std::string &line) override
-        {
-            lines.push_back(line);
-        }
+    void Flush() override {}
 
-        void Flush() override {}
-
-        std::vector<std::string> lines;
-    };
+    std::vector<std::string> lines;
+};
 } // namespace
 
 TEST(LoggerTests, CounterByCodeAndCategory)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
 #if defined(_WIN32)
     _putenv("LOGSYS_ALLOW_TEST_API=1");
 #else
@@ -68,7 +68,7 @@ TEST(LoggerTests, SimpleDefaultApiUsesConfiguredOrigin)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
 #if defined(_WIN32)
     _putenv("LOGSYS_ALLOW_TEST_API=1");
 #else
@@ -100,7 +100,7 @@ TEST(LoggerTests, TextFieldMaskCanHideTimestampAndCode)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     DefaultLoggerOptions options;
     options.level = LogLevel::Trace;
     options.enable_console = false;
@@ -129,7 +129,7 @@ TEST(LoggerTests, AutoFillMissingMetadataForManualEvent)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     DefaultLoggerOptions options;
     options.level = LogLevel::Trace;
     options.enable_console = false;
@@ -157,7 +157,7 @@ TEST(LoggerTests, SimpleLoggerDefaultsToMessageAndLevel)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     logger.ConfigureSimpleLogger(LogLevel::Info, false, false);
 
     auto sink = std::make_shared<MemorySink>();
@@ -177,14 +177,14 @@ TEST(LoggerTests, SetLevelFromArgsAndString)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     logger.ConfigureSimpleLogger();
 
-    const char *argv1[] = {"app", "--log-level=debug"};
+    const char* argv1[] = {"app", "--log-level=debug"};
     ASSERT_TRUE(logger.SetLevelFromArgs(2, argv1));
     EXPECT_EQ(logger.Level(), LogLevel::Debug);
 
-    const char *argv2[] = {"app", "--log-level", "info"};
+    const char* argv2[] = {"app", "--log-level", "info"};
     ASSERT_TRUE(logger.SetLevelFromArgs(3, argv2));
     EXPECT_EQ(logger.Level(), LogLevel::Info);
 
@@ -197,7 +197,7 @@ TEST(LoggerTests, DefaultSimpleModeRecordsInfoButOutputsFatal)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
 #if defined(_WIN32)
     _putenv("LOGSYS_ALLOW_TEST_API=1");
 #else
@@ -251,12 +251,13 @@ TEST(LoggerTests, ApplyConfigV2UpdatesThresholds)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
 
     LoggerConfigV2 cfg;
     cfg.global_record_level = LogLevel::Debug;
     cfg.global_output_level = LogLevel::Error;
-    cfg.global_text_field_mask = static_cast<std::uint32_t>(TextField::Level) | static_cast<std::uint32_t>(TextField::Message);
+    cfg.global_text_field_mask =
+        static_cast<std::uint32_t>(TextField::Level) | static_cast<std::uint32_t>(TextField::Message);
     cfg.global_enable_console = false;
     cfg.global_enable_file = false;
     cfg.global_enable_debugger = false;
@@ -273,7 +274,7 @@ TEST(LoggerTests, PeriodicFlushLifecycle)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     logger.StartPeriodicFlush(std::chrono::milliseconds(200));
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     logger.StopPeriodicFlush();
@@ -285,7 +286,7 @@ TEST(LoggerTests, LoadConfigV2FromJsonFileAppliesSettings)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     const auto cfg_path = TestTempPath("logsys_v2_test.json");
     std::filesystem::create_directories(cfg_path.parent_path());
 
@@ -327,7 +328,7 @@ TEST(LoggerTests, BackpressureDropsLowLevelEvents)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
 #if defined(_WIN32)
     _putenv("LOGSYS_ALLOW_TEST_API=1");
 #else
@@ -361,7 +362,7 @@ TEST(LoggerTests, OutputOrderGroupedFlushesByLevel)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     LoggerConfigV2 cfg;
     cfg.global_record_level = LogLevel::Trace;
     cfg.global_output_level = LogLevel::Trace;
@@ -388,7 +389,7 @@ TEST(LoggerTests, FlushDrainsAsyncQueueIntoSink)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     LoggerConfigV2 cfg;
     cfg.global_record_level = LogLevel::Trace;
     cfg.global_output_level = LogLevel::Trace;
@@ -416,7 +417,7 @@ TEST(LoggerTests, FatalFlushOnlyPolicyDoesNotAbort)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     LoggerConfigV2 cfg;
     cfg.global_record_level = LogLevel::Trace;
     cfg.global_output_level = LogLevel::Trace;
@@ -442,7 +443,7 @@ TEST(LoggerTests, ReapplyingConfigCanDisablePeriodicFlush)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
 
     LoggerConfigV2 enabled;
     enabled.global_record_level = LogLevel::Info;
@@ -467,7 +468,7 @@ TEST(LoggerTests, JsonProfilesSupportModuleAndFileOverrides)
 {
     using namespace logsys;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     const auto cfg_path = TestTempPath("logsys_v2_profiles_test.json");
     std::filesystem::create_directories(cfg_path.parent_path());
 

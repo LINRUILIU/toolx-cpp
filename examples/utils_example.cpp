@@ -47,14 +47,10 @@ int main()
 
     const auto start = std::chrono::steady_clock::now();
     const auto elapsed = utils::time::steady_elapsed_ms(start);
-    std::cout << "int=" << int_result.value << ", bool=" << bool_result.value
-              << ", elapsed=" << elapsed << "ms\n";
-    std::cout << "strlen=" << strlen_bytes
-              << " codepoints=" << codepoints
-              << " width=" << display_width
-              << " hash32=0x" << std::hex << h32 << std::dec << "\n";
-    std::cout << "gbk_strlen=" << gbk_strlen
-              << " gbk_codepoints=" << gbk_codepoints
+    std::cout << "int=" << int_result.value << ", bool=" << bool_result.value << ", elapsed=" << elapsed << "ms\n";
+    std::cout << "strlen=" << strlen_bytes << " codepoints=" << codepoints << " width=" << display_width << " hash32=0x"
+              << std::hex << h32 << std::dec << "\n";
+    std::cout << "gbk_strlen=" << gbk_strlen << " gbk_codepoints=" << gbk_codepoints
               << " gbk_width=" << gbk_display_width << "\n";
 
     return 0;

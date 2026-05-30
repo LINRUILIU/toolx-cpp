@@ -10,25 +10,25 @@
 namespace
 {
 
-    std::filesystem::path TestRoot()
-    {
-        return std::filesystem::current_path() / "toolx_test_tmp" / "fsx_tests_root";
-    }
+std::filesystem::path TestRoot()
+{
+    return std::filesystem::current_path() / "toolx_test_tmp" / "fsx_tests_root";
+}
 
-    void WriteText(const std::filesystem::path &p, const std::string &text)
-    {
-        std::error_code ec;
-        std::filesystem::create_directories(p.parent_path(), ec);
-        std::ofstream out(p.string(), std::ios::binary);
-        out << text;
-    }
+void WriteText(const std::filesystem::path& p, const std::string& text)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(p.parent_path(), ec);
+    std::ofstream out(p.string(), std::ios::binary);
+    out << text;
+}
 
-    std::string ReadText(const std::filesystem::path &p)
-    {
-        std::ifstream in(p.string(), std::ios::binary);
-        std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        return s;
-    }
+std::string ReadText(const std::filesystem::path& p)
+{
+    std::ifstream in(p.string(), std::ios::binary);
+    std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return s;
+}
 
 } // namespace
 
@@ -212,7 +212,7 @@ TEST(FsxTests, WalkDirectoryRecursiveCollectsEntries)
 
     bool found_a = false;
     bool found_b = false;
-    for (const auto &entry : walked.entries)
+    for (const auto& entry : walked.entries)
     {
         if (entry.path == "a.txt")
         {

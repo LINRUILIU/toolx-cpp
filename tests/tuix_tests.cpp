@@ -11,88 +11,84 @@
 
 namespace
 {
-    class MarkWidget final : public tuix::Widget
+class MarkWidget final : public tuix::Widget
+{
+  public:
+    explicit MarkWidget(char marker, bool focusable = false) : marker_(marker)
     {
-    public:
-        explicit MarkWidget(char marker, bool focusable = false)
-            : marker_(marker)
-        {
-            SetFocusable(focusable);
-        }
+        SetFocusable(focusable);
+    }
 
-        void Render(tuix::FrameBuffer &frame) const override
-        {
-            const auto b = bounds();
-            if (b.width == 0 || b.height == 0)
-            {
-                return;
-            }
-            frame.Put(b.x, b.y, std::string(1, marker_), 1);
-        }
-
-        bool HandleEvent(const tuix::InputEvent &event) override
-        {
-            ++events_;
-            last_type_ = event.type;
-            return true;
-        }
-
-        int events() const noexcept
-        {
-            return events_;
-        }
-
-        tuix::EventType last_type() const noexcept
-        {
-            return last_type_;
-        }
-
-    private:
-        char marker_;
-        int events_{0};
-        tuix::EventType last_type_{tuix::EventType::None};
-    };
-
-    class FakeInputSource final : public tuix::InputSource
+    void Render(tuix::FrameBuffer& frame) const override
     {
-    public:
-        explicit FakeInputSource(std::vector<tuix::PollResult> results)
-            : results_(std::move(results))
+        const auto b = bounds();
+        if (b.width == 0 || b.height == 0)
         {
+            return;
         }
+        frame.Put(b.x, b.y, std::string(1, marker_), 1);
+    }
 
-        tuix::PollResult Poll(int) override
+    bool HandleEvent(const tuix::InputEvent& event) override
+    {
+        ++events_;
+        last_type_ = event.type;
+        return true;
+    }
+
+    int events() const noexcept
+    {
+        return events_;
+    }
+
+    tuix::EventType last_type() const noexcept
+    {
+        return last_type_;
+    }
+
+  private:
+    char marker_;
+    int events_{0};
+    tuix::EventType last_type_{tuix::EventType::None};
+};
+
+class FakeInputSource final : public tuix::InputSource
+{
+  public:
+    explicit FakeInputSource(std::vector<tuix::PollResult> results) : results_(std::move(results)) {}
+
+    tuix::PollResult Poll(int) override
+    {
+        if (index_ >= results_.size())
         {
-            if (index_ >= results_.size())
-            {
-                return {};
-            }
-            return results_[index_++];
+            return {};
         }
+        return results_[index_++];
+    }
 
-        bool SetConsumeMode(tuix::InputConsumeMode mode) override
-        {
-            mode_ = mode;
-            return true;
-        }
+    bool SetConsumeMode(tuix::InputConsumeMode mode) override
+    {
+        mode_ = mode;
+        return true;
+    }
 
-        tuix::InputConsumeMode consume_mode() const noexcept override
-        {
-            return mode_;
-        }
+    tuix::InputConsumeMode consume_mode() const noexcept override
+    {
+        return mode_;
+    }
 
-        tuix::InputConsumeSupport QueryConsumeModeSupport(tuix::InputConsumeMode mode) const noexcept override
-        {
-            return mode == tuix::InputConsumeMode::TeeBack ? tuix::InputConsumeSupport::Degraded
-                                                           : tuix::InputConsumeSupport::Native;
-        }
+    tuix::InputConsumeSupport QueryConsumeModeSupport(tuix::InputConsumeMode mode) const noexcept override
+    {
+        return mode == tuix::InputConsumeMode::TeeBack ? tuix::InputConsumeSupport::Degraded
+                                                       : tuix::InputConsumeSupport::Native;
+    }
 
-    private:
-        std::vector<tuix::PollResult> results_;
-        std::size_t index_{0};
-        tuix::InputConsumeMode mode_{tuix::InputConsumeMode::ExclusiveConsume};
-    };
-}
+  private:
+    std::vector<tuix::PollResult> results_;
+    std::size_t index_{0};
+    tuix::InputConsumeMode mode_{tuix::InputConsumeMode::ExclusiveConsume};
+};
+} // namespace
 
 TEST(TuixTerminalTests, EmitsAnsiSequences)
 {
@@ -166,10 +162,8 @@ TEST(TuixInputTests, SupportsDetectableConsumeModeCapabilities)
 
     EXPECT_EQ(source->QueryConsumeModeSupport(tuix::InputConsumeMode::ExclusiveConsume),
               tuix::InputConsumeSupport::Native);
-    EXPECT_EQ(source->QueryConsumeModeSupport(tuix::InputConsumeMode::PeekOnly),
-              tuix::InputConsumeSupport::Native);
-    EXPECT_EQ(source->QueryConsumeModeSupport(tuix::InputConsumeMode::TeeBack),
-              tuix::InputConsumeSupport::Degraded);
+    EXPECT_EQ(source->QueryConsumeModeSupport(tuix::InputConsumeMode::PeekOnly), tuix::InputConsumeSupport::Native);
+    EXPECT_EQ(source->QueryConsumeModeSupport(tuix::InputConsumeMode::TeeBack), tuix::InputConsumeSupport::Degraded);
 }
 
 TEST(TuixInputTests, PollStreamCsiModifierAndShiftTab)
@@ -222,9 +216,9 @@ TEST(TuixFrameBufferTests, AutoDisplayWidthEstimationAndContinuationTracking)
     ASSERT_TRUE(fb.Put(0, 0, "A", 0));
     ASSERT_TRUE(fb.Put(1, 0, "中", 0));
 
-    const tuix::FrameCell *ascii = fb.Get(0, 0);
-    const tuix::FrameCell *cjk = fb.Get(1, 0);
-    const tuix::FrameCell *tail = fb.Get(2, 0);
+    const tuix::FrameCell* ascii = fb.Get(0, 0);
+    const tuix::FrameCell* cjk = fb.Get(1, 0);
+    const tuix::FrameCell* tail = fb.Get(2, 0);
     ASSERT_NE(ascii, nullptr);
     ASSERT_NE(cjk, nullptr);
     ASSERT_NE(tail, nullptr);
@@ -239,8 +233,8 @@ TEST(TuixFrameBufferTests, ReplacesWideCellWithoutLeavingDanglingTail)
     ASSERT_TRUE(fb.Put(0, 0, "中", 0));
     ASSERT_TRUE(fb.Put(0, 0, "A", 1));
 
-    const auto *c0 = fb.Get(0, 0);
-    const auto *c1 = fb.Get(1, 0);
+    const auto* c0 = fb.Get(0, 0);
+    const auto* c1 = fb.Get(1, 0);
     ASSERT_NE(c0, nullptr);
     ASSERT_NE(c1, nullptr);
     EXPECT_EQ(c0->utf8, "A");
@@ -309,10 +303,10 @@ TEST(TuixFrameworkTests, LabelRendersUtf8WithDisplayWidthClipping)
     tuix::FrameBuffer fb(4, 1, ' ');
     label.Render(fb);
 
-    const auto *c0 = fb.Get(0, 0);
-    const auto *c1 = fb.Get(1, 0);
-    const auto *c2 = fb.Get(2, 0);
-    const auto *c3 = fb.Get(3, 0);
+    const auto* c0 = fb.Get(0, 0);
+    const auto* c1 = fb.Get(1, 0);
+    const auto* c2 = fb.Get(2, 0);
+    const auto* c3 = fb.Get(3, 0);
     ASSERT_NE(c0, nullptr);
     ASSERT_NE(c1, nullptr);
     ASSERT_NE(c2, nullptr);
@@ -329,8 +323,7 @@ TEST(TuixFrameworkTests, ButtonHandlesEnterSpaceAndMouseClick)
     tuix::Button button("go");
     button.Layout(tuix::Rect{0, 0, 8, 1});
     button.SetFocused(true);
-    button.SetOnClick([&clicked]()
-                      { ++clicked; });
+    button.SetOnClick([&clicked]() { ++clicked; });
 
     tuix::InputEvent enter;
     enter.type = tuix::EventType::Key;
@@ -407,8 +400,7 @@ TEST(TuixFrameworkTests, ApplicationDispatchesFocusedKeyEvent)
 
     int clicked = 0;
     auto button = std::make_shared<tuix::Button>("go");
-    button->SetOnClick([&clicked]()
-                       { ++clicked; });
+    button->SetOnClick([&clicked]() { ++clicked; });
 
     tuix::Application app(nullptr);
     app.SetRoot(button);

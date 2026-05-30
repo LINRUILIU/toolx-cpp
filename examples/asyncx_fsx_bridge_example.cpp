@@ -30,16 +30,14 @@ int main()
         fsx::BatchPlan plan;
         const auto from = (root / ("job" + std::to_string(i) + "_from.txt")).string();
         const auto to = (root / ("job" + std::to_string(i) + "_to.txt")).string();
-        plan.AddAtomicWrite(from, "payload-" + std::to_string(i) + "\n")
-            .AddRename(from, to);
+        plan.AddAtomicWrite(from, "payload-" + std::to_string(i) + "\n").AddRename(from, to);
 
         fsx::RunOptions run_options;
         run_options.rollback_mode = fsx::RollbackMode::BestEffort;
         run_options.conflict_policy = fsx::ConflictPolicy::Overwrite;
         run_options.journal_path = (root / ("job" + std::to_string(i) + ".journal")).string();
 
-        auto submitted = pool.Submit([plan, run_options]()
-                                     { return fsx::Run(plan, run_options); });
+        auto submitted = pool.Submit([plan, run_options]() { return fsx::Run(plan, run_options); });
         if (!submitted.ok)
         {
             std::cerr << "submit failed: " << submitted.error.message << '\n';
@@ -62,7 +60,7 @@ int main()
     }
 
     int ok_count = 0;
-    for (auto &future : futures)
+    for (auto& future : futures)
     {
         const auto result = future.get();
         if (result.ok)
@@ -76,10 +74,8 @@ int main()
     }
 
     auto metrics = pool.GetMetricsSnapshot();
-    std::cout << "fsx bridge ok=" << ok_count
-              << " submitted=" << metrics.execution.submitted
-              << " completed=" << metrics.execution.completed
-              << '\n';
+    std::cout << "fsx bridge ok=" << ok_count << " submitted=" << metrics.execution.submitted
+              << " completed=" << metrics.execution.completed << '\n';
 
     pool.StopAndJoin(asyncx::StopMode::Drain);
     return (ok_count == 3) ? 0 : 2;

@@ -13,16 +13,13 @@ int main()
     options.file_path = "app.log";
     options.use_json_formatter = false;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     logger.ConfigureDefaultLogger(options);
     logger.SetDefaultOrigin(ErrorSource::Business, ModuleId::BusinessCommon, ErrorCategory::Business);
 
     LOGI("startup mode=%s", "default");
 
-    LOGE_STREAM()
-            .SetField("module", "example")
-            .SetField("request_id", "req-001")
-        << "stream message id=" << 42;
+    LOGE_STREAM().SetField("module", "example").SetField("request_id", "req-001") << "stream message id=" << 42;
 
     return 0;
 }

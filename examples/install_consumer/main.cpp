@@ -9,7 +9,7 @@ int main()
         return 2;
     }
 
-    auto &logger = logsys::Logger::Instance();
+    auto& logger = logsys::Logger::Instance();
     logger.ConfigureSimpleLogger(logsys::LogLevel::Fatal, false, false);
     logger.LogDefaultf(logsys::LogLevel::Info, __FILE__, __LINE__, __func__, "install-consumer");
     logger.Flush();

@@ -7,31 +7,29 @@
 
 namespace
 {
-    std::string backend_name(tuix::Terminal::Backend backend)
+std::string backend_name(tuix::Terminal::Backend backend)
+{
+    switch (backend)
     {
-        switch (backend)
-        {
-        case tuix::Terminal::Backend::Win32:
-            return "win32";
-        case tuix::Terminal::Backend::Ansi:
-            return "ansi";
-        case tuix::Terminal::Backend::None:
-            return "none";
-        }
-        return "unknown";
+    case tuix::Terminal::Backend::Win32:
+        return "win32";
+    case tuix::Terminal::Backend::Ansi:
+        return "ansi";
+    case tuix::Terminal::Backend::None:
+        return "none";
     }
+    return "unknown";
+}
 
-    void set_text_if_changed(const std::shared_ptr<tuix::Label> &label,
-                             std::string text,
-                             tuix::Application &app)
+void set_text_if_changed(const std::shared_ptr<tuix::Label>& label, std::string text, tuix::Application& app)
+{
+    if (label && label->text() != text)
     {
-        if (label && label->text() != text)
-        {
-            label->SetText(std::move(text));
-            app.RequestRepaint();
-        }
+        label->SetText(std::move(text));
+        app.RequestRepaint();
     }
 }
+} // namespace
 
 int main()
 {
@@ -50,7 +48,8 @@ int main()
     auto backend = std::make_shared<tuix::Label>("backend=" + backend_name(term.CurrentBackend()));
     auto status = std::make_shared<tuix::Label>("status=Ready");
     auto focus = std::make_shared<tuix::Label>("focus=(none)");
-    auto help = std::make_shared<tuix::Label>("Tab/Shift+Tab or arrows move focus | Enter/Space/click activate | Esc exits");
+    auto help =
+        std::make_shared<tuix::Label>("Tab/Shift+Tab or arrows move focus | Enter/Space/click activate | Esc exits");
 
     auto row = std::make_shared<tuix::HorizontalLayout>();
     auto run_button = std::make_shared<tuix::Button>("Run");
@@ -75,23 +74,26 @@ int main()
         bool scripted_input{false};
     } state;
 
-    run_button->SetOnClick([&]()
-                           {
-                               ++state.run_count;
-                               state.status_text = "Run clicked count=" + std::to_string(state.run_count);
-                               app.RequestRepaint();
-                           });
-    reset_button->SetOnClick([&]()
-                             {
-                                 state.run_count = 0;
-                                 state.status_text = "State reset";
-                                 app.RequestRepaint();
-                             });
-    exit_button->SetOnClick([&]()
-                            {
-                                state.status_text = "Exit requested";
-                                app.RequestExit();
-                            });
+    run_button->SetOnClick(
+        [&]()
+        {
+            ++state.run_count;
+            state.status_text = "Run clicked count=" + std::to_string(state.run_count);
+            app.RequestRepaint();
+        });
+    reset_button->SetOnClick(
+        [&]()
+        {
+            state.run_count = 0;
+            state.status_text = "State reset";
+            app.RequestRepaint();
+        });
+    exit_button->SetOnClick(
+        [&]()
+        {
+            state.status_text = "Exit requested";
+            app.RequestExit();
+        });
 
     tuix::InputOptions options;
     options.consume_mode = tuix::InputConsumeMode::ExclusiveConsume;
@@ -113,7 +115,7 @@ int main()
 
     while (app.Running())
     {
-        tuix::Widget *focused = app.FocusedWidget();
+        tuix::Widget* focused = app.FocusedWidget();
         std::string focus_text = "focus=(none)";
         if (focused == run_button.get())
         {
@@ -130,9 +132,9 @@ int main()
 
         set_text_if_changed(status, "status=" + state.status_text, app);
         set_text_if_changed(focus, focus_text, app);
-        set_text_if_changed(backend, "backend=" + backend_name(term.CurrentBackend()) +
-                                         " | renders=" + std::to_string(app.render_count()),
-                            app);
+        set_text_if_changed(
+            backend,
+            "backend=" + backend_name(term.CurrentBackend()) + " | renders=" + std::to_string(app.render_count()), app);
 
         if (!app.Tick(16))
         {

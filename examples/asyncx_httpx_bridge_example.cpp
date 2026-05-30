@@ -11,7 +11,8 @@
 int main()
 {
     httpx::ClientOptions client_options;
-    client_options.transport = [](const httpx::Request &request, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    client_options.transport = [](const httpx::Request& request,
+                                  const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         httpx::Result<httpx::Response> out;
 
@@ -41,22 +42,22 @@ int main()
 
     asyncx::ThreadPool pool(options);
 
-    const std::vector<std::string> urls = {
-        "https://demo.local/fast/a",
-        "https://demo.local/slow/b",
-        "https://demo.local/normal/c"};
+    const std::vector<std::string> urls = {"https://demo.local/fast/a", "https://demo.local/slow/b",
+                                           "https://demo.local/normal/c"};
 
     std::vector<std::future<httpx::Result<httpx::Response>>> futures;
     futures.reserve(urls.size());
 
-    for (const auto &url : urls)
+    for (const auto& url : urls)
     {
-        auto submitted = pool.Submit([&client, url]()
-                                     {
-                                         httpx::Request req;
-                                         req.method = httpx::HttpMethod::Get;
-                                         req.url = url;
-                                         return client.Send(req); });
+        auto submitted = pool.Submit(
+            [&client, url]()
+            {
+                httpx::Request req;
+                req.method = httpx::HttpMethod::Get;
+                req.url = url;
+                return client.Send(req);
+            });
         if (!submitted.ok)
         {
             std::cerr << "submit failed: " << submitted.error.message << '\n';
@@ -81,14 +82,13 @@ int main()
     }
 
     std::size_t ok_count = 0;
-    for (auto &future : futures)
+    for (auto& future : futures)
     {
         const auto result = future.get();
         if (result.ok)
         {
             ++ok_count;
-            std::cout << "http ok status=" << result.value.status_code
-                      << " body=" << result.value.body << '\n';
+            std::cout << "http ok status=" << result.value.status_code << " body=" << result.value.body << '\n';
         }
         else
         {
@@ -98,11 +98,8 @@ int main()
 
     const auto stats = client.GetFailureStats();
     auto metrics = pool.GetMetricsSnapshot();
-    std::cout << "httpx bridge ok=" << ok_count
-              << " failures=" << stats.total_failures
-              << " submitted=" << metrics.execution.submitted
-              << " completed=" << metrics.execution.completed
-              << '\n';
+    std::cout << "httpx bridge ok=" << ok_count << " failures=" << stats.total_failures
+              << " submitted=" << metrics.execution.submitted << " completed=" << metrics.execution.completed << '\n';
 
     pool.StopAndJoin(asyncx::StopMode::Drain);
     return (ok_count == urls.size()) ? 0 : 2;

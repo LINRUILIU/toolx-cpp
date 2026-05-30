@@ -6,7 +6,7 @@
 int main()
 {
     httpx::ClientOptions options;
-    options.transport = [](const httpx::Request &request, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    options.transport = [](const httpx::Request& request, const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         httpx::Result<httpx::Response> out;
         out.ok = true;
@@ -16,23 +16,24 @@ int main()
     };
 
     httpx::Client client(options);
-    cfgx::SetRemoteFetcher([&client](const cfgx::RemoteFetchRequest &request)
-                           {
-                               cfgx::Result<cfgx::RemoteFetchResponse> out;
-                               const auto response = client.Get(request.url, request.headers);
-                               if (!response.ok)
-                               {
-                                   out.ok = false;
-                                   out.error = response.error.message;
-                                   return out;
-                               }
+    cfgx::SetRemoteFetcher(
+        [&client](const cfgx::RemoteFetchRequest& request)
+        {
+            cfgx::Result<cfgx::RemoteFetchResponse> out;
+            const auto response = client.Get(request.url, request.headers);
+            if (!response.ok)
+            {
+                out.ok = false;
+                out.error = response.error.message;
+                return out;
+            }
 
-                               out.ok = true;
-                               out.value.body = response.value.body;
-                               out.value.headers = response.value.headers;
-                               out.value.status_code = response.value.status_code;
-                               return out;
-                           });
+            out.ok = true;
+            out.value.body = response.value.body;
+            out.value.headers = response.value.headers;
+            out.value.status_code = response.value.status_code;
+            return out;
+        });
 
     const auto loaded = cfgx::LoadFromRemote("https://config.toolx.local/runtime.json");
     if (!loaded.ok)

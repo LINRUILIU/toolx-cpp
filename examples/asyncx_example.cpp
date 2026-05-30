@@ -19,8 +19,7 @@ int main()
 
     for (int i = 1; i <= 8; ++i)
     {
-        auto submitted = pool.Submit([i]()
-                                     { return i * i; });
+        auto submitted = pool.Submit([i]() { return i * i; });
         if (!submitted.ok)
         {
             std::cerr << "submit failed: " << submitted.error.message << '\n';
@@ -44,7 +43,7 @@ int main()
     }
 
     int total = 0;
-    for (auto &future : futures)
+    for (auto& future : futures)
     {
         total += future.get();
     }
@@ -58,8 +57,7 @@ int main()
 
     std::promise<void> gate;
     std::shared_future<void> hold = gate.get_future().share();
-    (void)small_pool.Post([hold]()
-                          { hold.wait(); });
+    (void)small_pool.Post([hold]() { hold.wait(); });
     (void)small_pool.Post([]() {});
 
     auto immediate = small_pool.TryPost([]() {});
@@ -80,24 +78,25 @@ int main()
     small_pool.Stop(asyncx::StopMode::Drain);
     small_pool.Join();
 
-    auto status = pool.PostFor(std::chrono::milliseconds(50), []()
-                               { std::this_thread::sleep_for(std::chrono::milliseconds(5)); });
+    auto status = pool.PostFor(std::chrono::milliseconds(50),
+                               []() { std::this_thread::sleep_for(std::chrono::milliseconds(5)); });
     if (!status.ok)
     {
         std::cerr << "post failed: " << status.error.message << '\n';
     }
 
     std::atomic<int> periodic_hits{0};
-    auto periodic = pool.ScheduleEvery(std::chrono::milliseconds(30), [&periodic_hits]()
-                                       { periodic_hits.fetch_add(1, std::memory_order_relaxed); }, true);
+    auto periodic = pool.ScheduleEvery(
+        std::chrono::milliseconds(30), [&periodic_hits]() { periodic_hits.fetch_add(1, std::memory_order_relaxed); },
+        true);
     if (!periodic.ok)
     {
         std::cerr << "schedule periodic failed: " << periodic.error.message << '\n';
         return 2;
     }
 
-    auto delayed = pool.PostDelayedFor(std::chrono::milliseconds(80), []()
-                                       { std::cout << "delayed task fired" << '\n'; });
+    auto delayed =
+        pool.PostDelayedFor(std::chrono::milliseconds(80), []() { std::cout << "delayed task fired" << '\n'; });
     if (!delayed.ok)
     {
         std::cerr << "post delayed failed: " << delayed.error.message << '\n';
@@ -111,14 +110,11 @@ int main()
 
     pool.WaitForIdle();
     const auto snapshot = pool.GetMetricsSnapshot();
-    std::cout << "metrics scheduler(created/fired/cancelled)="
-              << snapshot.scheduler.created << '/'
-              << snapshot.scheduler.fired << '/'
-              << snapshot.scheduler.cancelled << '\n';
+    std::cout << "metrics scheduler(created/fired/cancelled)=" << snapshot.scheduler.created << '/'
+              << snapshot.scheduler.fired << '/' << snapshot.scheduler.cancelled << '\n';
 
     const auto stats = pool.ResetStats();
-    std::cout << "stats_before_reset submitted=" << stats.submitted
-              << " completed=" << stats.completed
+    std::cout << "stats_before_reset submitted=" << stats.submitted << " completed=" << stats.completed
               << " backpressure_rejected=" << stats.backpressure_rejected << '\n';
 
     pool.StopAndJoin(asyncx::StopMode::Drain);

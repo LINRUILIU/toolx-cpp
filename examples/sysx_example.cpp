@@ -18,10 +18,12 @@ int main()
     const auto ok = sysx::OkStatus();
     std::cout << "ok_status=" << (ok.ok ? "true" : "false") << "\n";
 
-    auto worker = sysx::thread::Thread([]()
-                                       {
-        const auto status = sysx::MakeErrorStatus(sysx::ErrorDomain::System, 0, "worker ok");
-        (void)status; });
+    auto worker = sysx::thread::Thread(
+        []()
+        {
+            const auto status = sysx::MakeErrorStatus(sysx::ErrorDomain::System, 0, "worker ok");
+            (void)status;
+        });
     if (worker.Joinable())
     {
         worker.Join();

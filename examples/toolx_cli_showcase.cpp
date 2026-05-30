@@ -9,7 +9,7 @@
 #include "logsys.h"
 #include "textcodec.h"
 
-int main(int argc, const char *const argv[])
+int main(int argc, const char* const argv[])
 {
     argtool::Parser parser;
     parser.SetDescription("ToolX end-to-end showcase")
@@ -47,10 +47,9 @@ int main(int argc, const char *const argv[])
     log_options.enable_file = false;
     log_options.enable_debugger = false;
 
-    auto &logger = logsys::Logger::Instance();
+    auto& logger = logsys::Logger::Instance();
     logger.ConfigureDefaultLogger(log_options);
-    logger.SetDefaultOrigin(logsys::ErrorSource::Business,
-                            logsys::ModuleId::BusinessCommon,
+    logger.SetDefaultOrigin(logsys::ErrorSource::Business, logsys::ModuleId::BusinessCommon,
                             logsys::ErrorCategory::Business);
 
     cfgx::Node config = cfgx::Node::MakeObject();
@@ -60,8 +59,7 @@ int main(int argc, const char *const argv[])
 
     const std::string payload = parsed.GetString("payload", "hello toolx");
     asyncx::ThreadPool pool;
-    auto encoded_task = pool.Submit([payload]()
-                                    { return textcodec::base64_encode(payload); });
+    auto encoded_task = pool.Submit([payload]() { return textcodec::base64_encode(payload); });
     if (!encoded_task.ok)
     {
         std::cerr << "async submit failed: " << encoded_task.error.message << '\n';
@@ -80,10 +78,9 @@ int main(int argc, const char *const argv[])
     const auto serialized = cfgx::ToJson(config, 2);
     fsx::BatchPlan plan;
     plan.AddAtomicWrite(config_path, serialized)
-        .AddAtomicWrite(summary_path,
-                        "name=" + parsed.GetString("name") + "\n"
-                        + "port=" + std::to_string(parsed.GetInt("port")) + "\n"
-                        + "payload_base64=" + encoded + "\n");
+        .AddAtomicWrite(summary_path, "name=" + parsed.GetString("name") + "\n" +
+                                          "port=" + std::to_string(parsed.GetInt("port")) + "\n" +
+                                          "payload_base64=" + encoded + "\n");
 
     fsx::RunOptions run_options;
     run_options.conflict_policy = fsx::ConflictPolicy::Overwrite;
@@ -97,9 +94,7 @@ int main(int argc, const char *const argv[])
         return 2;
     }
 
-    LOGI("toolx_cli_showcase wrote %s and %s",
-         config_path.c_str(),
-         summary_path.c_str());
+    LOGI("toolx_cli_showcase wrote %s and %s", config_path.c_str(), summary_path.c_str());
     logger.Flush();
 
     std::cout << "config=" << config_path << '\n';

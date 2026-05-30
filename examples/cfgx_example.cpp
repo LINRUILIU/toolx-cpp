@@ -41,7 +41,7 @@ int main()
     if (!validation.ok)
     {
         std::cerr << "validation issues=" << validation.value.size() << "\n";
-        for (const auto &issue : validation.value)
+        for (const auto& issue : validation.value)
         {
             std::cerr << "- path=" << issue.path << " message=" << issue.message << "\n";
         }

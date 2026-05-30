@@ -18,27 +18,22 @@ int main()
     if (!result.ok)
     {
         std::cerr << "fsx failed: " << result.error << '\n';
-        for (const auto &step : result.steps)
+        for (const auto& step : result.steps)
         {
-            std::cerr << "step=" << step.step
-                      << " op=" << fsx::ToString(step.op)
-                      << " ok=" << step.ok
-                      << " rolled_back=" << step.rolled_back
-                      << " err=" << step.error << '\n';
+            std::cerr << "step=" << step.step << " op=" << fsx::ToString(step.op) << " ok=" << step.ok
+                      << " rolled_back=" << step.rolled_back << " err=" << step.error << '\n';
         }
 
         if (!options.journal_path.empty())
         {
             const fsx::RunResult recovered = fsx::RecoverFromJournal(options.journal_path);
-            std::cerr << "recover ok=" << recovered.ok
-                      << " completed=" << recovered.completed_steps
+            std::cerr << "recover ok=" << recovered.ok << " completed=" << recovered.completed_steps
                       << " rolled_back=" << recovered.rolled_back_steps << '\n';
         }
         return 2;
     }
 
-    std::cout << "fsx completed steps=" << result.completed_steps
-              << " skipped=" << result.skipped_steps
+    std::cout << "fsx completed steps=" << result.completed_steps << " skipped=" << result.skipped_steps
               << " rolled_back=" << result.rolled_back_steps << '\n';
     return 0;
 }

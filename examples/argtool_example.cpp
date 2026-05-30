@@ -4,13 +4,11 @@
 
 class ConsoleParseLogger final : public argtool::IParseLogger
 {
-public:
-    void OnError(const argtool::ParseError &error) override
+  public:
+    void OnError(const argtool::ParseError& error) override
     {
-        std::cerr << "[parse-error] kind=" << static_cast<int>(error.kind)
-                  << " field=" << error.field
-                  << " token=" << error.token
-                  << " message=" << error.message << "\n";
+        std::cerr << "[parse-error] kind=" << static_cast<int>(error.kind) << " field=" << error.field
+                  << " token=" << error.token << " message=" << error.message << "\n";
     }
 
     void OnWarning(std::string_view message) override
@@ -19,7 +17,7 @@ public:
     }
 };
 
-int main(int argc, const char *const argv[])
+int main(int argc, const char* const argv[])
 {
     ConsoleParseLogger logger;
 
@@ -33,28 +31,13 @@ int main(int argc, const char *const argv[])
     // Iteration 5: keep a minimal compatibility bridge for legacy help behavior.
     parser.EnableLegacyProfile(false);
 
-    parser.Flag("verbose", 'v')
-        .Description("Enable verbose output.")
-        .Done();
+    parser.Flag("verbose", 'v').Description("Enable verbose output.").Done();
 
-    parser.Option("output", 'o')
-        .String()
-        .ValueName("FILE")
-        .Default("app.log")
-        .Description("Output file path.")
-        .Done();
+    parser.Option("output", 'o').String().ValueName("FILE").Default("app.log").Description("Output file path.").Done();
 
-    parser.Option("mode", 'm')
-        .String()
-        .Choices({"Debug", "Release"})
-        .Description("Build mode.")
-        .Done();
+    parser.Option("mode", 'm').String().Choices({"Debug", "Release"}).Description("Build mode.").Done();
 
-    parser.Option("tag", 't')
-        .String()
-        .ListValue()
-        .Description("Repeatable tag list.")
-        .Done();
+    parser.Option("tag", 't').String().ListValue().Description("Repeatable tag list.").Done();
 
     parser.Option("level", 'l')
         .Int()
@@ -63,9 +46,7 @@ int main(int argc, const char *const argv[])
         .Description("Log level in [0,5].")
         .Done();
 
-    parser.Flag("json", 'j')
-        .Description("Use JSON output.")
-        .Done();
+    parser.Flag("json", 'j').Description("Use JSON output.").Done();
 
     parser.Flag("plain", 'p')
         .Description("Use plain output.")
@@ -83,17 +64,15 @@ int main(int argc, const char *const argv[])
         .Done()
         .AddMutexGroup({{"json", "plain"}, "Use either --json or --plain."})
         .AddDependency({"mode", "output", "--mode requires --output."})
-        .AddConstraintRule({"custom.mode_release_requires_json",
-                            argtool::RulePriority::Normal,
-                            argtool::RuleGroup::Custom,
-                            true,
-                            [](const argtool::ConstraintContext &ctx)
+        .AddConstraintRule({"custom.mode_release_requires_json", argtool::RulePriority::Normal,
+                            argtool::RuleGroup::Custom, true, [](const argtool::ConstraintContext& ctx)
                             {
                                 argtool::ConstraintResult out;
                                 const auto mode_it = ctx.result.values.find("mode");
                                 const auto json_it = ctx.result.values.find("json");
                                 const bool release_mode =
-                                    (mode_it != ctx.result.values.end() && !mode_it->second.empty() && mode_it->second.back() == "Release");
+                                    (mode_it != ctx.result.values.end() && !mode_it->second.empty() &&
+                                     mode_it->second.back() == "Release");
                                 const bool has_json = (json_it != ctx.result.values.end() && !json_it->second.empty());
                                 if (release_mode && !has_json)
                                 {
@@ -110,10 +89,10 @@ int main(int argc, const char *const argv[])
         .AddSubcommandLeaf("repo", "sync", "Synchronize local and remote state")
         .AddSubcommandLeaf("repo", "status", "Show repository status");
 
-    parser.MutableSubcommands().Register("build", [](const std::vector<std::string> &)
-                                         { return 0; }, "Build the project");
-    parser.MutableSubcommands().Register("clean", [](const std::vector<std::string> &)
-                                         { return 0; }, "Clean build artifacts");
+    parser.MutableSubcommands().Register(
+        "build", [](const std::vector<std::string>&) { return 0; }, "Build the project");
+    parser.MutableSubcommands().Register(
+        "clean", [](const std::vector<std::string>&) { return 0; }, "Clean build artifacts");
 
     const argtool::ParseResult result = parser.Parse(argc, argv);
     if (result.help_requested)
@@ -144,7 +123,7 @@ int main(int argc, const char *const argv[])
     if (!extras.empty())
     {
         std::cout << "extras:";
-        for (const auto &item : extras)
+        for (const auto& item : extras)
         {
             std::cout << " [" << item << "]";
         }
@@ -155,7 +134,7 @@ int main(int argc, const char *const argv[])
     if (!tags.empty())
     {
         std::cout << "tags:";
-        for (const auto &item : tags)
+        for (const auto& item : tags)
         {
             std::cout << " [" << item << "]";
         }

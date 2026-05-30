@@ -5,19 +5,15 @@
 int main()
 {
     httpx::ClientOptions options;
-    options.logger = [](const httpx::LogEvent &event)
+    options.logger = [](const httpx::LogEvent& event)
     {
         std::cout << "[" << httpx::ToString(event.severity) << "]"
-                  << " method=" << event.method
-                  << " url=" << event.url
-                  << " status=" << event.status_code
-                  << " kind=" << httpx::ToString(event.error_kind)
-                  << " duration_ms=" << event.duration_ms
-                  << " message=" << event.message
-                  << "\n";
+                  << " method=" << event.method << " url=" << event.url << " status=" << event.status_code
+                  << " kind=" << httpx::ToString(event.error_kind) << " duration_ms=" << event.duration_ms
+                  << " message=" << event.message << "\n";
     };
 
-    options.transport = [](const httpx::Request &request, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    options.transport = [](const httpx::Request& request, const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         httpx::Result<httpx::Response> out;
         out.ok = true;
@@ -44,10 +40,8 @@ int main()
     std::cout << "status=" << res.value.status_code << " body=" << res.value.body << "\n";
 
     const auto stats = client.GetFailureStats();
-    std::cout << "total_requests=" << stats.total_requests
-              << " total_failures=" << stats.total_failures
-              << " consecutive_failures=" << stats.consecutive_failures
-              << "\n";
+    std::cout << "total_requests=" << stats.total_requests << " total_failures=" << stats.total_failures
+              << " consecutive_failures=" << stats.consecutive_failures << "\n";
 
     return 0;
 }

@@ -9,80 +9,79 @@
 namespace
 {
 
-    class CaptureLogger final : public argtool::IParseLogger
+class CaptureLogger final : public argtool::IParseLogger
+{
+  public:
+    void OnError(const argtool::ParseError& error) override
     {
-    public:
-        void OnError(const argtool::ParseError &error) override
-        {
-            errors.push_back(error);
-        }
-
-        void OnWarning(std::string_view message) override
-        {
-            warnings.push_back(std::string(message));
-        }
-
-        std::vector<argtool::ParseError> errors;
-        std::vector<std::string> warnings;
-    };
-
-    argtool::Parser BuildParser(CaptureLogger *logger = nullptr)
-    {
-        argtool::Parser parser;
-        parser.SetProgramName("app.exe")
-            .SetDescription("argtool tests")
-            .SetUsageExample("app.exe -v --output build.log input.txt -- --literal")
-            .SetLogger(logger);
-
-        parser.Flag("verbose", 'v')
-            .BoolMode(argtool::BoolFlagMode::Count)
-            .Description("Enable verbose output.")
-            .Done()
-            .Option("output", 'o')
-            .String()
-            .ValueName("FILE")
-            .Default("app.log")
-            .Description("Output file path.")
-            .Done()
-            .Option("level", 'l')
-            .Int()
-            .Range(0, 5)
-            .Default("3")
-            .Description("Log level in [0,5].")
-            .Done()
-            .Positional("input")
-            .String()
-            .Required(true)
-            .Description("Primary input file.")
-            .Done()
-            .Positional("extras")
-            .String()
-            .Required(false)
-            .Variadic(true)
-            .Description("Extra positional arguments.")
-            .Done();
-
-        return parser;
+        errors.push_back(error);
     }
 
-    std::vector<const char *> ToArgv(const std::vector<std::string> &args)
+    void OnWarning(std::string_view message) override
     {
-        std::vector<const char *> argv;
-        argv.reserve(args.size());
-        for (const auto &arg : args)
-        {
-            argv.push_back(arg.c_str());
-        }
-        return argv;
+        warnings.push_back(std::string(message));
     }
+
+    std::vector<argtool::ParseError> errors;
+    std::vector<std::string> warnings;
+};
+
+argtool::Parser BuildParser(CaptureLogger* logger = nullptr)
+{
+    argtool::Parser parser;
+    parser.SetProgramName("app.exe")
+        .SetDescription("argtool tests")
+        .SetUsageExample("app.exe -v --output build.log input.txt -- --literal")
+        .SetLogger(logger);
+
+    parser.Flag("verbose", 'v')
+        .BoolMode(argtool::BoolFlagMode::Count)
+        .Description("Enable verbose output.")
+        .Done()
+        .Option("output", 'o')
+        .String()
+        .ValueName("FILE")
+        .Default("app.log")
+        .Description("Output file path.")
+        .Done()
+        .Option("level", 'l')
+        .Int()
+        .Range(0, 5)
+        .Default("3")
+        .Description("Log level in [0,5].")
+        .Done()
+        .Positional("input")
+        .String()
+        .Required(true)
+        .Description("Primary input file.")
+        .Done()
+        .Positional("extras")
+        .String()
+        .Required(false)
+        .Variadic(true)
+        .Description("Extra positional arguments.")
+        .Done();
+
+    return parser;
+}
+
+std::vector<const char*> ToArgv(const std::vector<std::string>& args)
+{
+    std::vector<const char*> argv;
+    argv.reserve(args.size());
+    for (const auto& arg : args)
+    {
+        argv.push_back(arg.c_str());
+    }
+    return argv;
+}
 
 } // namespace
 
 TEST(ArgtoolTests, ParseMixedTokensAndDoubleDash)
 {
     auto parser = BuildParser();
-    const std::vector<std::string> args = {
-        "app.exe", "-vv", "input.txt", "--output", "out.log", "--", "--raw", "tail"};
+    const std::vector<std::string> args = {"app.exe", "-vv", "input.txt", "--output", "out.log", "--", "--raw", "tail"};
     const auto argv = ToArgv(args);
 
     const auto result = parser.Parse(static_cast<int>(argv.size()), argv.data());
@@ -188,13 +187,7 @@ TEST(ArgtoolTests, ChoiceErrorIsReported)
 {
     argtool::Parser parser;
     parser.SetProgramName("app.exe");
-    parser.Option("mode", 'm')
-        .String()
-        .Choices({"Debug", "Release"})
-        .Done()
-        .Positional("input")
-        .String()
-        .Done();
+    parser.Option("mode", 'm').String().Choices({"Debug", "Release"}).Done().Positional("input").String().Done();
 
     const std::vector<std::string> args = {"app.exe", "--mode", "fast", "input.txt"};
     const auto argv = ToArgv(args);
@@ -209,7 +202,16 @@ TEST(ArgtoolTests, MutexConstraintWorks)
 {
     argtool::Parser parser;
     parser.SetProgramName("app.exe");
-    parser.Flag("json", 'j').Description("Json").Done().Flag("plain", 'p').Description("Plain").Done().Positional("input").String().Done().AddMutexGroup({{"json", "plain"}, "Use either --json or --plain."});
+    parser.Flag("json", 'j')
+        .Description("Json")
+        .Done()
+        .Flag("plain", 'p')
+        .Description("Plain")
+        .Done()
+        .Positional("input")
+        .String()
+        .Done()
+        .AddMutexGroup({{"json", "plain"}, "Use either --json or --plain."});
 
     const std::vector<std::string> args = {"app.exe", "--json", "--plain", "input.txt"};
     const auto argv = ToArgv(args);
@@ -225,7 +227,16 @@ TEST(ArgtoolTests, DependencyConstraintWorks)
 {
     argtool::Parser parser;
     parser.SetProgramName("app.exe");
-    parser.Option("server", 's').String().Done().Option("port", 'p').Int().Done().Positional("input").String().Done().AddDependency({"server", "port", "--server requires --port."});
+    parser.Option("server", 's')
+        .String()
+        .Done()
+        .Option("port", 'p')
+        .Int()
+        .Done()
+        .Positional("input")
+        .String()
+        .Done()
+        .AddDependency({"server", "port", "--server requires --port."});
 
     const std::vector<std::string> args = {"app.exe", "--server", "127.0.0.1", "input.txt"};
     const auto argv = ToArgv(args);
@@ -239,42 +250,32 @@ TEST(ArgtoolTests, DependencyConstraintWorks)
 TEST(ArgtoolTests, ConstraintPipelineUsesPriority)
 {
     argtool::Parser parser;
-    parser.SetProgramName("app.exe")
-        .Positional("input")
-        .String()
-        .Done();
+    parser.SetProgramName("app.exe").Positional("input").String().Done();
 
-    parser.AddConstraintRule(argtool::ConstraintRule{
-        "low_rule",
-        argtool::RulePriority::Low,
-        argtool::RuleGroup::Custom,
-        true,
-        [](const argtool::ConstraintContext &)
-        {
-            argtool::ConstraintResult out;
-            out.ok = false;
-            out.error.kind = argtool::ParseErrorKind::InvalidValue;
-            out.error.field = "low";
-            out.error.token = "low";
-            out.error.message = "low rule fired";
-            return out;
-        }});
+    parser.AddConstraintRule(argtool::ConstraintRule{"low_rule", argtool::RulePriority::Low, argtool::RuleGroup::Custom,
+                                                     true, [](const argtool::ConstraintContext&)
+                                                     {
+                                                         argtool::ConstraintResult out;
+                                                         out.ok = false;
+                                                         out.error.kind = argtool::ParseErrorKind::InvalidValue;
+                                                         out.error.field = "low";
+                                                         out.error.token = "low";
+                                                         out.error.message = "low rule fired";
+                                                         return out;
+                                                     }});
 
-    parser.AddConstraintRule(argtool::ConstraintRule{
-        "high_rule",
-        argtool::RulePriority::High,
-        argtool::RuleGroup::Custom,
-        true,
-        [](const argtool::ConstraintContext &)
-        {
-            argtool::ConstraintResult out;
-            out.ok = false;
-            out.error.kind = argtool::ParseErrorKind::InvalidValue;
-            out.error.field = "high";
-            out.error.token = "high";
-            out.error.message = "high rule fired";
-            return out;
-        }});
+    parser.AddConstraintRule(argtool::ConstraintRule{"high_rule", argtool::RulePriority::High,
+                                                     argtool::RuleGroup::Custom, true,
+                                                     [](const argtool::ConstraintContext&)
+                                                     {
+                                                         argtool::ConstraintResult out;
+                                                         out.ok = false;
+                                                         out.error.kind = argtool::ParseErrorKind::InvalidValue;
+                                                         out.error.field = "high";
+                                                         out.error.token = "high";
+                                                         out.error.message = "high rule fired";
+                                                         return out;
+                                                     }});
 
     const std::vector<std::string> args = {"app.exe", "input.txt"};
     const auto argv = ToArgv(args);
@@ -290,27 +291,20 @@ TEST(ArgtoolTests, ConstraintPipelineDeferredFailureWorks)
 {
     CaptureLogger logger;
     argtool::Parser parser;
-    parser.SetProgramName("app.exe")
-        .SetLogger(&logger)
-        .Positional("input")
-        .String()
-        .Done();
+    parser.SetProgramName("app.exe").SetLogger(&logger).Positional("input").String().Done();
 
-    parser.AddConstraintRule(argtool::ConstraintRule{
-        "deferred_rule",
-        argtool::RulePriority::Normal,
-        argtool::RuleGroup::Custom,
-        false,
-        [](const argtool::ConstraintContext &)
-        {
-            argtool::ConstraintResult out;
-            out.ok = false;
-            out.error.kind = argtool::ParseErrorKind::InvalidValue;
-            out.error.field = "deferred";
-            out.error.token = "deferred";
-            out.error.message = "deferred rule fired";
-            return out;
-        }});
+    parser.AddConstraintRule(argtool::ConstraintRule{"deferred_rule", argtool::RulePriority::Normal,
+                                                     argtool::RuleGroup::Custom, false,
+                                                     [](const argtool::ConstraintContext&)
+                                                     {
+                                                         argtool::ConstraintResult out;
+                                                         out.ok = false;
+                                                         out.error.kind = argtool::ParseErrorKind::InvalidValue;
+                                                         out.error.field = "deferred";
+                                                         out.error.token = "deferred";
+                                                         out.error.message = "deferred rule fired";
+                                                         return out;
+                                                     }});
 
     const std::vector<std::string> args = {"app.exe", "input.txt"};
     const auto argv = ToArgv(args);
@@ -349,28 +343,30 @@ TEST(ArgtoolTests, BuiltinConvertersSupportUnits)
 TEST(ArgtoolTests, LocalConverterOverridesGlobalConverter)
 {
     argtool::Parser parser;
-    parser.SetProgramName("app.exe")
-        .SetGlobalConverter(argtool::ValueType::String,
-                            [](std::string_view raw)
-                            {
-                                argtool::ConvertResult out;
-                                out.ok = true;
-                                out.value = std::string(raw);
-                                for (char &ch : out.value)
-                                {
-                                    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-                                }
-                                return out;
-                            });
+    parser.SetProgramName("app.exe").SetGlobalConverter(argtool::ValueType::String,
+                                                        [](std::string_view raw)
+                                                        {
+                                                            argtool::ConvertResult out;
+                                                            out.ok = true;
+                                                            out.value = std::string(raw);
+                                                            for (char& ch : out.value)
+                                                            {
+                                                                ch = static_cast<char>(
+                                                                    std::toupper(static_cast<unsigned char>(ch)));
+                                                            }
+                                                            return out;
+                                                        });
 
     parser.Option("mode", 'm')
         .String()
-        .ConvertWith([](std::string_view raw)
-                     {
-                         argtool::ConvertResult out;
-                         out.ok = true;
-                         out.value = "local:" + std::string(raw);
-                         return out; })
+        .ConvertWith(
+            [](std::string_view raw)
+            {
+                argtool::ConvertResult out;
+                out.ok = true;
+                out.value = "local:" + std::string(raw);
+                return out;
+            })
         .Done()
         .Positional("input")
         .String()
@@ -413,23 +409,19 @@ TEST(ArgtoolTests, OptionalAndListCardinalityWork)
 TEST(ArgtoolTests, ListCardinalityRequiresAppend)
 {
     argtool::Parser parser;
-    EXPECT_THROW(
-        parser.Option("tag", 't')
-            .String()
-            .ListValue()
-            .Repeat(argtool::RepeatMode::Override)
-            .Done(),
-        std::invalid_argument);
+    EXPECT_THROW(parser.Option("tag", 't').String().ListValue().Repeat(argtool::RepeatMode::Override).Done(),
+                 std::invalid_argument);
 }
 
 TEST(ArgtoolTests, UnknownOptionHandlerCanSwallowUnknown)
 {
     argtool::Parser parser;
-    parser.SetProgramName("app.exe")
-        .SetUnknownOptionHandler([](std::string_view token, std::string *error_message)
-                                 {
-              (void)error_message;
-              return token == "--legacy"; });
+    parser.SetProgramName("app.exe").SetUnknownOptionHandler(
+        [](std::string_view token, std::string* error_message)
+        {
+            (void)error_message;
+            return token == "--legacy";
+        });
 
     parser.Option("output", 'o').String().Done().Positional("input").String().Done();
 
@@ -445,13 +437,7 @@ TEST(ArgtoolTests, LongAliasParsesAsCanonicalOption)
 {
     argtool::Parser parser;
     parser.SetProgramName("app.exe");
-    parser.Option("output", 'o')
-        .Alias("out")
-        .String()
-        .Done()
-        .Positional("input")
-        .String()
-        .Done();
+    parser.Option("output", 'o').Alias("out").String().Done().Positional("input").String().Done();
 
     const std::vector<std::string> args = {"app.exe", "--out", "alias.log", "input.txt"};
     const auto argv = ToArgv(args);
@@ -464,13 +450,7 @@ TEST(ArgtoolTests, ShortAliasParsesAsCanonicalOption)
 {
     argtool::Parser parser;
     parser.SetProgramName("app.exe");
-    parser.Option("output", 'o')
-        .ShortAlias('O')
-        .String()
-        .Done()
-        .Positional("input")
-        .String()
-        .Done();
+    parser.Option("output", 'o').ShortAlias('O').String().Done().Positional("input").String().Done();
 
     const std::vector<std::string> args = {"app.exe", "-O", "alias.log", "input.txt"};
     const auto argv = ToArgv(args);
@@ -519,24 +499,13 @@ TEST(ArgtoolTests, BoolFlagToggleModeWorks)
 TEST(ArgtoolTests, DoneValidatesIntRangeBoundaries)
 {
     argtool::Parser parser;
-    EXPECT_THROW(
-        parser.Option("big", 'b')
-            .Int()
-            .Range(0.0, 3000000000.0)
-            .Done(),
-        std::invalid_argument);
+    EXPECT_THROW(parser.Option("big", 'b').Int().Range(0.0, 3000000000.0).Done(), std::invalid_argument);
 }
 
 TEST(ArgtoolTests, DoneValidatesDefaultAgainstRange)
 {
     argtool::Parser parser;
-    EXPECT_THROW(
-        parser.Option("level", 'l')
-            .Int()
-            .Range(0.0, 5.0)
-            .Default("7")
-            .Done(),
-        std::invalid_argument);
+    EXPECT_THROW(parser.Option("level", 'l').Int().Range(0.0, 5.0).Default("7").Done(), std::invalid_argument);
 }
 
 TEST(ArgtoolTests, TemplateApiBuildsOptionAndPositional)
@@ -592,10 +561,10 @@ TEST(ArgtoolTests, HelpContainsTableHeadersAndConstraintsColumn)
     auto parser = BuildParser();
     parser.AddMutexGroup({{"output", "level"}, "Use either --output or --level."});
     parser.AddDependency({"level", "output", "--level requires --output."});
-    parser.MutableSubcommands().Register("build", [](const std::vector<std::string> &)
-                                         { return 0; }, "Build the project");
-    parser.MutableSubcommands().Register("clean", [](const std::vector<std::string> &)
-                                         { return 0; }, "Clean build artifacts");
+    parser.MutableSubcommands().Register(
+        "build", [](const std::vector<std::string>&) { return 0; }, "Build the project");
+    parser.MutableSubcommands().Register(
+        "clean", [](const std::vector<std::string>&) { return 0; }, "Clean build artifacts");
 
     const std::string help = parser.HelpText();
     EXPECT_NE(help.find("Flags:"), std::string::npos);
@@ -704,13 +673,7 @@ TEST(ArgtoolTests, LegacyProfileSupportsQuestionMarkHelp)
 TEST(ArgtoolTests, JsonContractContainsSchemaAndStableValueOrder)
 {
     argtool::Parser parser;
-    parser.SetProgramName("app.exe")
-        .Option("zeta", 'z')
-        .String()
-        .Done()
-        .Option("alpha", 'a')
-        .String()
-        .Done();
+    parser.SetProgramName("app.exe").Option("zeta", 'z').String().Done().Option("alpha", 'a').String().Done();
 
     const std::vector<std::string> args = {"app.exe", "--zeta", "last", "--alpha", "first"};
     const auto argv = ToArgv(args);
@@ -731,13 +694,7 @@ TEST(ArgtoolTests, JsonContractContainsSchemaAndStableValueOrder)
 TEST(ArgtoolTests, HelpTextLayoutOverloadSwitchesOutput)
 {
     argtool::Parser parser;
-    parser.SetProgramName("app.exe")
-        .Option("output", 'o')
-        .String()
-        .Done()
-        .Positional("input")
-        .String()
-        .Done();
+    parser.SetProgramName("app.exe").Option("output", 'o').String().Done().Positional("input").String().Done();
 
     const std::string fixed = parser.HelpText(argtool::HelpLayout::Fixed);
     const std::string compact = parser.HelpText(argtool::HelpLayout::Compact);
@@ -768,11 +725,7 @@ TEST(ArgtoolTests, LegacyProfileOffDoesNotTreatQuestionMarkAsHelp)
 TEST(ArgtoolTests, JsonOutputCanExcludeTrace)
 {
     argtool::Parser parser;
-    parser.SetProgramName("app.exe")
-        .EnableTrace(true)
-        .Option("output", 'o')
-        .String()
-        .Done();
+    parser.SetProgramName("app.exe").EnableTrace(true).Option("output", 'o').String().Done();
 
     const std::vector<std::string> args = {"app.exe", "--output", "a.log"};
     const auto argv = ToArgv(args);
@@ -788,11 +741,7 @@ TEST(ArgtoolTests, JsonOutputCanExcludeTrace)
 TEST(ArgtoolTests, DefaultHelpLayoutFollowsSetter)
 {
     argtool::Parser parser;
-    parser.SetProgramName("app.exe")
-        .SetHelpLayout(argtool::HelpLayout::Compact)
-        .Option("output", 'o')
-        .String()
-        .Done();
+    parser.SetProgramName("app.exe").SetHelpLayout(argtool::HelpLayout::Compact).Option("output", 'o').String().Done();
 
     const std::string help = parser.HelpText();
     EXPECT_NE(help.find("Options (compact):"), std::string::npos);

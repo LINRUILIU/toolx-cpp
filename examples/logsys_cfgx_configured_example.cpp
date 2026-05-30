@@ -28,15 +28,14 @@ int main()
         return 2;
     }
 
-    auto &logger = logsys::Logger::Instance();
+    auto& logger = logsys::Logger::Instance();
     if (!logger.LoadConfigV2FromJsonFile(config_file.string()))
     {
         std::cerr << "logger config load failed\n";
         return 2;
     }
 
-    logger.SetDefaultOrigin(logsys::ErrorSource::Business,
-                            logsys::ModuleId::BusinessCommon,
+    logger.SetDefaultOrigin(logsys::ErrorSource::Business, logsys::ModuleId::BusinessCommon,
                             logsys::ErrorCategory::Business);
     LOGI("logsys configured through cfgx-authored json");
     logger.Flush();

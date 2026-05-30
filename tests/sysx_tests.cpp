@@ -116,8 +116,7 @@ TEST(SysxTimeTests, DeadlineAfterProducesFutureTimePoint)
 TEST(SysxThreadTests, ThreadRunsAndJoins)
 {
     std::atomic<int> value{0};
-    sysx::thread::Thread worker([&value]()
-                                { value.store(7, std::memory_order_relaxed); });
+    sysx::thread::Thread worker([&value]() { value.store(7, std::memory_order_relaxed); });
 
     ASSERT_TRUE(worker.Joinable());
     worker.Join();
@@ -131,8 +130,7 @@ TEST(SysxSyncTests, ConditionVariableWaitForTimesOut)
     bool ready = false;
 
     std::unique_lock<sysx::sync::Mutex> lock(mu);
-    const bool ok = cv.wait_for(lock, std::chrono::milliseconds(10), [&ready]()
-                                { return ready; });
+    const bool ok = cv.wait_for(lock, std::chrono::milliseconds(10), [&ready]() { return ready; });
     EXPECT_FALSE(ok);
 }
 

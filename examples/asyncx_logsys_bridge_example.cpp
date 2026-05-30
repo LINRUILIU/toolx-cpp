@@ -19,10 +19,9 @@ int main()
     log_options.enable_file = true;
     log_options.file_path = "temp/asyncx_bridge/async_logsys.log";
 
-    auto &logger = logsys::Logger::Instance();
+    auto& logger = logsys::Logger::Instance();
     logger.ConfigureDefaultLogger(log_options);
-    logger.SetDefaultOrigin(logsys::ErrorSource::Business,
-                            logsys::ModuleId::BusinessCommon,
+    logger.SetDefaultOrigin(logsys::ErrorSource::Business, logsys::ModuleId::BusinessCommon,
                             logsys::ErrorCategory::Business);
 
     asyncx::PoolOptions options;
@@ -37,10 +36,12 @@ int main()
 
     for (int i = 0; i < 24; ++i)
     {
-        auto submitted = pool.Submit([i]()
-                                     {
-                                         LOGI("asyncx-logsys task=%d", i);
-                                         return i; });
+        auto submitted = pool.Submit(
+            [i]()
+            {
+                LOGI("asyncx-logsys task=%d", i);
+                return i;
+            });
         if (!submitted.ok)
         {
             std::cerr << "submit failed: " << submitted.error.message << '\n';
@@ -57,16 +58,14 @@ int main()
     }
 
     int sum = 0;
-    for (auto &future : futures)
+    for (auto& future : futures)
     {
         sum += future.get();
     }
 
     auto metrics = pool.GetMetricsSnapshot();
-    std::cout << "logsys bridge sum=" << sum
-              << " submitted=" << metrics.execution.submitted
-              << " completed=" << metrics.execution.completed
-              << '\n';
+    std::cout << "logsys bridge sum=" << sum << " submitted=" << metrics.execution.submitted
+              << " completed=" << metrics.execution.completed << '\n';
 
     pool.StopAndJoin(asyncx::StopMode::Drain);
     logger.Flush();

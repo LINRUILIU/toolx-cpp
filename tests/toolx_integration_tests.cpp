@@ -19,45 +19,45 @@
 namespace
 {
 
-    std::filesystem::path IntegrationRoot()
+std::filesystem::path IntegrationRoot()
+{
+    return std::filesystem::current_path() / "toolx_test_tmp" / "toolx_integration_tests";
+}
+
+class MemorySink final : public logsys::ISink
+{
+  public:
+    void Write(const std::string& line) override
     {
-        return std::filesystem::current_path() / "toolx_test_tmp" / "toolx_integration_tests";
+        std::lock_guard<std::mutex> lock(mu_);
+        lines.push_back(line);
     }
 
-    class MemorySink final : public logsys::ISink
+    void Flush() override {}
+
+    std::vector<std::string> Snapshot() const
     {
-    public:
-        void Write(const std::string &line) override
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            lines.push_back(line);
-        }
+        std::lock_guard<std::mutex> lock(mu_);
+        return lines;
+    }
 
-        void Flush() override {}
+  private:
+    mutable std::mutex mu_;
+    std::vector<std::string> lines;
+};
 
-        std::vector<std::string> Snapshot() const
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            return lines;
-        }
-
-    private:
-        mutable std::mutex mu_;
-        std::vector<std::string> lines;
-    };
-
-    struct RemoteFetcherScope
+struct RemoteFetcherScope
+{
+    RemoteFetcherScope()
     {
-        RemoteFetcherScope()
-        {
-            cfgx::SetRemoteFetcher({});
-        }
+        cfgx::SetRemoteFetcher({});
+    }
 
-        ~RemoteFetcherScope()
-        {
-            cfgx::SetRemoteFetcher({});
-        }
-    };
+    ~RemoteFetcherScope()
+    {
+        cfgx::SetRemoteFetcher({});
+    }
+};
 
 } // namespace
 
@@ -122,8 +122,7 @@ TEST(ToolxIntegrationTests, AsyncxFsxBridgeCompletesBatchPlans)
         run_options.conflict_policy = fsx::ConflictPolicy::Overwrite;
         run_options.journal_path = (root / ("job" + std::to_string(i) + ".journal")).string();
 
-        auto submitted = pool.Submit([plan, run_options]()
-                                     { return fsx::Run(plan, run_options); });
+        auto submitted = pool.Submit([plan, run_options]() { return fsx::Run(plan, run_options); });
         ASSERT_TRUE(submitted.ok) << submitted.error.message;
         futures.push_back(std::move(submitted.value));
     }
@@ -149,7 +148,8 @@ TEST(ToolxIntegrationTests, AsyncxFsxBridgeCompletesBatchPlans)
 TEST(ToolxIntegrationTests, AsyncxHttpxBridgeSchedulesMultipleRequests)
 {
     httpx::ClientOptions client_options;
-    client_options.transport = [](const httpx::Request &request, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    client_options.transport = [](const httpx::Request& request,
+                                  const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         httpx::Result<httpx::Response> out;
         std::chrono::milliseconds delay{40};
@@ -175,21 +175,20 @@ TEST(ToolxIntegrationTests, AsyncxHttpxBridgeSchedulesMultipleRequests)
     options.queue_capacity = 16;
     asyncx::ThreadPool pool(options);
 
-    const std::vector<std::string> urls = {
-        "https://demo.local/slow",
-        "https://demo.local/fast",
-        "https://demo.local/normal"};
+    const std::vector<std::string> urls = {"https://demo.local/slow", "https://demo.local/fast",
+                                           "https://demo.local/normal"};
 
     std::vector<std::future<httpx::Result<httpx::Response>>> futures;
-    for (const auto &url : urls)
+    for (const auto& url : urls)
     {
-        auto submitted = pool.Submit([&client, url]()
-                                     {
-                                         httpx::Request request;
-                                         request.method = httpx::HttpMethod::Get;
-                                         request.url = url;
-                                         return client.Send(request);
-                                     });
+        auto submitted = pool.Submit(
+            [&client, url]()
+            {
+                httpx::Request request;
+                request.method = httpx::HttpMethod::Get;
+                request.url = url;
+                return client.Send(request);
+            });
         ASSERT_TRUE(submitted.ok) << submitted.error.message;
         futures.push_back(std::move(submitted.value));
     }
@@ -201,7 +200,7 @@ TEST(ToolxIntegrationTests, AsyncxHttpxBridgeSchedulesMultipleRequests)
     const auto all_status = asyncx::WaitAllFor(futures, std::chrono::seconds(2));
     ASSERT_TRUE(all_status.ok) << all_status.error.message;
 
-    for (auto &future : futures)
+    for (auto& future : futures)
     {
         const auto result = future.get();
         ASSERT_TRUE(result.ok) << result.error.message;
@@ -222,7 +221,7 @@ TEST(ToolxIntegrationTests, AsyncxLogsysBridgeFlushesTaskLogs)
     log_options.enable_file = false;
     log_options.enable_debugger = false;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     logger.ConfigureDefaultLogger(log_options);
     logger.SetDefaultOrigin(ErrorSource::Business, ModuleId::BusinessCommon, ErrorCategory::Business);
 
@@ -238,11 +237,12 @@ TEST(ToolxIntegrationTests, AsyncxLogsysBridgeFlushesTaskLogs)
     std::vector<std::future<int>> futures;
     for (int i = 0; i < 8; ++i)
     {
-        auto submitted = pool.Submit([i]()
-                                     {
-                                         LOGI("asyncx-logsys task=%d", i);
-                                         return i;
-                                     });
+        auto submitted = pool.Submit(
+            [i]()
+            {
+                LOGI("asyncx-logsys task=%d", i);
+                return i;
+            });
         ASSERT_TRUE(submitted.ok) << submitted.error.message;
         futures.push_back(std::move(submitted.value));
     }
@@ -253,7 +253,7 @@ TEST(ToolxIntegrationTests, AsyncxLogsysBridgeFlushesTaskLogs)
     logger.Flush();
 
     int sum = 0;
-    for (auto &future : futures)
+    for (auto& future : futures)
     {
         sum += future.get();
     }
@@ -261,7 +261,7 @@ TEST(ToolxIntegrationTests, AsyncxLogsysBridgeFlushesTaskLogs)
 
     const auto lines = sink->Snapshot();
     ASSERT_GE(lines.size(), 8u);
-    const auto found = std::find_if(lines.begin(), lines.end(), [](const std::string &line)
+    const auto found = std::find_if(lines.begin(), lines.end(), [](const std::string& line)
                                     { return line.find("asyncx-logsys task=7") != std::string::npos; });
     EXPECT_NE(found, lines.end());
 }
@@ -271,7 +271,7 @@ TEST(ToolxIntegrationTests, CfgxHttpxRemoteFetcherLoadsRemoteConfig)
     RemoteFetcherScope scope;
 
     httpx::ClientOptions options;
-    options.transport = [](const httpx::Request &request, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    options.transport = [](const httpx::Request& request, const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         httpx::Result<httpx::Response> out;
         out.ok = true;
@@ -281,23 +281,24 @@ TEST(ToolxIntegrationTests, CfgxHttpxRemoteFetcherLoadsRemoteConfig)
     };
     httpx::Client client(options);
 
-    cfgx::SetRemoteFetcher([&client](const cfgx::RemoteFetchRequest &request)
-                           {
-                               cfgx::Result<cfgx::RemoteFetchResponse> out;
-                               const auto response = client.Get(request.url, request.headers);
-                               if (!response.ok)
-                               {
-                                   out.ok = false;
-                                   out.error = response.error.message;
-                                   return out;
-                               }
+    cfgx::SetRemoteFetcher(
+        [&client](const cfgx::RemoteFetchRequest& request)
+        {
+            cfgx::Result<cfgx::RemoteFetchResponse> out;
+            const auto response = client.Get(request.url, request.headers);
+            if (!response.ok)
+            {
+                out.ok = false;
+                out.error = response.error.message;
+                return out;
+            }
 
-                               out.ok = true;
-                               out.value.body = response.value.body;
-                               out.value.status_code = response.value.status_code;
-                               out.value.headers = response.value.headers;
-                               return out;
-                           });
+            out.ok = true;
+            out.value.body = response.value.body;
+            out.value.status_code = response.value.status_code;
+            out.value.headers = response.value.headers;
+            return out;
+        });
 
     const auto loaded = cfgx::LoadFromRemote("https://config.test/runtime.json");
     ASSERT_TRUE(loaded.ok) << loaded.error;
@@ -322,14 +323,14 @@ TEST(ToolxIntegrationTests, HttpxLoggerCanForwardIntoLogsys)
     log_options.enable_file = false;
     log_options.enable_debugger = false;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     logger.ConfigureDefaultLogger(log_options);
 
     auto sink = std::make_shared<MemorySink>();
     logger.AddDefaultSink(sink);
 
     httpx::ClientOptions options;
-    options.transport = [](const httpx::Request &request, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    options.transport = [](const httpx::Request& request, const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         httpx::Result<httpx::Response> out;
         out.ok = true;
@@ -337,16 +338,10 @@ TEST(ToolxIntegrationTests, HttpxLoggerCanForwardIntoLogsys)
         out.value.body = request.url;
         return out;
     };
-    options.logger = [&logger](const httpx::LogEvent &event)
+    options.logger = [&logger](const httpx::LogEvent& event)
     {
-        logger.LogDefaultf(LogLevel::Info,
-                           __FILE__,
-                           __LINE__,
-                           __func__,
-                           "httpx %s %s status=%d",
-                           event.method.c_str(),
-                           event.url.c_str(),
-                           event.status_code);
+        logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, __func__, "httpx %s %s status=%d", event.method.c_str(),
+                           event.url.c_str(), event.status_code);
     };
 
     httpx::Client client(options);
@@ -355,7 +350,7 @@ TEST(ToolxIntegrationTests, HttpxLoggerCanForwardIntoLogsys)
     logger.Flush();
 
     const auto lines = sink->Snapshot();
-    const auto found = std::find_if(lines.begin(), lines.end(), [](const std::string &line)
+    const auto found = std::find_if(lines.begin(), lines.end(), [](const std::string& line)
                                     { return line.find("https://service.local/ping") != std::string::npos; });
     EXPECT_NE(found, lines.end());
 }
@@ -379,7 +374,7 @@ TEST(ToolxIntegrationTests, CfgxCanAuthorLogsysConfigFile)
     ASSERT_TRUE(cfgx::SetNode(config, "global_text_field_mask", cfgx::Node(std::int64_t(66))).ok);
     ASSERT_TRUE(cfgx::SaveToFile(config, file.string()).ok);
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     ASSERT_TRUE(logger.LoadConfigV2FromJsonFile(file.string()));
     EXPECT_EQ(logger.RecordLevel(), LogLevel::Debug);
     EXPECT_EQ(logger.Level(), LogLevel::Error);
@@ -394,7 +389,7 @@ TEST(ToolxIntegrationTests, ArgtoolOverridesCanBeAppliedToCfgxTree)
     parser.Option("port", 'p').Int().Default("8080").Done();
     parser.Flag("verbose", 'v').Done();
 
-    const char *argv[] = {"demo", "--port", "9090", "--verbose"};
+    const char* argv[] = {"demo", "--port", "9090", "--verbose"};
     const auto parsed = parser.Parse(4, argv);
     ASSERT_TRUE(parsed.ok);
 
@@ -441,13 +436,14 @@ TEST(ToolxIntegrationTests, ReleaseScenarioRemoteConfigSyncUsesCoreModules)
     log_options.enable_file = false;
     log_options.enable_debugger = false;
 
-    auto &logger = Logger::Instance();
+    auto& logger = Logger::Instance();
     logger.ConfigureDefaultLogger(log_options);
     auto sink = std::make_shared<MemorySink>();
     logger.AddDefaultSink(sink);
 
     httpx::ClientOptions client_options;
-    client_options.transport = [](const httpx::Request &request, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    client_options.transport = [](const httpx::Request& request,
+                                  const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         httpx::Result<httpx::Response> out;
         out.ok = true;
@@ -457,35 +453,34 @@ TEST(ToolxIntegrationTests, ReleaseScenarioRemoteConfigSyncUsesCoreModules)
     };
     httpx::Client client(client_options);
 
-    cfgx::SetRemoteFetcher([&client](const cfgx::RemoteFetchRequest &request)
-                           {
-                               cfgx::Result<cfgx::RemoteFetchResponse> out;
-                               const auto response = client.Get(request.url, request.headers);
-                               if (!response.ok)
-                               {
-                                   out.ok = false;
-                                   out.error = response.error.message;
-                                   return out;
-                               }
+    cfgx::SetRemoteFetcher(
+        [&client](const cfgx::RemoteFetchRequest& request)
+        {
+            cfgx::Result<cfgx::RemoteFetchResponse> out;
+            const auto response = client.Get(request.url, request.headers);
+            if (!response.ok)
+            {
+                out.ok = false;
+                out.error = response.error.message;
+                return out;
+            }
 
-                               out.ok = true;
-                               out.value.body = response.value.body;
-                               out.value.status_code = response.value.status_code;
-                               out.value.headers = response.value.headers;
-                               return out;
-                           });
+            out.ok = true;
+            out.value.body = response.value.body;
+            out.value.status_code = response.value.status_code;
+            out.value.headers = response.value.headers;
+            return out;
+        });
 
     asyncx::PoolOptions pool_options;
     pool_options.worker_count = 2;
     pool_options.queue_capacity = 8;
     asyncx::ThreadPool pool(pool_options);
 
-    auto base_task = pool.Submit([base_file]()
-                                 { return cfgx::LoadFromFile(base_file.string()); });
+    auto base_task = pool.Submit([base_file]() { return cfgx::LoadFromFile(base_file.string()); });
     ASSERT_TRUE(base_task.ok) << base_task.error.message;
 
-    auto remote_task = pool.Submit([]()
-                                   { return cfgx::LoadFromRemote("https://config.test/release.json"); });
+    auto remote_task = pool.Submit([]() { return cfgx::LoadFromRemote("https://config.test/release.json"); });
     ASSERT_TRUE(remote_task.ok) << remote_task.error.message;
 
     auto loaded_base = base_task.value.get();
@@ -493,26 +488,19 @@ TEST(ToolxIntegrationTests, ReleaseScenarioRemoteConfigSyncUsesCoreModules)
     auto loaded_remote = remote_task.value.get();
     ASSERT_TRUE(loaded_remote.ok) << loaded_remote.error;
 
-    const auto composed = cfgx::ComposeLayers(loaded_base.value,
-                                             std::nullopt,
-                                             std::nullopt,
-                                             nullptr,
-                                             cfgx::ComposeOptions{},
-                                             nullptr,
-                                             loaded_remote.value);
+    const auto composed = cfgx::ComposeLayers(loaded_base.value, std::nullopt, std::nullopt, nullptr,
+                                              cfgx::ComposeOptions{}, nullptr, loaded_remote.value);
     ASSERT_TRUE(composed.ok) << composed.error;
 
-    const auto validation = cfgx::Validate(composed.value,
-                                           {
-                                               cfgx::RequirePathRule("svc.host"),
-                                               cfgx::NumericRangeRule("svc.port", 1, 65535),
-                                           });
+    const auto validation = cfgx::Validate(composed.value, {
+                                                               cfgx::RequirePathRule("svc.host"),
+                                                               cfgx::NumericRangeRule("svc.port", 1, 65535),
+                                                           });
     ASSERT_TRUE(validation.ok);
 
     fsx::BatchPlan plan;
     const std::string serialized = cfgx::ToJson(composed.value, 2);
-    plan.AddAtomicWrite(out_file.string(), serialized)
-        .AddAtomicWrite(snapshot_file.string(), serialized);
+    plan.AddAtomicWrite(out_file.string(), serialized).AddAtomicWrite(snapshot_file.string(), serialized);
 
     fsx::RunOptions run_options;
     run_options.journal_path = journal_file.string();
@@ -532,8 +520,9 @@ TEST(ToolxIntegrationTests, ReleaseScenarioRemoteConfigSyncUsesCoreModules)
     EXPECT_TRUE(fs::exists(snapshot_file));
 
     const auto lines = sink->Snapshot();
-    const auto found_log = std::find_if(lines.begin(), lines.end(), [](const std::string &line)
-                                        { return line.find("release-scenario config sync wrote") != std::string::npos; });
+    const auto found_log =
+        std::find_if(lines.begin(), lines.end(), [](const std::string& line)
+                     { return line.find("release-scenario config sync wrote") != std::string::npos; });
     EXPECT_NE(found_log, lines.end());
 
     EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::Drain).ok);

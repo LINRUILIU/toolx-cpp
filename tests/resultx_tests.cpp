@@ -46,10 +46,8 @@ TEST(ResultxTests, HttpxResultMapsNetworkDomainAndStatusCode)
 
 TEST(ResultxTests, FormatErrorIncludesDomainKindAndMessage)
 {
-    const auto error = resultx::MakeError(resultx::ErrorKind::Internal,
-                                          "bridge failed",
-                                          resultx::ErrorDomain::System,
-                                          17);
+    const auto error =
+        resultx::MakeError(resultx::ErrorKind::Internal, "bridge failed", resultx::ErrorDomain::System, 17);
     const auto text = resultx::FormatError(error);
 
     EXPECT_NE(text.find("system"), std::string::npos);

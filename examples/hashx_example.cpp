@@ -7,7 +7,7 @@
 
 int main()
 {
-    constexpr const char *text = "hello";
+    constexpr const char* text = "hello";
 
     const std::uint32_t h32 = hashx::fnv1a32(text);
     const std::uint64_t h64 = hashx::fnv1a64(text);

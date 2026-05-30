@@ -22,18 +22,21 @@ jobs:
             cxx: g++
             enable_tidy: OFF
             enable_coverage: OFF
+            run_format_check: ON
           - os: windows-latest
             compiler: msvc
             cc: cl
             cxx: cl
             enable_tidy: OFF
             enable_coverage: OFF
+            run_format_check: OFF
           - os: macos-latest
             compiler: clang
             cc: clang
             cxx: clang++
             enable_tidy: OFF
             enable_coverage: OFF
+            run_format_check: OFF
 
     env:
       BUILD_DIR: build-release
@@ -45,7 +48,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang-format
+          sudo apt-get install -y ninja-build clang-format-20
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -61,7 +64,14 @@ jobs:
         run: |
           choco install ninja llvm --no-progress -y
 
-      - name: Configure
+      - name: Set up MSVC developer command prompt
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure (POSIX)
+        if: runner.os != 'Windows'
         shell: bash
         env:
           CC: ${{ matrix.cc }}
@@ -76,7 +86,21 @@ jobs:
           -DTOOLX_ENABLE_CLANG_TIDY=${{ matrix.enable_tidy }}
           -DTOOLX_ENABLE_COVERAGE=${{ matrix.enable_coverage }}
 
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: >
+          cmake -S . -B "$env:BUILD_DIR"
+          -G Ninja
+          -DTOOLX_BUILD_TESTS=ON
+          -DTOOLX_BUILD_EXAMPLES=ON
+          -DTOOLX_BUILD_TOOLS=ON
+          -DTOOLX_BUILD_BENCHMARKS=OFF
+          -DTOOLX_ENABLE_CLANG_TIDY=${{ matrix.enable_tidy }}
+          -DTOOLX_ENABLE_COVERAGE=${{ matrix.enable_coverage }}
+
       - name: Format check
+        if: matrix.run_format_check == 'ON'
         run: cmake --build "${BUILD_DIR}" --target format-check
 
       - name: Build
@@ -105,9 +129,6 @@ jobs:
         run: cpack --config "${BUILD_DIR}/CPackConfig.cmake"
 
       - name: Verify packaged release archive
-        env:
-          CC: ${{ matrix.cc }}
-          CXX: ${{ matrix.cxx }}
         run: >
           cmake
           -DPACKAGE_DIR="${{ github.workspace }}/${BUILD_DIR}/packages"

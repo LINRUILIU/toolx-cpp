@@ -64,7 +64,9 @@ ErrorKind MapSystemCode(int code) noexcept
     case ETIMEDOUT:
         return ErrorKind::TimedOut;
     case EAGAIN:
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
     case EWOULDBLOCK:
+#endif
         return ErrorKind::WouldBlock;
     case ENOTSUP:
 #if defined(EOPNOTSUPP) && EOPNOTSUPP != ENOTSUP
@@ -119,7 +121,9 @@ ErrorKind MapNetworkCode(int code) noexcept
     case EINVAL:
         return ErrorKind::InvalidArgument;
     case EAGAIN:
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
     case EWOULDBLOCK:
+#endif
     case EINPROGRESS:
     case EALREADY:
         return ErrorKind::WouldBlock;

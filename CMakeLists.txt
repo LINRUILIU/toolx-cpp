@@ -86,7 +86,7 @@ if(TOOLX_ENABLE_COVERAGE)
     endif()
 endif()
 
-find_program(CLANG_FORMAT_BIN NAMES clang-format)
+find_program(CLANG_FORMAT_BIN NAMES clang-format-20 clang-format)
 find_program(CLANG_TIDY_BIN NAMES clang-tidy)
 find_program(GCOVR_BIN NAMES gcovr)
 

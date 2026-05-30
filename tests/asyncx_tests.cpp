@@ -23,14 +23,13 @@ TEST(AsyncxTests, SubmitCollectsResults)
 
     for (int i = 1; i <= 10; ++i)
     {
-        auto submitted = pool.Submit([i]()
-                                     { return i * 2; });
+        auto submitted = pool.Submit([i]() { return i * 2; });
         ASSERT_TRUE(submitted.ok) << submitted.error.message;
         futures.push_back(std::move(submitted.value));
     }
 
     int total = 0;
-    for (auto &future : futures)
+    for (auto& future : futures)
     {
         total += future.get();
     }
@@ -52,9 +51,7 @@ TEST(AsyncxTests, PostForTimesOutWhenQueueFull)
     std::promise<void> gate;
     std::shared_future<void> hold = gate.get_future().share();
 
-    ASSERT_TRUE(pool.Post([hold]()
-                          { hold.wait(); })
-                    .ok);
+    ASSERT_TRUE(pool.Post([hold]() { hold.wait(); }).ok);
     ASSERT_TRUE(pool.Post([]() {}).ok);
 
     const auto status = pool.PostFor(std::chrono::milliseconds(25), []() {});
@@ -84,13 +81,11 @@ TEST(AsyncxTests, TaskExceptionDoesNotBreakPool)
 {
     asyncx::ThreadPool pool;
 
-    auto bad = pool.Submit([]() -> int
-                           { throw std::runtime_error("boom"); });
+    auto bad = pool.Submit([]() -> int { throw std::runtime_error("boom"); });
     ASSERT_TRUE(bad.ok) << bad.error.message;
     EXPECT_THROW(bad.value.get(), std::runtime_error);
 
-    auto good = pool.Submit([]()
-                            { return 7; });
+    auto good = pool.Submit([]() { return 7; });
     ASSERT_TRUE(good.ok) << good.error.message;
     EXPECT_EQ(good.value.get(), 7);
 
@@ -114,8 +109,7 @@ TEST(AsyncxTests, ManualStartAndQueueCapacityFallback)
     EXPECT_TRUE(pool.Start().ok);
     EXPECT_EQ(pool.QueueCapacity(), 1U);
 
-    auto submitted = pool.Submit([]()
-                                 { return 3; });
+    auto submitted = pool.Submit([]() { return 3; });
     ASSERT_TRUE(submitted.ok) << submitted.error.message;
     EXPECT_EQ(submitted.value.get(), 3);
 
@@ -134,9 +128,7 @@ TEST(AsyncxTests, TryPostReturnsQueueFullWhenNoSlot)
     std::promise<void> gate;
     std::shared_future<void> hold = gate.get_future().share();
 
-    ASSERT_TRUE(pool.Post([hold]()
-                          { hold.wait(); })
-                    .ok);
+    ASSERT_TRUE(pool.Post([hold]() { hold.wait(); }).ok);
     ASSERT_TRUE(pool.Post([]() {}).ok);
 
     const auto status = pool.TryPost([]() {});
@@ -147,8 +139,7 @@ TEST(AsyncxTests, TryPostReturnsQueueFullWhenNoSlot)
     EXPECT_FALSE(high_status.ok);
     EXPECT_EQ(high_status.error.kind, asyncx::ErrorKind::QueueFull);
 
-    auto submit_status = pool.TrySubmit([]()
-                                        { return 1; });
+    auto submit_status = pool.TrySubmit([]() { return 1; });
     EXPECT_FALSE(submit_status.ok);
     EXPECT_EQ(submit_status.error.kind, asyncx::ErrorKind::QueueFull);
 
@@ -171,9 +162,7 @@ TEST(AsyncxTests, PriorityTasksRunHighBeforeLow)
     std::vector<int> order;
     std::mutex order_mu;
 
-    ASSERT_TRUE(pool.Post([hold]()
-                          { hold.wait(); })
-                    .ok);
+    ASSERT_TRUE(pool.Post([hold]() { hold.wait(); }).ok);
 
     ASSERT_TRUE(pool.PostWithPriority(asyncx::TaskPriority::Low,
                                       [&order, &order_mu]()
@@ -209,8 +198,7 @@ TEST(AsyncxTests, SubmitWithPriorityWorks)
 
     asyncx::ThreadPool pool(options);
 
-    auto f = pool.SubmitWithPriority(asyncx::TaskPriority::High, []()
-                                     { return 42; });
+    auto f = pool.SubmitWithPriority(asyncx::TaskPriority::High, []() { return 42; });
     ASSERT_TRUE(f.ok) << f.error.message;
     EXPECT_EQ(f.value.get(), 42);
     EXPECT_STREQ(asyncx::ToString(asyncx::TaskPriority::High), "high");
@@ -228,9 +216,7 @@ TEST(AsyncxTests, PrioritySchedulingPreventsLowStarvation)
 
     std::promise<void> gate;
     std::shared_future<void> hold = gate.get_future().share();
-    ASSERT_TRUE(pool.Post([hold]()
-                          { hold.wait(); })
-                    .ok);
+    ASSERT_TRUE(pool.Post([hold]() { hold.wait(); }).ok);
 
     std::vector<int> order;
     std::mutex order_mu;
@@ -277,14 +263,11 @@ TEST(AsyncxTests, SubmitUntilTimesOutWhenQueueFull)
     std::promise<void> gate;
     std::shared_future<void> hold = gate.get_future().share();
 
-    ASSERT_TRUE(pool.Post([hold]()
-                          { hold.wait(); })
-                    .ok);
+    ASSERT_TRUE(pool.Post([hold]() { hold.wait(); }).ok);
     ASSERT_TRUE(pool.Post([]() {}).ok);
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(25);
-    auto submitted = pool.SubmitUntil(deadline, []()
-                                      { return 5; });
+    auto submitted = pool.SubmitUntil(deadline, []() { return 5; });
     EXPECT_FALSE(submitted.ok);
     EXPECT_EQ(submitted.error.kind, asyncx::ErrorKind::Timeout);
 
@@ -305,10 +288,12 @@ TEST(AsyncxTests, WaitForIdleTracksRunningTasks)
     std::atomic<int> done{0};
     for (int i = 0; i < 6; ++i)
     {
-        ASSERT_TRUE(pool.Post([&done]()
-                              {
-                                  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                                  done.fetch_add(1, std::memory_order_relaxed); })
+        ASSERT_TRUE(pool.Post(
+                            [&done]()
+                            {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                                done.fetch_add(1, std::memory_order_relaxed);
+                            })
                         .ok);
     }
 
@@ -336,9 +321,7 @@ TEST(AsyncxTests, WaitForIdleUntilTimesOut)
 
     std::promise<void> gate;
     std::shared_future<void> hold = gate.get_future().share();
-    ASSERT_TRUE(pool.Post([hold]()
-                          { hold.wait(); })
-                    .ok);
+    ASSERT_TRUE(pool.Post([hold]() { hold.wait(); }).ok);
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(20);
     const auto status = pool.WaitForIdleUntil(deadline);
@@ -360,9 +343,7 @@ TEST(AsyncxTests, ResetStatsReturnsPreviousAndClears)
 
     for (int i = 0; i < 3; ++i)
     {
-        ASSERT_TRUE(pool.Post([]()
-                              { std::this_thread::sleep_for(std::chrono::milliseconds(5)); })
-                        .ok);
+        ASSERT_TRUE(pool.Post([]() { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }).ok);
     }
 
     ASSERT_TRUE(pool.WaitForIdleFor(std::chrono::milliseconds(500)).ok);
@@ -406,8 +387,7 @@ TEST(AsyncxTests, PostDelayedForRunsAndBecomesIdle)
     std::promise<void> done;
     auto done_future = done.get_future();
 
-    auto scheduled = pool.PostDelayedFor(std::chrono::milliseconds(40), [&done]()
-                                         { done.set_value(); });
+    auto scheduled = pool.PostDelayedFor(std::chrono::milliseconds(40), [&done]() { done.set_value(); });
     ASSERT_TRUE(scheduled.ok) << scheduled.error.message;
     EXPECT_EQ(pool.ScheduledCount(), 1U);
 
@@ -423,8 +403,8 @@ TEST(AsyncxTests, CancelScheduledPreventsDelayedExecution)
     asyncx::ThreadPool pool;
 
     std::atomic<int> hits{0};
-    auto scheduled = pool.PostDelayedFor(std::chrono::milliseconds(120), [&hits]()
-                                         { hits.fetch_add(1, std::memory_order_relaxed); });
+    auto scheduled = pool.PostDelayedFor(std::chrono::milliseconds(120),
+                                         [&hits]() { hits.fetch_add(1, std::memory_order_relaxed); });
     ASSERT_TRUE(scheduled.ok) << scheduled.error.message;
 
     const auto cancel_status = pool.CancelScheduled(scheduled.value);
@@ -450,8 +430,8 @@ TEST(AsyncxTests, ScheduleEveryCanRunAndCancel)
     asyncx::ThreadPool pool(options);
 
     std::atomic<int> ticks{0};
-    auto periodic = pool.ScheduleEvery(std::chrono::milliseconds(20), [&ticks]()
-                                       { ticks.fetch_add(1, std::memory_order_relaxed); }, true);
+    auto periodic = pool.ScheduleEvery(
+        std::chrono::milliseconds(20), [&ticks]() { ticks.fetch_add(1, std::memory_order_relaxed); }, true);
     ASSERT_TRUE(periodic.ok) << periodic.error.message;
 
     const auto wait_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
@@ -495,14 +475,18 @@ TEST(AsyncxTests, WaitAllAndWaitAnyHelpersWork)
     asyncx::ThreadPool pool(options);
 
     std::vector<std::future<int>> futures;
-    auto f0 = pool.Submit([]()
-                          {
-                              std::this_thread::sleep_for(std::chrono::milliseconds(80));
-                              return 10; });
-    auto f1 = pool.Submit([]()
-                          {
-                              std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                              return 20; });
+    auto f0 = pool.Submit(
+        []()
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            return 10;
+        });
+    auto f1 = pool.Submit(
+        []()
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            return 20;
+        });
     ASSERT_TRUE(f0.ok);
     ASSERT_TRUE(f1.ok);
     futures.push_back(std::move(f0.value));
@@ -525,10 +509,12 @@ TEST(AsyncxTests, WaitAllForCanTimeout)
     asyncx::ThreadPool pool;
 
     std::vector<std::future<int>> futures;
-    auto f = pool.Submit([]()
-                         {
-                             std::this_thread::sleep_for(std::chrono::milliseconds(120));
-                             return 1; });
+    auto f = pool.Submit(
+        []()
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+            return 1;
+        });
     ASSERT_TRUE(f.ok);
     futures.push_back(std::move(f.value));
 
@@ -557,10 +543,12 @@ TEST(AsyncxTests, BackpressureRejectPolicyAndMetricsSnapshot)
     std::promise<void> started;
     std::shared_future<void> hold = gate.get_future().share();
     auto started_future = started.get_future();
-    ASSERT_TRUE(pool.Post([&started, hold]()
-                          {
-                              started.set_value();
-                              hold.wait(); })
+    ASSERT_TRUE(pool.Post(
+                        [&started, hold]()
+                        {
+                            started.set_value();
+                            hold.wait();
+                        })
                     .ok);
     ASSERT_EQ(started_future.wait_for(std::chrono::milliseconds(200)), std::future_status::ready);
 
@@ -621,20 +609,18 @@ TEST(AsyncxTests, StopCancelPendingDropsQueuedTasks)
     auto started_future = started.get_future();
     std::atomic<int> ran{0};
 
-    ASSERT_TRUE(pool.Post([hold, &ran, &started]()
-                          {
-                              ran.fetch_add(1, std::memory_order_relaxed);
-                              started.set_value();
-                              hold.wait(); })
+    ASSERT_TRUE(pool.Post(
+                        [hold, &ran, &started]()
+                        {
+                            ran.fetch_add(1, std::memory_order_relaxed);
+                            started.set_value();
+                            hold.wait();
+                        })
                     .ok);
     ASSERT_EQ(started_future.wait_for(std::chrono::milliseconds(200)), std::future_status::ready);
 
-    ASSERT_TRUE(pool.Post([&ran]()
-                          { ran.fetch_add(1, std::memory_order_relaxed); })
-                    .ok);
-    ASSERT_TRUE(pool.Post([&ran]()
-                          { ran.fetch_add(1, std::memory_order_relaxed); })
-                    .ok);
+    ASSERT_TRUE(pool.Post([&ran]() { ran.fetch_add(1, std::memory_order_relaxed); }).ok);
+    ASSERT_TRUE(pool.Post([&ran]() { ran.fetch_add(1, std::memory_order_relaxed); }).ok);
 
     EXPECT_TRUE(pool.Stop(asyncx::StopMode::CancelPending).ok);
     gate.set_value();
@@ -645,6 +631,46 @@ TEST(AsyncxTests, StopCancelPendingDropsQueuedTasks)
 
     const auto stats = pool.GetStats();
     EXPECT_GE(stats.rejected, 2U);
+}
+
+TEST(AsyncxTests, StopCancelPendingUnblocksQueuedWaiters)
+{
+    asyncx::PoolOptions options;
+    options.worker_count = 1;
+    options.queue_capacity = 1;
+
+    asyncx::ThreadPool pool(options);
+
+    std::promise<void> gate;
+    std::shared_future<void> hold = gate.get_future().share();
+    std::promise<void> started;
+    auto started_future = started.get_future();
+
+    ASSERT_TRUE(pool.Post(
+                        [hold, &started]()
+                        {
+                            started.set_value();
+                            hold.wait();
+                        })
+                    .ok);
+    ASSERT_EQ(started_future.wait_for(std::chrono::milliseconds(200)), std::future_status::ready);
+    ASSERT_TRUE(pool.Post([]() {}).ok);
+
+    std::promise<asyncx::Status> waiter_done;
+    auto waiter_future = waiter_done.get_future();
+    std::thread waiter([&pool, &waiter_done]()
+                       { waiter_done.set_value(pool.PostFor(std::chrono::milliseconds(500), []() {})); });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_TRUE(pool.Stop(asyncx::StopMode::CancelPending).ok);
+    gate.set_value();
+
+    const auto waiter_status = waiter_future.get();
+    EXPECT_FALSE(waiter_status.ok);
+    EXPECT_EQ(waiter_status.error.kind, asyncx::ErrorKind::QueueClosed);
+
+    waiter.join();
+    EXPECT_TRUE(pool.Join().ok);
 }
 
 TEST(AsyncxTests, JoinIsIdempotentAfterStopAndJoin)
@@ -671,17 +697,15 @@ TEST(AsyncxTests, StopDrainRunsQueuedTasksBeforeExit)
     std::shared_future<void> hold = gate.get_future().share();
     std::atomic<int> ran{0};
 
-    ASSERT_TRUE(pool.Post([hold, &ran]()
-                          {
-                              ran.fetch_add(1, std::memory_order_relaxed);
-                              hold.wait(); })
+    ASSERT_TRUE(pool.Post(
+                        [hold, &ran]()
+                        {
+                            ran.fetch_add(1, std::memory_order_relaxed);
+                            hold.wait();
+                        })
                     .ok);
-    ASSERT_TRUE(pool.Post([&ran]()
-                          { ran.fetch_add(1, std::memory_order_relaxed); })
-                    .ok);
-    ASSERT_TRUE(pool.Post([&ran]()
-                          { ran.fetch_add(1, std::memory_order_relaxed); })
-                    .ok);
+    ASSERT_TRUE(pool.Post([&ran]() { ran.fetch_add(1, std::memory_order_relaxed); }).ok);
+    ASSERT_TRUE(pool.Post([&ran]() { ran.fetch_add(1, std::memory_order_relaxed); }).ok);
 
     EXPECT_TRUE(pool.Stop(asyncx::StopMode::Drain).ok);
     gate.set_value();
@@ -695,12 +719,12 @@ TEST(AsyncxTests, StopCancelPendingClearsScheduledTasks)
     asyncx::ThreadPool pool;
 
     std::atomic<int> fired{0};
-    auto delayed = pool.PostDelayedFor(std::chrono::milliseconds(500), [&fired]()
-                                       { fired.fetch_add(1, std::memory_order_relaxed); });
+    auto delayed = pool.PostDelayedFor(std::chrono::milliseconds(500),
+                                       [&fired]() { fired.fetch_add(1, std::memory_order_relaxed); });
     ASSERT_TRUE(delayed.ok);
 
-    auto periodic = pool.ScheduleEvery(std::chrono::milliseconds(500), [&fired]()
-                                       { fired.fetch_add(1, std::memory_order_relaxed); }, false);
+    auto periodic = pool.ScheduleEvery(
+        std::chrono::milliseconds(500), [&fired]() { fired.fetch_add(1, std::memory_order_relaxed); }, false);
     ASSERT_TRUE(periodic.ok);
     EXPECT_EQ(pool.ScheduledCount(), 2U);
 

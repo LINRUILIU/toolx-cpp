@@ -17,11 +17,13 @@ set(base_json "${test_root}/base.json")
 set(overlay_json "${test_root}/overlay.json")
 set(merged_json "${test_root}/merged.json")
 set(candidate_json "${test_root}/candidate.json")
+set(invalid_json "${test_root}/invalid.json")
 
 file(WRITE "${app_json}" [=[{"svc":{"host":"127.0.0.1","port":8080},"tags":["base"]}]=])
 file(WRITE "${base_json}" [=[{"svc":{"port":8080,"mode":"base"},"tags":["base"]}]=])
 file(WRITE "${overlay_json}" [=[{"svc":{"mode":"overlay"},"tags":["overlay"]}]=])
 file(WRITE "${candidate_json}" [=[{"svc":{"host":"127.0.0.1","port":8081},"tags":["base"]}]=])
+file(WRITE "${invalid_json}" [=[{"svc":]=])
 
 function(run_cfgtool case_name expected_code)
     execute_process(
@@ -53,6 +55,7 @@ endfunction()
 run_cfgtool(HELP 0 --help)
 assert_contains(HELP "${HELP_OUT}" "cfgtool - thin CLI over cfgx")
 assert_contains(HELP "${HELP_OUT}" "reload-dryrun")
+assert_contains(HELP "${HELP_OUT}" "doctor")
 
 run_cfgtool(ADAPTERS_PLAIN 0 adapters)
 assert_contains(ADAPTERS_PLAIN "${ADAPTERS_PLAIN_OUT}" "count=")
@@ -69,6 +72,30 @@ assert_contains(LOAD_PLAIN "${LOAD_PLAIN_OUT}" "root_kind=object")
 run_cfgtool(LOAD_JSON 0 load --file "${app_json}" --json)
 assert_contains(LOAD_JSON "${LOAD_JSON_OUT}" "\"schema\": \"cfgtool.result\"")
 assert_contains(LOAD_JSON "${LOAD_JSON_OUT}" "\"config\"")
+
+run_cfgtool(DOCTOR_PLAIN 0 doctor --file "${app_json}" --require svc.host --expect svc.port=int)
+assert_contains(DOCTOR_PLAIN "${DOCTOR_PLAIN_OUT}" "doctor.ok=true")
+assert_contains(DOCTOR_PLAIN "${DOCTOR_PLAIN_OUT}" "doctor.check[1].name=")
+
+run_cfgtool(DOCTOR_JSON 0 doctor --file "${app_json}" --require svc.host --expect svc.port=int --json)
+assert_contains(DOCTOR_JSON "${DOCTOR_JSON_OUT}" "\"message\": \"doctor passed\"")
+assert_contains(DOCTOR_JSON "${DOCTOR_JSON_OUT}" "\"checks\"")
+
+run_cfgtool(DOCTOR_MISSING_FILE 3 doctor --file "${test_root}/missing.json" --json)
+assert_contains(DOCTOR_MISSING_FILE "${DOCTOR_MISSING_FILE_OUT}" "\"code\": 3")
+assert_contains(DOCTOR_MISSING_FILE "${DOCTOR_MISSING_FILE_OUT}" "\"recommendations\"")
+
+run_cfgtool(DOCTOR_PARSE_FAIL 1 doctor --file "${invalid_json}" --json)
+assert_contains(DOCTOR_PARSE_FAIL "${DOCTOR_PARSE_FAIL_OUT}" "\"code\": 1")
+assert_contains(DOCTOR_PARSE_FAIL "${DOCTOR_PARSE_FAIL_OUT}" "\"checks\"")
+
+run_cfgtool(DOCTOR_REQUIRE_FAIL 4 doctor --file "${app_json}" --require svc.missing --json)
+assert_contains(DOCTOR_REQUIRE_FAIL "${DOCTOR_REQUIRE_FAIL_OUT}" "\"code\": 4")
+assert_contains(DOCTOR_REQUIRE_FAIL "${DOCTOR_REQUIRE_FAIL_OUT}" "\"issues\"")
+
+run_cfgtool(DOCTOR_EXPECT_FAIL 4 doctor --file "${app_json}" --expect svc.port=string --json)
+assert_contains(DOCTOR_EXPECT_FAIL "${DOCTOR_EXPECT_FAIL_OUT}" "\"code\": 4")
+assert_contains(DOCTOR_EXPECT_FAIL "${DOCTOR_EXPECT_FAIL_OUT}" "\"recommendations\"")
 
 run_cfgtool(GET_PLAIN 0 get --file "${app_json}" --path svc.port)
 assert_contains(GET_PLAIN "${GET_PLAIN_OUT}" "8080")

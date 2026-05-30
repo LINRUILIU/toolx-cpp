@@ -54,6 +54,9 @@ endfunction()
 run_smoke(CFGTOOL_HELP 0 "${cfgtool_exe}" --help)
 assert_contains(CFGTOOL_HELP "${CFGTOOL_HELP_OUT}" "cfgtool - thin CLI over cfgx")
 
+run_smoke(CFGTOOL_DOCTOR 0 "${cfgtool_exe}" doctor --file "${app_json}" --require svc.host --expect svc.port=int --json)
+assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"message\": \"doctor passed\"")
+
 run_smoke(CFGTOOL_SET 0 "${cfgtool_exe}" set --file "${app_json}" --path svc.port --value 9090 --type int)
 run_smoke(CFGTOOL_GET 0 "${cfgtool_exe}" get --file "${app_json}" --path svc.port)
 assert_contains(CFGTOOL_GET "${CFGTOOL_GET_OUT}" "9090")

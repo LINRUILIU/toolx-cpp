@@ -8,61 +8,61 @@
 
 namespace
 {
-    std::filesystem::path TestTempPath(const char *name)
+std::filesystem::path TestTempPath(const char* name)
+{
+    const auto root = std::filesystem::current_path() / "toolx_test_tmp";
+    std::filesystem::create_directories(root);
+    return root / name;
+}
+
+class ParserAdapterScope
+{
+  public:
+    ParserAdapterScope()
     {
-        const auto root = std::filesystem::current_path() / "toolx_test_tmp";
-        std::filesystem::create_directories(root);
-        return root / name;
+        cfgx::ClearParserAdapters();
     }
 
-    class ParserAdapterScope
+    ~ParserAdapterScope()
     {
-    public:
-        ParserAdapterScope()
-        {
-            cfgx::ClearParserAdapters();
-        }
-
-        ~ParserAdapterScope()
-        {
-            cfgx::ClearParserAdapters();
-        }
-    };
-
-    class RemoteFetcherScope
-    {
-    public:
-        RemoteFetcherScope()
-        {
-            cfgx::SetRemoteFetcher({});
-        }
-
-        ~RemoteFetcherScope()
-        {
-            cfgx::SetRemoteFetcher({});
-        }
-    };
-
-    cfgx::ParserAdapter MakeFailingAdapter(std::string name)
-    {
-        cfgx::ParserAdapter adapter;
-        adapter.name = std::move(name);
-        adapter.parse = [](std::string_view, cfgx::ConfigFormat)
-        {
-            cfgx::Result<cfgx::Node> out;
-            out.ok = false;
-            out.error = "adapter parse failed";
-            return out;
-        };
-        adapter.dump = [](const cfgx::Node &, cfgx::ConfigFormat, int)
-        {
-            cfgx::Result<std::string> out;
-            out.ok = false;
-            out.error = "adapter dump failed";
-            return out;
-        };
-        return adapter;
+        cfgx::ClearParserAdapters();
     }
+};
+
+class RemoteFetcherScope
+{
+  public:
+    RemoteFetcherScope()
+    {
+        cfgx::SetRemoteFetcher({});
+    }
+
+    ~RemoteFetcherScope()
+    {
+        cfgx::SetRemoteFetcher({});
+    }
+};
+
+cfgx::ParserAdapter MakeFailingAdapter(std::string name)
+{
+    cfgx::ParserAdapter adapter;
+    adapter.name = std::move(name);
+    adapter.parse = [](std::string_view, cfgx::ConfigFormat)
+    {
+        cfgx::Result<cfgx::Node> out;
+        out.ok = false;
+        out.error = "adapter parse failed";
+        return out;
+    };
+    adapter.dump = [](const cfgx::Node&, cfgx::ConfigFormat, int)
+    {
+        cfgx::Result<std::string> out;
+        out.ok = false;
+        out.error = "adapter dump failed";
+        return out;
+    };
+    return adapter;
+}
 
 } // namespace
 
@@ -155,7 +155,7 @@ TEST(CfgxNodeApiTests, ConvenienceObjectAndArrayApisWork)
     ASSERT_TRUE(obj.Set("name", cfgx::Node("demo")).ok);
     ASSERT_TRUE(obj.Set("port", cfgx::Node(std::int64_t(8080))).ok);
 
-    const auto *name = obj.Get("name");
+    const auto* name = obj.Get("name");
     ASSERT_NE(name, nullptr);
     EXPECT_EQ(name->AsString(), "demo");
 
@@ -167,7 +167,7 @@ TEST(CfgxNodeApiTests, ConvenienceObjectAndArrayApisWork)
     ASSERT_TRUE(arr.SetAt(2, cfgx::Node("c"), true).ok);
     EXPECT_EQ(arr.Size(), 3U);
 
-    const auto *at2 = arr.At(2);
+    const auto* at2 = arr.At(2);
     ASSERT_NE(at2, nullptr);
     EXPECT_EQ(at2->AsString(), "c");
 
@@ -272,9 +272,9 @@ TEST(CfgxV2ComposeTests, ComposeLayersProvidesSourceAttribution)
     ASSERT_TRUE(host.ok) << host.error;
     EXPECT_EQ(host.value->AsString(), "127.0.0.1");
 
-    auto find_layer = [&trace](const std::string &path) -> std::optional<cfgx::SourceLayer>
+    auto find_layer = [&trace](const std::string& path) -> std::optional<cfgx::SourceLayer>
     {
-        for (const auto &entry : trace)
+        for (const auto& entry : trace)
         {
             if (entry.path == path)
             {
@@ -313,10 +313,12 @@ TEST(CfgxV2ReloadTests, TickSupportsDebounceAndRollback)
 
     cfgx::ReloadEvent captured;
     bool callback_called = false;
-    reloader.SetCallback([&](const cfgx::ReloadEvent &event)
-                         {
-                             callback_called = true;
-                             captured = event; });
+    reloader.SetCallback(
+        [&](const cfgx::ReloadEvent& event)
+        {
+            callback_called = true;
+            captured = event;
+        });
 
     {
         std::ofstream out(file.string(), std::ios::trunc);
@@ -337,7 +339,7 @@ TEST(CfgxV2ReloadTests, TickSupportsDebounceAndRollback)
     EXPECT_TRUE(t3.value.rolled_back);
     EXPECT_FALSE(t3.value.changed);
 
-    const auto *current = reloader.Current();
+    const auto* current = reloader.Current();
     ASSERT_NE(current, nullptr);
     const auto port = cfgx::GetNode(*current, "svc.port");
     ASSERT_TRUE(port.ok) << port.error;
@@ -405,10 +407,12 @@ TEST(CfgxV2ReloadTests, CallbackCarriesDiffAndSourceTrace)
 
     cfgx::ReloadEvent captured;
     bool callback_called = false;
-    reloader.SetCallback([&](const cfgx::ReloadEvent &event)
-                         {
-                             callback_called = true;
-                             captured = event; });
+    reloader.SetCallback(
+        [&](const cfgx::ReloadEvent& event)
+        {
+            callback_called = true;
+            captured = event;
+        });
 
     {
         std::ofstream out(file.string(), std::ios::trunc);
@@ -427,7 +431,7 @@ TEST(CfgxV2ReloadTests, CallbackCarriesDiffAndSourceTrace)
     EXPECT_FALSE(captured.diff_paths.empty());
 
     bool has_port_diff = false;
-    for (const auto &entry : captured.diff_paths)
+    for (const auto& entry : captured.diff_paths)
     {
         if (entry.path == "svc.port")
         {
@@ -439,7 +443,7 @@ TEST(CfgxV2ReloadTests, CallbackCarriesDiffAndSourceTrace)
     EXPECT_TRUE(has_port_diff);
 
     bool has_port_source = false;
-    for (const auto &entry : captured.source_trace)
+    for (const auto& entry : captured.source_trace)
     {
         if (entry.path == "svc.port")
         {
@@ -479,6 +483,25 @@ TEST(CfgxMergeTests, MergeOverridesObjectsRecursively)
     EXPECT_TRUE(tls.value->AsBool());
 }
 
+TEST(CfgxMergeTests, MergeReplacesMixedTypesWithOverlay)
+{
+    cfgx::Node base = cfgx::Node::MakeObject();
+    ASSERT_TRUE(cfgx::SetNode(base, "svc.port", cfgx::Node(std::int64_t(8080))).ok);
+    ASSERT_TRUE(cfgx::SetNode(base, "svc.labels[0]", cfgx::Node("base")).ok);
+
+    cfgx::Node overlay = cfgx::Node::MakeObject();
+    ASSERT_TRUE(cfgx::SetNode(overlay, "svc", cfgx::Node("replaced")).ok);
+
+    const auto st = cfgx::Merge(base, overlay);
+    ASSERT_TRUE(st.ok) << st.error;
+
+    const auto svc = cfgx::GetNode(base, "svc");
+    ASSERT_TRUE(svc.ok) << svc.error;
+    ASSERT_NE(svc.value, nullptr);
+    EXPECT_EQ(svc.value->Kind(), cfgx::NodeKind::String);
+    EXPECT_EQ(svc.value->AsString(), "replaced");
+}
+
 TEST(CfgxJsonTests, ParseAndDumpJsonRoundTrip)
 {
     const auto parsed = cfgx::ParseJson(R"({"a":1,"b":[true,"x"],"c":{"k":"v"}})");
@@ -501,7 +524,7 @@ TEST(CfgxValidationTests, ValidateCollectsIssues)
     cfgx::ValidationRule range_rule;
     range_rule.name = "port-range";
     range_rule.fail_fast = false;
-    range_rule.evaluator = [](const cfgx::Node &cfg) -> std::optional<cfgx::ValidationIssue>
+    range_rule.evaluator = [](const cfgx::Node& cfg) -> std::optional<cfgx::ValidationIssue>
     {
         const auto value = cfgx::GetNode(cfg, "svc.port");
         if (!value.ok || value.value == nullptr)
@@ -866,7 +889,7 @@ TEST(CfgxV2SnapshotTests, PollReloaderSnapshotRestoreWorks)
     ASSERT_TRUE(restored_port.ok) << restored_port.error;
     EXPECT_EQ(restored_port.value->AsInt(-1), 1000);
 
-    const auto *trace = reloader.CurrentSourceTrace();
+    const auto* trace = reloader.CurrentSourceTrace();
     ASSERT_NE(trace, nullptr);
     EXPECT_FALSE(trace->empty());
 
@@ -906,18 +929,18 @@ TEST(CfgxV2SnapshotTests, SnapshotFileExportImportAndAuditTrailWork)
     EXPECT_TRUE(tick.value.rolled_back);
 
     ASSERT_TRUE(reloader.RestoreSnapshotFromFile(snapshot_file.string(), cfgx::ConfigFormat::Json).ok);
-    const auto *current = reloader.Current();
+    const auto* current = reloader.Current();
     ASSERT_NE(current, nullptr);
     const auto port = cfgx::GetNode(*current, "svc.port");
     ASSERT_TRUE(port.ok) << port.error;
     EXPECT_EQ(port.value->AsInt(-1), 1000);
 
-    const auto &trail = reloader.AuditTrail();
+    const auto& trail = reloader.AuditTrail();
     ASSERT_GE(trail.size(), 3U);
 
     bool has_rollback = false;
     bool has_restore = false;
-    for (const auto &entry : trail)
+    for (const auto& entry : trail)
     {
         if (entry.action == "reload_rollback")
         {
@@ -938,6 +961,77 @@ TEST(CfgxV2SnapshotTests, SnapshotFileExportImportAndAuditTrailWork)
     std::error_code ec;
     std::filesystem::remove(file, ec);
     std::filesystem::remove(snapshot_file, ec);
+}
+
+TEST(CfgxV2SnapshotTests, ImportSnapshotRejectsCorruptSnapshotFile)
+{
+    const auto file = TestTempPath("cfgx_v2_snapshot_corrupt_base.json");
+    const auto snapshot_file = TestTempPath("cfgx_v2_snapshot_corrupt_snapshot.json");
+    {
+        std::ofstream out(file.string(), std::ios::trunc);
+        out << R"({"svc":{"port":1000}})";
+    }
+    {
+        std::ofstream out(snapshot_file.string(), std::ios::trunc);
+        out << R"({"svc":)";
+    }
+
+    cfgx::PollReloader reloader(file.string());
+    const auto init = reloader.ReloadNow();
+    ASSERT_TRUE(init.ok) << init.error;
+
+    const auto imported = reloader.ImportSnapshotFromFile(snapshot_file.string(), cfgx::ConfigFormat::Json);
+    ASSERT_FALSE(imported.ok);
+    EXPECT_FALSE(imported.error.empty());
+
+    const auto restored = reloader.RestoreSnapshotFromFile(snapshot_file.string(), cfgx::ConfigFormat::Json);
+    ASSERT_FALSE(restored.ok);
+    EXPECT_FALSE(restored.error.empty());
+
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+    std::filesystem::remove(snapshot_file, ec);
+}
+
+TEST(CfgxV2ReloadTests, DiffPathsRemainSortedInReloadAndAuditTrail)
+{
+    const auto file = TestTempPath("cfgx_v2_reload_sorted_diff.json");
+    {
+        std::ofstream out(file.string(), std::ios::trunc);
+        out << R"({"svc":{"z":1,"a":1,"m":1}})";
+    }
+
+    cfgx::PollReloader reloader(file.string());
+    cfgx::ReloadOptions options;
+    options.debounce_ms = 0;
+    reloader.SetOptions(options);
+
+    const auto init = reloader.ReloadNow();
+    ASSERT_TRUE(init.ok) << init.error;
+
+    {
+        std::ofstream out(file.string(), std::ios::trunc);
+        out << R"({"svc":{"z":2,"a":0}})";
+    }
+
+    const auto tick = reloader.Tick(9000);
+    ASSERT_TRUE(tick.ok) << tick.error;
+    ASSERT_TRUE(tick.value.attempted);
+    ASSERT_EQ(tick.value.diff_paths.size(), 3U);
+    EXPECT_EQ(tick.value.diff_paths[0].path, "svc.a");
+    EXPECT_EQ(tick.value.diff_paths[1].path, "svc.m");
+    EXPECT_EQ(tick.value.diff_paths[2].path, "svc.z");
+
+    const auto& trail = reloader.AuditTrail();
+    ASSERT_FALSE(trail.empty());
+    const auto& last = trail.back();
+    ASSERT_EQ(last.diff_paths.size(), 3U);
+    EXPECT_EQ(last.diff_paths[0].path, "svc.a");
+    EXPECT_EQ(last.diff_paths[1].path, "svc.m");
+    EXPECT_EQ(last.diff_paths[2].path, "svc.z");
+
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
 }
 
 TEST(CfgxParserAdapterTests, RegistryAndActivationApisWork)
@@ -989,7 +1083,7 @@ TEST(CfgxParserAdapterTests, LoadUsesActiveAdapterWhenParseSucceeds)
         out.value = std::move(root);
         return out;
     };
-    adapter.dump = [](const cfgx::Node &, cfgx::ConfigFormat, int)
+    adapter.dump = [](const cfgx::Node&, cfgx::ConfigFormat, int)
     {
         cfgx::Result<std::string> out;
         out.ok = false;
@@ -1031,7 +1125,7 @@ TEST(CfgxParserAdapterTests, SaveUsesActiveAdapterWhenDumpSucceeds)
         out.error = "unused";
         return out;
     };
-    adapter.dump = [&](const cfgx::Node &, cfgx::ConfigFormat format, int)
+    adapter.dump = [&](const cfgx::Node&, cfgx::ConfigFormat format, int)
     {
         dump_called = true;
         EXPECT_EQ(format, cfgx::ConfigFormat::Json);
@@ -1100,7 +1194,7 @@ TEST(CfgxParserAdapterTests, SaveFallsBackToBuiltinWhenAdapterDumpFails)
 
     bool dump_called = false;
     cfgx::ParserAdapter adapter = MakeFailingAdapter("FailingSave");
-    adapter.dump = [&](const cfgx::Node &, cfgx::ConfigFormat, int)
+    adapter.dump = [&](const cfgx::Node&, cfgx::ConfigFormat, int)
     {
         dump_called = true;
         cfgx::Result<std::string> out;
@@ -1216,13 +1310,15 @@ TEST(CfgxRemoteTests, LoadFromRemoteParsesJsonWithFetcher)
     RemoteFetcherScope scope;
 
     std::string seen_url;
-    cfgx::SetRemoteFetcher([&](const cfgx::RemoteFetchRequest &request)
-                           {
-                               seen_url = request.url;
-                               cfgx::Result<cfgx::RemoteFetchResponse> out;
-                               out.ok = true;
-                               out.value.body = R"({"svc":{"host":"127.0.0.1","port":8080}})";
-                               return out; });
+    cfgx::SetRemoteFetcher(
+        [&](const cfgx::RemoteFetchRequest& request)
+        {
+            seen_url = request.url;
+            cfgx::Result<cfgx::RemoteFetchResponse> out;
+            out.ok = true;
+            out.value.body = R"({"svc":{"host":"127.0.0.1","port":8080}})";
+            return out;
+        });
 
     ASSERT_TRUE(cfgx::HasRemoteFetcher());
     const auto loaded = cfgx::LoadFromRemote("https://config.test/app.json?version=1");
@@ -1242,12 +1338,14 @@ TEST(CfgxRemoteTests, LoadFromRemoteDetectsTomlByUrl)
 {
     RemoteFetcherScope scope;
 
-    cfgx::SetRemoteFetcher([](const cfgx::RemoteFetchRequest &)
-                           {
-                               cfgx::Result<cfgx::RemoteFetchResponse> out;
-                               out.ok = true;
-                               out.value.body = "enabled = true\n[service]\nname = \"demo\"\n";
-                               return out; });
+    cfgx::SetRemoteFetcher(
+        [](const cfgx::RemoteFetchRequest&)
+        {
+            cfgx::Result<cfgx::RemoteFetchResponse> out;
+            out.ok = true;
+            out.value.body = "enabled = true\n[service]\nname = \"demo\"\n";
+            return out;
+        });
 
     const auto loaded = cfgx::LoadFromRemote("https://config.test/app.toml#head");
     ASSERT_TRUE(loaded.ok) << loaded.error;
@@ -1271,12 +1369,14 @@ TEST(CfgxRemoteTests, PollReloaderReloadNowAppliesRemoteLayer)
         out << R"({"svc":{"host":"127.0.0.1","port":8080}})";
     }
 
-    cfgx::SetRemoteFetcher([](const cfgx::RemoteFetchRequest &)
-                           {
-                               cfgx::Result<cfgx::RemoteFetchResponse> out;
-                               out.ok = true;
-                               out.value.body = R"({"svc":{"port":9001}})";
-                               return out; });
+    cfgx::SetRemoteFetcher(
+        [](const cfgx::RemoteFetchRequest&)
+        {
+            cfgx::Result<cfgx::RemoteFetchResponse> out;
+            out.ok = true;
+            out.value.body = R"({"svc":{"port":9001}})";
+            return out;
+        });
 
     cfgx::PollReloader reloader(file.string());
     cfgx::ReloadOptions options;
@@ -1288,14 +1388,14 @@ TEST(CfgxRemoteTests, PollReloaderReloadNowAppliesRemoteLayer)
     ASSERT_TRUE(reload.ok) << reload.error;
     EXPECT_TRUE(reload.value.attempted);
 
-    const auto *current = reloader.Current();
+    const auto* current = reloader.Current();
     ASSERT_NE(current, nullptr);
     const auto port = cfgx::GetNode(*current, "svc.port");
     ASSERT_TRUE(port.ok) << port.error;
     EXPECT_EQ(port.value->AsInt(-1), 9001);
 
     bool has_remote_source = false;
-    for (const auto &entry : reload.value.source_trace)
+    for (const auto& entry : reload.value.source_trace)
     {
         if (entry.path == "svc.port")
         {
@@ -1320,15 +1420,15 @@ TEST(CfgxRemoteTests, PollReloaderTickPollsRemoteByInterval)
     }
 
     int call_count = 0;
-    cfgx::SetRemoteFetcher([&](const cfgx::RemoteFetchRequest &)
-                           {
-                               ++call_count;
-                               cfgx::Result<cfgx::RemoteFetchResponse> out;
-                               out.ok = true;
-                               out.value.body = (call_count == 1)
-                                                    ? R"({"svc":{"port":1001}})"
-                                                    : R"({"svc":{"port":1002}})";
-                               return out; });
+    cfgx::SetRemoteFetcher(
+        [&](const cfgx::RemoteFetchRequest&)
+        {
+            ++call_count;
+            cfgx::Result<cfgx::RemoteFetchResponse> out;
+            out.ok = true;
+            out.value.body = (call_count == 1) ? R"({"svc":{"port":1001}})" : R"({"svc":{"port":1002}})";
+            return out;
+        });
 
     cfgx::PollReloader reloader(file.string());
     cfgx::ReloadOptions options;
@@ -1351,7 +1451,7 @@ TEST(CfgxRemoteTests, PollReloaderTickPollsRemoteByInterval)
     EXPECT_TRUE(polled.value.attempted);
     EXPECT_EQ(call_count, 2);
 
-    const auto *current = reloader.Current();
+    const auto* current = reloader.Current();
     ASSERT_NE(current, nullptr);
     const auto port = cfgx::GetNode(*current, "svc.port");
     ASSERT_TRUE(port.ok) << port.error;

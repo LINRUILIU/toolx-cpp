@@ -35,156 +35,157 @@ namespace
 {
 
 #if defined(_WIN32)
-    using TestSocket = SOCKET;
-    constexpr TestSocket kInvalidTestSocket = INVALID_SOCKET;
+using TestSocket = SOCKET;
+constexpr TestSocket kInvalidTestSocket = INVALID_SOCKET;
 #else
-    using TestSocket = int;
-    constexpr TestSocket kInvalidTestSocket = -1;
+using TestSocket = int;
+constexpr TestSocket kInvalidTestSocket = -1;
 #endif
 
-    void CloseTestSocket(TestSocket socket)
+void CloseTestSocket(TestSocket socket)
+{
+    if (socket == kInvalidTestSocket)
     {
-        if (socket == kInvalidTestSocket)
+        return;
+    }
+
+#if defined(_WIN32)
+    closesocket(socket);
+#else
+    close(socket);
+#endif
+}
+
+bool EnsureTestNetworkReady()
+{
+#if defined(_WIN32)
+    static std::once_flag once;
+    static bool ok = false;
+    std::call_once(once,
+                   []
+                   {
+                       WSADATA data{};
+                       ok = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+                   });
+    return ok;
+#else
+    return true;
+#endif
+}
+
+struct ScopedEnvVar
+{
+    std::string key;
+    std::optional<std::string> original;
+
+    ScopedEnvVar(std::string name, std::string value) : key(std::move(name))
+    {
+        if (const char* current = std::getenv(key.c_str()))
         {
+            original = std::string(current);
+        }
+
+        Set(value);
+    }
+
+    ~ScopedEnvVar()
+    {
+        if (original.has_value())
+        {
+            Set(*original);
             return;
         }
+        Clear();
+    }
 
+    void Set(const std::string& value)
+    {
 #if defined(_WIN32)
-        closesocket(socket);
+        _putenv_s(key.c_str(), value.c_str());
 #else
-        close(socket);
+        setenv(key.c_str(), value.c_str(), 1);
 #endif
     }
 
-    bool EnsureTestNetworkReady()
+    void Clear()
     {
 #if defined(_WIN32)
-        static std::once_flag once;
-        static bool ok = false;
-        std::call_once(once, []
-                       {
-                           WSADATA data{};
-                           ok = WSAStartup(MAKEWORD(2, 2), &data) == 0; });
-        return ok;
+        _putenv_s(key.c_str(), "");
 #else
-        return true;
+        unsetenv(key.c_str());
 #endif
     }
+};
 
-    struct ScopedEnvVar
+struct LocalHttpServer
+{
+    std::uint16_t port{0};
+    std::thread worker;
+    std::shared_ptr<std::string> captured_request;
+
+    LocalHttpServer() = default;
+    LocalHttpServer(const LocalHttpServer&) = delete;
+    LocalHttpServer& operator=(const LocalHttpServer&) = delete;
+    LocalHttpServer(LocalHttpServer&&) noexcept = default;
+    LocalHttpServer& operator=(LocalHttpServer&&) noexcept = default;
+
+    ~LocalHttpServer()
     {
-        std::string key;
-        std::optional<std::string> original;
-
-        ScopedEnvVar(std::string name, std::string value)
-            : key(std::move(name))
+        if (worker.joinable())
         {
-            if (const char *current = std::getenv(key.c_str()))
-            {
-                original = std::string(current);
-            }
-
-            Set(value);
+            worker.join();
         }
+    }
+};
 
-        ~ScopedEnvVar()
-        {
-            if (original.has_value())
-            {
-                Set(*original);
-                return;
-            }
-            Clear();
-        }
-
-        void Set(const std::string &value)
-        {
-#if defined(_WIN32)
-            _putenv_s(key.c_str(), value.c_str());
-#else
-            setenv(key.c_str(), value.c_str(), 1);
-#endif
-        }
-
-        void Clear()
-        {
-#if defined(_WIN32)
-            _putenv_s(key.c_str(), "");
-#else
-            unsetenv(key.c_str());
-#endif
-        }
-    };
-
-    struct LocalHttpServer
+std::optional<LocalHttpServer> StartSingleResponseServer(std::string response, std::uint64_t response_delay_ms = 0,
+                                                         std::shared_ptr<std::string> captured_request = nullptr)
+{
+    if (!EnsureTestNetworkReady())
     {
-        std::uint16_t port{0};
-        std::thread worker;
-        std::shared_ptr<std::string> captured_request;
+        return std::nullopt;
+    }
 
-        LocalHttpServer() = default;
-        LocalHttpServer(const LocalHttpServer &) = delete;
-        LocalHttpServer &operator=(const LocalHttpServer &) = delete;
-        LocalHttpServer(LocalHttpServer &&) noexcept = default;
-        LocalHttpServer &operator=(LocalHttpServer &&) noexcept = default;
-
-        ~LocalHttpServer()
-        {
-            if (worker.joinable())
-            {
-                worker.join();
-            }
-        }
-    };
-
-    std::optional<LocalHttpServer> StartSingleResponseServer(std::string response,
-                                                             std::uint64_t response_delay_ms = 0,
-                                                             std::shared_ptr<std::string> captured_request = nullptr)
+    TestSocket listen_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_socket == kInvalidTestSocket)
     {
-        if (!EnsureTestNetworkReady())
+        return std::nullopt;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+
+    if (::bind(listen_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    if (::listen(listen_socket, 1) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    sockaddr_in bound{};
+    socklen_t bound_len = static_cast<socklen_t>(sizeof(bound));
+    if (::getsockname(listen_socket, reinterpret_cast<sockaddr*>(&bound), &bound_len) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    LocalHttpServer server;
+    server.port = ntohs(bound.sin_port);
+    server.captured_request = captured_request;
+    server.worker = std::thread(
+        [listen_socket, response = std::move(response), response_delay_ms, captured_request]()
         {
-            return std::nullopt;
-        }
-
-        TestSocket listen_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (listen_socket == kInvalidTestSocket)
-        {
-            return std::nullopt;
-        }
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = 0;
-
-        if (::bind(listen_socket, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        if (::listen(listen_socket, 1) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        sockaddr_in bound{};
-        socklen_t bound_len = static_cast<socklen_t>(sizeof(bound));
-        if (::getsockname(listen_socket, reinterpret_cast<sockaddr *>(&bound), &bound_len) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        LocalHttpServer server;
-        server.port = ntohs(bound.sin_port);
-        server.captured_request = captured_request;
-        server.worker = std::thread([listen_socket, response = std::move(response), response_delay_ms, captured_request]()
-                                    {
             sockaddr_in client_addr{};
             socklen_t client_len = static_cast<socklen_t>(sizeof(client_addr));
-            TestSocket client = ::accept(listen_socket, reinterpret_cast<sockaddr *>(&client_addr), &client_len);
+            TestSocket client = ::accept(listen_socket, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
             if (client != kInvalidTestSocket)
             {
                 std::string req;
@@ -230,7 +231,7 @@ namespace
                                     if (colon != std::string::npos)
                                     {
                                         std::string key = line.substr(0, colon);
-                                        for (char &ch : key)
+                                        for (char& ch : key)
                                         {
                                             ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
                                         }
@@ -275,15 +276,9 @@ namespace
                 while (sent < response.size())
                 {
 #if defined(_WIN32)
-                    const int n = ::send(client,
-                                         response.data() + sent,
-                                         static_cast<int>(response.size() - sent),
-                                         0);
+                    const int n = ::send(client, response.data() + sent, static_cast<int>(response.size() - sent), 0);
 #else
-                    const int n = static_cast<int>(::send(client,
-                                                          response.data() + sent,
-                                                          response.size() - sent,
-                                                          0));
+                    const int n = static_cast<int>(::send(client, response.data() + sent, response.size() - sent, 0));
 #endif
                     if (n <= 0)
                     {
@@ -295,198 +290,194 @@ namespace
                 CloseTestSocket(client);
             }
 
-            CloseTestSocket(listen_socket); });
+            CloseTestSocket(listen_socket);
+        });
 
-        return server;
-    }
+    return server;
+}
 
-    std::string ReceiveHttpRequest(TestSocket client)
+std::string ReceiveHttpRequest(TestSocket client)
+{
+    std::string req;
+    req.reserve(4096);
+
+    std::size_t expected_total = std::string::npos;
+    for (;;)
     {
-        std::string req;
-        req.reserve(4096);
-
-        std::size_t expected_total = std::string::npos;
-        for (;;)
-        {
-            char req_buf[1024] = {0};
+        char req_buf[1024] = {0};
 #if defined(_WIN32)
-            const int n = ::recv(client, req_buf, static_cast<int>(sizeof(req_buf)), 0);
+        const int n = ::recv(client, req_buf, static_cast<int>(sizeof(req_buf)), 0);
 #else
-            const int n = static_cast<int>(::recv(client, req_buf, sizeof(req_buf), 0));
+        const int n = static_cast<int>(::recv(client, req_buf, sizeof(req_buf), 0));
 #endif
-            if (n <= 0)
-            {
-                break;
-            }
+        if (n <= 0)
+        {
+            break;
+        }
 
-            req.append(req_buf, static_cast<std::size_t>(n));
+        req.append(req_buf, static_cast<std::size_t>(n));
 
-            if (expected_total == std::string::npos)
+        if (expected_total == std::string::npos)
+        {
+            const auto header_end = req.find("\r\n\r\n");
+            if (header_end != std::string::npos)
             {
-                const auto header_end = req.find("\r\n\r\n");
-                if (header_end != std::string::npos)
+                expected_total = header_end + 4;
+
+                std::size_t cursor = req.find("\r\n");
+                if (cursor != std::string::npos)
                 {
-                    expected_total = header_end + 4;
-
-                    std::size_t cursor = req.find("\r\n");
-                    if (cursor != std::string::npos)
+                    cursor += 2;
+                    while (cursor < header_end)
                     {
-                        cursor += 2;
-                        while (cursor < header_end)
+                        const auto line_end = req.find("\r\n", cursor);
+                        if (line_end == std::string::npos || line_end > header_end)
                         {
-                            const auto line_end = req.find("\r\n", cursor);
-                            if (line_end == std::string::npos || line_end > header_end)
-                            {
-                                break;
-                            }
-
-                            const auto line = req.substr(cursor, line_end - cursor);
-                            const auto colon = line.find(':');
-                            if (colon != std::string::npos)
-                            {
-                                std::string key = line.substr(0, colon);
-                                for (char &ch : key)
-                                {
-                                    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-                                }
-                                if (key == "content-length")
-                                {
-                                    std::string value = line.substr(colon + 1);
-                                    while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
-                                    {
-                                        value.erase(value.begin());
-                                    }
-                                    const long parsed = std::strtol(value.c_str(), nullptr, 10);
-                                    if (parsed > 0)
-                                    {
-                                        expected_total += static_cast<std::size_t>(parsed);
-                                    }
-                                }
-                            }
-
-                            cursor = line_end + 2;
+                            break;
                         }
+
+                        const auto line = req.substr(cursor, line_end - cursor);
+                        const auto colon = line.find(':');
+                        if (colon != std::string::npos)
+                        {
+                            std::string key = line.substr(0, colon);
+                            for (char& ch : key)
+                            {
+                                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                            }
+                            if (key == "content-length")
+                            {
+                                std::string value = line.substr(colon + 1);
+                                while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+                                {
+                                    value.erase(value.begin());
+                                }
+                                const long parsed = std::strtol(value.c_str(), nullptr, 10);
+                                if (parsed > 0)
+                                {
+                                    expected_total += static_cast<std::size_t>(parsed);
+                                }
+                            }
+                        }
+
+                        cursor = line_end + 2;
                     }
                 }
             }
-
-            if (expected_total != std::string::npos && req.size() >= expected_total)
-            {
-                break;
-            }
         }
 
-        return req;
-    }
-
-    bool SendAllResponse(TestSocket client, const std::string &response)
-    {
-        std::size_t sent = 0;
-        while (sent < response.size())
+        if (expected_total != std::string::npos && req.size() >= expected_total)
         {
-#if defined(_WIN32)
-            const int n = ::send(client,
-                                 response.data() + sent,
-                                 static_cast<int>(response.size() - sent),
-                                 0);
-#else
-            const int n = static_cast<int>(::send(client,
-                                                  response.data() + sent,
-                                                  response.size() - sent,
-                                                  0));
-#endif
-            if (n <= 0)
-            {
-                return false;
-            }
-            sent += static_cast<std::size_t>(n);
+            break;
         }
-        return true;
     }
 
-    void SetRecvTimeoutMs(TestSocket socket, int timeout_ms)
+    return req;
+}
+
+bool SendAllResponse(TestSocket client, const std::string& response)
+{
+    std::size_t sent = 0;
+    while (sent < response.size())
     {
 #if defined(_WIN32)
-        DWORD timeout = static_cast<DWORD>(timeout_ms);
-        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeout), sizeof(timeout));
+        const int n = ::send(client, response.data() + sent, static_cast<int>(response.size() - sent), 0);
 #else
-        timeval tv{};
-        tv.tv_sec = timeout_ms / 1000;
-        tv.tv_usec = (timeout_ms % 1000) * 1000;
-        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        const int n = static_cast<int>(::send(client, response.data() + sent, response.size() - sent, 0));
 #endif
+        if (n <= 0)
+        {
+            return false;
+        }
+        sent += static_cast<std::size_t>(n);
+    }
+    return true;
+}
+
+void SetRecvTimeoutMs(TestSocket socket, int timeout_ms)
+{
+#if defined(_WIN32)
+    DWORD timeout = static_cast<DWORD>(timeout_ms);
+    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+    timeval tv{};
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+}
+
+struct ScriptedServer
+{
+    std::uint16_t port{0};
+    std::thread worker;
+    std::shared_ptr<std::vector<std::string>> captured_requests;
+
+    ScriptedServer() = default;
+    ScriptedServer(const ScriptedServer&) = delete;
+    ScriptedServer& operator=(const ScriptedServer&) = delete;
+    ScriptedServer(ScriptedServer&&) noexcept = default;
+    ScriptedServer& operator=(ScriptedServer&&) noexcept = default;
+
+    ~ScriptedServer()
+    {
+        if (worker.joinable())
+        {
+            worker.join();
+        }
+    }
+};
+
+std::optional<ScriptedServer> StartScriptedServer(std::vector<std::string> responses,
+                                                  std::shared_ptr<std::vector<std::string>> captured_requests)
+{
+    if (!EnsureTestNetworkReady())
+    {
+        return std::nullopt;
     }
 
-    struct ScriptedServer
+    TestSocket listen_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_socket == kInvalidTestSocket)
     {
-        std::uint16_t port{0};
-        std::thread worker;
-        std::shared_ptr<std::vector<std::string>> captured_requests;
+        return std::nullopt;
+    }
 
-        ScriptedServer() = default;
-        ScriptedServer(const ScriptedServer &) = delete;
-        ScriptedServer &operator=(const ScriptedServer &) = delete;
-        ScriptedServer(ScriptedServer &&) noexcept = default;
-        ScriptedServer &operator=(ScriptedServer &&) noexcept = default;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
 
-        ~ScriptedServer()
-        {
-            if (worker.joinable())
-            {
-                worker.join();
-            }
-        }
-    };
-
-    std::optional<ScriptedServer> StartScriptedServer(std::vector<std::string> responses,
-                                                      std::shared_ptr<std::vector<std::string>> captured_requests)
+    if (::bind(listen_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
     {
-        if (!EnsureTestNetworkReady())
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    if (::listen(listen_socket, static_cast<int>(responses.size())) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    sockaddr_in bound{};
+    socklen_t bound_len = static_cast<socklen_t>(sizeof(bound));
+    if (::getsockname(listen_socket, reinterpret_cast<sockaddr*>(&bound), &bound_len) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    ScriptedServer server;
+    server.port = ntohs(bound.sin_port);
+    server.captured_requests = captured_requests;
+    server.worker = std::thread(
+        [listen_socket, responses = std::move(responses), captured_requests]()
         {
-            return std::nullopt;
-        }
-
-        TestSocket listen_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (listen_socket == kInvalidTestSocket)
-        {
-            return std::nullopt;
-        }
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = 0;
-
-        if (::bind(listen_socket, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        if (::listen(listen_socket, static_cast<int>(responses.size())) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        sockaddr_in bound{};
-        socklen_t bound_len = static_cast<socklen_t>(sizeof(bound));
-        if (::getsockname(listen_socket, reinterpret_cast<sockaddr *>(&bound), &bound_len) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        ScriptedServer server;
-        server.port = ntohs(bound.sin_port);
-        server.captured_requests = captured_requests;
-        server.worker = std::thread([listen_socket, responses = std::move(responses), captured_requests]()
-                                    {
-            for (const auto &response : responses)
+            for (const auto& response : responses)
             {
                 sockaddr_in client_addr{};
                 socklen_t client_len = static_cast<socklen_t>(sizeof(client_addr));
-                TestSocket client = ::accept(listen_socket, reinterpret_cast<sockaddr *>(&client_addr), &client_len);
+                TestSocket client = ::accept(listen_socket, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
                 if (client == kInvalidTestSocket)
                 {
                     continue;
@@ -502,58 +493,61 @@ namespace
                 CloseTestSocket(client);
             }
 
-            CloseTestSocket(listen_socket); });
+            CloseTestSocket(listen_socket);
+        });
 
-        return std::optional<ScriptedServer>(std::move(server));
+    return std::optional<ScriptedServer>(std::move(server));
+}
+
+std::optional<ScriptedServer>
+StartKeepAliveTwoRequestServer(std::shared_ptr<std::vector<std::string>> captured_requests,
+                               std::shared_ptr<std::atomic<int>> accept_count)
+{
+    if (!EnsureTestNetworkReady())
+    {
+        return std::nullopt;
     }
 
-    std::optional<ScriptedServer> StartKeepAliveTwoRequestServer(std::shared_ptr<std::vector<std::string>> captured_requests,
-                                                                 std::shared_ptr<std::atomic<int>> accept_count)
+    TestSocket listen_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_socket == kInvalidTestSocket)
     {
-        if (!EnsureTestNetworkReady())
+        return std::nullopt;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+
+    if (::bind(listen_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    if (::listen(listen_socket, 2) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    sockaddr_in bound{};
+    socklen_t bound_len = static_cast<socklen_t>(sizeof(bound));
+    if (::getsockname(listen_socket, reinterpret_cast<sockaddr*>(&bound), &bound_len) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    ScriptedServer server;
+    server.port = ntohs(bound.sin_port);
+    server.captured_requests = captured_requests;
+    server.worker = std::thread(
+        [listen_socket, captured_requests, accept_count]()
         {
-            return std::nullopt;
-        }
-
-        TestSocket listen_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (listen_socket == kInvalidTestSocket)
-        {
-            return std::nullopt;
-        }
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = 0;
-
-        if (::bind(listen_socket, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        if (::listen(listen_socket, 2) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        sockaddr_in bound{};
-        socklen_t bound_len = static_cast<socklen_t>(sizeof(bound));
-        if (::getsockname(listen_socket, reinterpret_cast<sockaddr *>(&bound), &bound_len) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        ScriptedServer server;
-        server.port = ntohs(bound.sin_port);
-        server.captured_requests = captured_requests;
-        server.worker = std::thread([listen_socket, captured_requests, accept_count]()
-                                    {
             sockaddr_in client_addr{};
             socklen_t client_len = static_cast<socklen_t>(sizeof(client_addr));
-            TestSocket client = ::accept(listen_socket, reinterpret_cast<sockaddr *>(&client_addr), &client_len);
+            TestSocket client = ::accept(listen_socket, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
             if (client == kInvalidTestSocket)
             {
                 CloseTestSocket(listen_socket);
@@ -573,8 +567,7 @@ namespace
                 captured_requests->push_back(req1);
             }
 
-            (void)SendAllResponse(client,
-                                  "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nOK");
+            (void)SendAllResponse(client, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nOK");
 
             const std::string req2 = ReceiveHttpRequest(client);
             if (captured_requests)
@@ -582,81 +575,82 @@ namespace
                 captured_requests->push_back(req2);
             }
 
-            (void)SendAllResponse(client,
-                                  "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+            (void)SendAllResponse(client, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
 
             CloseTestSocket(client);
-            CloseTestSocket(listen_socket); });
+            CloseTestSocket(listen_socket);
+        });
 
-        return std::optional<ScriptedServer>(std::move(server));
+    return std::optional<ScriptedServer>(std::move(server));
+}
+
+struct LocalSocks5Proxy
+{
+    std::uint16_t port{0};
+    std::thread worker;
+    std::shared_ptr<std::string> captured_request;
+
+    LocalSocks5Proxy() = default;
+    LocalSocks5Proxy(const LocalSocks5Proxy&) = delete;
+    LocalSocks5Proxy& operator=(const LocalSocks5Proxy&) = delete;
+    LocalSocks5Proxy(LocalSocks5Proxy&&) noexcept = default;
+    LocalSocks5Proxy& operator=(LocalSocks5Proxy&&) noexcept = default;
+
+    ~LocalSocks5Proxy()
+    {
+        if (worker.joinable())
+        {
+            worker.join();
+        }
+    }
+};
+
+std::optional<LocalSocks5Proxy> StartSocks5NoAuthProxy(std::string response,
+                                                       std::shared_ptr<std::string> captured_request)
+{
+    if (!EnsureTestNetworkReady())
+    {
+        return std::nullopt;
     }
 
-    struct LocalSocks5Proxy
+    TestSocket listen_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_socket == kInvalidTestSocket)
     {
-        std::uint16_t port{0};
-        std::thread worker;
-        std::shared_ptr<std::string> captured_request;
+        return std::nullopt;
+    }
 
-        LocalSocks5Proxy() = default;
-        LocalSocks5Proxy(const LocalSocks5Proxy &) = delete;
-        LocalSocks5Proxy &operator=(const LocalSocks5Proxy &) = delete;
-        LocalSocks5Proxy(LocalSocks5Proxy &&) noexcept = default;
-        LocalSocks5Proxy &operator=(LocalSocks5Proxy &&) noexcept = default;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
 
-        ~LocalSocks5Proxy()
-        {
-            if (worker.joinable())
-            {
-                worker.join();
-            }
-        }
-    };
-
-    std::optional<LocalSocks5Proxy> StartSocks5NoAuthProxy(std::string response,
-                                                           std::shared_ptr<std::string> captured_request)
+    if (::bind(listen_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
     {
-        if (!EnsureTestNetworkReady())
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    if (::listen(listen_socket, 1) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    sockaddr_in bound{};
+    socklen_t bound_len = static_cast<socklen_t>(sizeof(bound));
+    if (::getsockname(listen_socket, reinterpret_cast<sockaddr*>(&bound), &bound_len) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    LocalSocks5Proxy server;
+    server.port = ntohs(bound.sin_port);
+    server.captured_request = captured_request;
+    server.worker = std::thread(
+        [listen_socket, response = std::move(response), captured_request]()
         {
-            return std::nullopt;
-        }
-
-        TestSocket listen_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (listen_socket == kInvalidTestSocket)
-        {
-            return std::nullopt;
-        }
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = 0;
-
-        if (::bind(listen_socket, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        if (::listen(listen_socket, 1) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        sockaddr_in bound{};
-        socklen_t bound_len = static_cast<socklen_t>(sizeof(bound));
-        if (::getsockname(listen_socket, reinterpret_cast<sockaddr *>(&bound), &bound_len) != 0)
-        {
-            CloseTestSocket(listen_socket);
-            return std::nullopt;
-        }
-
-        LocalSocks5Proxy server;
-        server.port = ntohs(bound.sin_port);
-        server.captured_request = captured_request;
-        server.worker = std::thread([listen_socket, response = std::move(response), captured_request]()
-                                    {
-            auto recv_exact = [](TestSocket socket, std::size_t bytes, std::string *out) -> bool
+            auto recv_exact = [](TestSocket socket, std::size_t bytes, std::string* out) -> bool
             {
                 if (out == nullptr)
                 {
@@ -683,21 +677,15 @@ namespace
                 return true;
             };
 
-            auto send_exact = [](TestSocket socket, const char *data, std::size_t bytes) -> bool
+            auto send_exact = [](TestSocket socket, const char* data, std::size_t bytes) -> bool
             {
                 std::size_t sent = 0;
                 while (sent < bytes)
                 {
 #if defined(_WIN32)
-                    const int n = ::send(socket,
-                                         data + sent,
-                                         static_cast<int>(bytes - sent),
-                                         0);
+                    const int n = ::send(socket, data + sent, static_cast<int>(bytes - sent), 0);
 #else
-                    const int n = static_cast<int>(::send(socket,
-                                                          data + sent,
-                                                          bytes - sent,
-                                                          0));
+                    const int n = static_cast<int>(::send(socket, data + sent, bytes - sent, 0));
 #endif
                     if (n <= 0)
                     {
@@ -710,7 +698,7 @@ namespace
 
             sockaddr_in client_addr{};
             socklen_t client_len = static_cast<socklen_t>(sizeof(client_addr));
-            TestSocket client = ::accept(listen_socket, reinterpret_cast<sockaddr *>(&client_addr), &client_len);
+            TestSocket client = ::accept(listen_socket, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
             if (client == kInvalidTestSocket)
             {
                 CloseTestSocket(listen_socket);
@@ -798,17 +786,16 @@ namespace
                 return;
             }
 
-            const char connect_reply[10] = {
-                static_cast<char>(0x05),
-                static_cast<char>(0x00),
-                static_cast<char>(0x00),
-                static_cast<char>(0x01),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0};
+            const char connect_reply[10] = {static_cast<char>(0x05),
+                                            static_cast<char>(0x00),
+                                            static_cast<char>(0x00),
+                                            static_cast<char>(0x01),
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0};
             if (!send_exact(client, connect_reply, sizeof(connect_reply)))
             {
                 CloseTestSocket(client);
@@ -824,10 +811,11 @@ namespace
 
             (void)SendAllResponse(client, response);
             CloseTestSocket(client);
-            CloseTestSocket(listen_socket); });
+            CloseTestSocket(listen_socket);
+        });
 
-        return std::optional<LocalSocks5Proxy>(std::move(server));
-    }
+    return std::optional<LocalSocks5Proxy>(std::move(server));
+}
 
 } // namespace
 
@@ -849,7 +837,8 @@ TEST(HttpxClientTests, ConvenienceMethodsCoverExtendedStandardVerbs)
     std::vector<std::string> seen_bodies;
 
     httpx::ClientOptions options;
-    options.transport = [&seen_methods, &seen_bodies](const httpx::Request &request, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    options.transport = [&seen_methods, &seen_bodies](const httpx::Request& request,
+                                                      const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         seen_methods.push_back(request.method);
         seen_bodies.push_back(request.body);
@@ -940,7 +929,7 @@ TEST(HttpxRedactionTests, RedactUrlMasksSensitiveKeys)
 TEST(HttpxClientTests, SendUsesTransportAndAppliesHeadSemantics)
 {
     httpx::ClientOptions options;
-    options.transport = [](const httpx::Request &request, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    options.transport = [](const httpx::Request& request, const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         httpx::Result<httpx::Response> out;
         out.ok = true;
@@ -949,7 +938,7 @@ TEST(HttpxClientTests, SendUsesTransportAndAppliesHeadSemantics)
         out.value.body = "payload";
 
         bool has_user_agent = false;
-        for (const auto &h : request.headers)
+        for (const auto& h : request.headers)
         {
             if (h.first == "User-Agent")
             {
@@ -979,11 +968,8 @@ TEST(HttpxClientTests, RetryHookCanRecoverTransientFailure)
 
     httpx::ClientOptions options;
     options.max_retry_attempts = 2;
-    options.should_retry = [](const httpx::Error &error, std::size_t)
-    {
-        return error.retryable;
-    };
-    options.transport = [&calls](const httpx::Request &, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    options.should_retry = [](const httpx::Error& error, std::size_t) { return error.retryable; };
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         const int current = ++calls;
         if (current == 1)
@@ -1012,7 +998,7 @@ TEST(HttpxClientTests, RetryHookCanRecoverTransientFailure)
 TEST(HttpxClientTests, FailureStatsAreExposed)
 {
     httpx::ClientOptions options;
-    options.transport = [](const httpx::Request &, const httpx::ClientOptions &) -> httpx::Result<httpx::Response>
+    options.transport = [](const httpx::Request&, const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
     {
         httpx::Result<httpx::Response> out;
         out.ok = false;
@@ -1077,8 +1063,8 @@ TEST(HttpxClientTests, HttpsRejectsMissingCustomCaFile)
 
 TEST(HttpxClientTests, DefaultTransportCanRoundTripLocalHttp)
 {
-    const auto server = StartSingleResponseServer(
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
+    const auto server =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
     if (!server.has_value())
     {
         GTEST_SKIP() << "failed to start local loopback server";
@@ -1100,9 +1086,8 @@ TEST(HttpxClientTests, DefaultTransportCanRoundTripLocalHttp)
 
 TEST(HttpxClientTests, DefaultTransportReadTimeoutWorks)
 {
-    const auto server = StartSingleResponseServer(
-        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-        150);
+    const auto server =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 150);
     if (!server.has_value())
     {
         GTEST_SKIP() << "failed to start local loopback server";
@@ -1123,11 +1108,11 @@ TEST(HttpxClientTests, DefaultTransportReadTimeoutWorks)
 
 TEST(HttpxClientTests, DefaultTransportDecodesChunkedResponse)
 {
-    const auto server = StartSingleResponseServer(
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
-        "5\r\nhello\r\n"
-        "6\r\n world\r\n"
-        "0\r\nX-Debug: ok\r\n\r\n");
+    const auto server =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                                  "5\r\nhello\r\n"
+                                  "6\r\n world\r\n"
+                                  "0\r\nX-Debug: ok\r\n\r\n");
     if (!server.has_value())
     {
         GTEST_SKIP() << "failed to start local loopback server";
@@ -1162,10 +1147,10 @@ TEST(HttpxClientTests, DefaultTransportDecodesChunkedResponse)
 
 TEST(HttpxClientTests, ChunkedCallbackAbortReturnsInternalError)
 {
-    const auto server = StartSingleResponseServer(
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
-        "5\r\nhello\r\n"
-        "0\r\n\r\n");
+    const auto server =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                                  "5\r\nhello\r\n"
+                                  "0\r\n\r\n");
     if (!server.has_value())
     {
         GTEST_SKIP() << "failed to start local loopback server";
@@ -1181,10 +1166,7 @@ TEST(HttpxClientTests, ChunkedCallbackAbortReturnsInternalError)
     httpx::Request request;
     request.method = httpx::HttpMethod::Get;
     request.url = "http://127.0.0.1:" + std::to_string(server->port) + "/chunked-abort";
-    request.on_response_chunk = [](std::string_view)
-    {
-        return false;
-    };
+    request.on_response_chunk = [](std::string_view) { return false; };
 
     const auto result = client.Send(request);
     ASSERT_FALSE(result.ok);
@@ -1197,9 +1179,7 @@ TEST(HttpxClientTests, MultipartEncodingAndUploadProgressWork)
 
     {
         const auto server = StartSingleResponseServer(
-            "HTTP/1.1 201 Created\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-            0,
-            captured);
+            "HTTP/1.1 201 Created\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 0, captured);
         if (!server.has_value())
         {
             GTEST_SKIP() << "failed to start local loopback server";
@@ -1220,9 +1200,7 @@ TEST(HttpxClientTests, MultipartEncodingAndUploadProgressWork)
         request.multipart.push_back({"meta", "", "text/plain", "demo"});
         request.multipart.push_back({"file", "blob.bin", "application/octet-stream", std::string(4096, 'x')});
         request.on_upload_progress = [&progress](std::uint64_t sent, std::uint64_t total)
-        {
-            progress.push_back({sent, total});
-        };
+        { progress.push_back({sent, total}); };
 
         const auto result = client.Send(request);
         ASSERT_TRUE(result.ok) << result.error.message;
@@ -1246,19 +1224,17 @@ TEST(HttpxClientTests, RedirectFollowStripsSensitiveHeadersOnCrossOrigin)
     auto redirected_capture = std::make_shared<std::string>();
     auto target_capture = std::make_shared<std::string>();
 
-    const auto target = StartSingleResponseServer(
-        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-        0,
-        target_capture);
+    const auto target = StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                                                  0, target_capture);
     if (!target.has_value())
     {
         GTEST_SKIP() << "failed to start target server";
     }
 
-    const auto redirect = StartSingleResponseServer(
-        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:" + std::to_string(target->port) + "/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        0,
-        redirected_capture);
+    const auto redirect =
+        StartSingleResponseServer("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:" + std::to_string(target->port) +
+                                      "/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                  0, redirected_capture);
     if (!redirect.has_value())
     {
         GTEST_SKIP() << "failed to start redirect server";
@@ -1286,12 +1262,58 @@ TEST(HttpxClientTests, RedirectFollowStripsSensitiveHeadersOnCrossOrigin)
     EXPECT_EQ(target_capture->find("Cookie:"), std::string::npos);
 }
 
+TEST(HttpxClientTests, Redirect303ConvertsPostToGetAndDropsBodyHeaders)
+{
+    auto redirected_capture = std::make_shared<std::string>();
+    auto target_capture = std::make_shared<std::string>();
+
+    const auto target = StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                                                  0, target_capture);
+    if (!target.has_value())
+    {
+        GTEST_SKIP() << "failed to start target server";
+    }
+
+    const auto redirect = StartSingleResponseServer(
+        "HTTP/1.1 303 See Other\r\nLocation: http://127.0.0.1:" + std::to_string(target->port) +
+            "/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        0, redirected_capture);
+    if (!redirect.has_value())
+    {
+        GTEST_SKIP() << "failed to start redirect server";
+    }
+
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.redirects.follow = true;
+    options.redirects.max_hops = 3;
+
+    httpx::Client client(options);
+    httpx::Request request;
+    request.method = httpx::HttpMethod::Post;
+    request.url = "http://127.0.0.1:" + std::to_string(redirect->port) + "/jump";
+    request.body = "payload";
+    request.headers.push_back({"Content-Type", "text/plain"});
+
+    const auto result = client.Send(request);
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.status_code, 200);
+
+    EXPECT_NE(redirected_capture->find("POST /jump HTTP/1.1"), std::string::npos);
+    EXPECT_NE(redirected_capture->find("Content-Type: text/plain"), std::string::npos);
+    EXPECT_NE(target_capture->find("GET /final HTTP/1.1"), std::string::npos);
+    EXPECT_EQ(target_capture->find("POST /final HTTP/1.1"), std::string::npos);
+    EXPECT_EQ(target_capture->find("Content-Type: text/plain"), std::string::npos);
+    EXPECT_EQ(target_capture->find("Content-Length: 7"), std::string::npos);
+}
+
 TEST(HttpxClientTests, CookieJarSendsStoredCookieOnNextRequest)
 {
     auto captured = std::make_shared<std::vector<std::string>>();
     const auto server = StartScriptedServer(
         {
-            "HTTP/1.1 200 OK\r\nSet-Cookie: sid=abc123; Path=/; HttpOnly\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+            "HTTP/1.1 200 OK\r\nSet-Cookie: sid=abc123; Path=/; HttpOnly\r\nContent-Length: 2\r\nConnection: "
+            "close\r\n\r\nok",
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
         },
         captured);
@@ -1313,6 +1335,36 @@ TEST(HttpxClientTests, CookieJarSendsStoredCookieOnNextRequest)
     ASSERT_EQ(captured->size(), 2u);
     EXPECT_EQ((*captured)[0].find("Cookie: sid=abc123"), std::string::npos);
     EXPECT_NE((*captured)[1].find("Cookie: sid=abc123"), std::string::npos);
+}
+
+TEST(HttpxClientTests, CookieJarRespectsCookiePathScope)
+{
+    auto captured = std::make_shared<std::vector<std::string>>();
+    const auto server = StartScriptedServer(
+        {
+            "HTTP/1.1 200 OK\r\nSet-Cookie: scoped=yes; Path=/cookie; HttpOnly\r\nContent-Length: 2\r\nConnection: "
+            "close\r\n\r\nok",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        },
+        captured);
+    if (!server.has_value())
+    {
+        GTEST_SKIP() << "failed to start scripted cookie server";
+    }
+
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+
+    httpx::Client client(options);
+    ASSERT_TRUE(client.Get("http://127.0.0.1:" + std::to_string(server->port) + "/cookie/seed").ok);
+    ASSERT_TRUE(client.Get("http://127.0.0.1:" + std::to_string(server->port) + "/other/path").ok);
+    ASSERT_TRUE(client.Get("http://127.0.0.1:" + std::to_string(server->port) + "/cookie/again").ok);
+
+    ASSERT_EQ(captured->size(), 3u);
+    EXPECT_EQ((*captured)[0].find("Cookie: scoped=yes"), std::string::npos);
+    EXPECT_EQ((*captured)[1].find("Cookie: scoped=yes"), std::string::npos);
+    EXPECT_NE((*captured)[2].find("Cookie: scoped=yes"), std::string::npos);
 }
 
 TEST(HttpxClientTests, ConnectionPoolReusesKeepAliveSocket)
@@ -1346,10 +1398,8 @@ TEST(HttpxClientTests, ConnectionPoolReusesKeepAliveSocket)
 TEST(HttpxClientTests, ProxyUsesAbsoluteFormTarget)
 {
     auto captured = std::make_shared<std::string>();
-    const auto proxy = StartSingleResponseServer(
-        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-        0,
-        captured);
+    const auto proxy =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 0, captured);
     if (!proxy.has_value())
     {
         GTEST_SKIP() << "failed to start local proxy server";
@@ -1374,10 +1424,8 @@ TEST(HttpxClientTests, ProxyUsesAbsoluteFormTarget)
 TEST(HttpxClientTests, ProxyInjectsBasicAuthorizationHeader)
 {
     auto captured = std::make_shared<std::string>();
-    const auto proxy = StartSingleResponseServer(
-        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-        0,
-        captured);
+    const auto proxy =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 0, captured);
     if (!proxy.has_value())
     {
         GTEST_SKIP() << "failed to start local proxy server";
@@ -1402,10 +1450,8 @@ TEST(HttpxClientTests, ProxyInjectsBasicAuthorizationHeader)
 TEST(HttpxClientTests, ProxyCanBeLoadedFromEnvironment)
 {
     auto captured = std::make_shared<std::string>();
-    const auto proxy = StartSingleResponseServer(
-        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-        0,
-        captured);
+    const auto proxy =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 0, captured);
     if (!proxy.has_value())
     {
         GTEST_SKIP() << "failed to start local proxy server";
@@ -1427,9 +1473,8 @@ TEST(HttpxClientTests, ProxyCanBeLoadedFromEnvironment)
 TEST(HttpxClientTests, Socks5NoAuthProxyUsesOriginFormTarget)
 {
     auto captured = std::make_shared<std::string>();
-    const auto proxy = StartSocks5NoAuthProxy(
-        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-        captured);
+    const auto proxy =
+        StartSocks5NoAuthProxy("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", captured);
     if (!proxy.has_value())
     {
         GTEST_SKIP() << "failed to start local socks5 proxy server";
@@ -1473,9 +1518,8 @@ TEST(HttpxClientTests, Socks5NoAuthRejectsCredentialConfiguration)
 TEST(HttpxClientTests, Socks5ProxyCanBeLoadedFromEnvironment)
 {
     auto captured = std::make_shared<std::string>();
-    const auto proxy = StartSocks5NoAuthProxy(
-        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-        captured);
+    const auto proxy =
+        StartSocks5NoAuthProxy("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", captured);
     if (!proxy.has_value())
     {
         GTEST_SKIP() << "failed to start local socks5 proxy server";
@@ -1532,10 +1576,10 @@ TEST(HttpxClientTests, RedirectLoopIsDetected)
 
 TEST(HttpxClientTests, MalformedChunkedResponseReturnsProtocolError)
 {
-    const auto server = StartSingleResponseServer(
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
-        "X\r\nhello\r\n"
-        "0\r\n\r\n");
+    const auto server =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                                  "X\r\nhello\r\n"
+                                  "0\r\n\r\n");
     if (!server.has_value())
     {
         GTEST_SKIP() << "failed to start local loopback server";
@@ -1594,7 +1638,8 @@ TEST(HttpxClientTests, SoakSequentialRequestsRemainStable)
     httpx::Client client(options);
     for (int i = 0; i < kRounds; ++i)
     {
-        const auto result = client.Get("http://127.0.0.1:" + std::to_string(server->port) + "/soak/" + std::to_string(i));
+        const auto result =
+            client.Get("http://127.0.0.1:" + std::to_string(server->port) + "/soak/" + std::to_string(i));
         ASSERT_TRUE(result.ok) << "round=" << i << " err=" << result.error.message;
         EXPECT_EQ(result.value.status_code, 200);
     }

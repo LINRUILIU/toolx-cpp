@@ -10,6 +10,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+function(toolx_normalize_arch input_value output_var)
+    string(TOLOWER "${input_value}" normalized)
+    if(normalized STREQUAL "amd64" OR normalized STREQUAL "x86_64" OR normalized STREQUAL "x64")
+        set(normalized "x86_64")
+    elseif(normalized STREQUAL "aarch64" OR normalized STREQUAL "arm64")
+        set(normalized "arm64")
+    elseif(normalized MATCHES "^armv7")
+        set(normalized "armv7")
+    elseif(normalized MATCHES "^armv6")
+        set(normalized "armv6")
+    elseif(normalized STREQUAL "")
+        set(normalized "unknown")
+    endif()
+
+    set(${output_var} "${normalized}" PARENT_SCOPE)
+endfunction()
+
 function(toolx_bool_option new_name old_name description default_value)
     set(new_was_defined FALSE)
     set(old_was_defined FALSE)
@@ -482,3 +499,55 @@ install(
         "${CMAKE_CURRENT_BINARY_DIR}/ToolXConfigVersion.cmake"
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ToolX"
 )
+
+set(TOOLX_PACKAGE_PLATFORM "linux")
+if(WIN32)
+    set(TOOLX_PACKAGE_PLATFORM "windows")
+elseif(APPLE)
+    set(TOOLX_PACKAGE_PLATFORM "macos")
+endif()
+
+set(TOOLX_PACKAGE_ARCH_INPUT "${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+    list(LENGTH CMAKE_OSX_ARCHITECTURES TOOLX_OSX_ARCH_COUNT)
+    if(TOOLX_OSX_ARCH_COUNT GREATER 1)
+        set(TOOLX_PACKAGE_ARCH "universal")
+    else()
+        list(GET CMAKE_OSX_ARCHITECTURES 0 TOOLX_PACKAGE_ARCH_INPUT)
+    endif()
+endif()
+
+if(NOT DEFINED TOOLX_PACKAGE_ARCH)
+    toolx_normalize_arch("${TOOLX_PACKAGE_ARCH_INPUT}" TOOLX_PACKAGE_ARCH)
+endif()
+
+set(CPACK_PACKAGE_NAME "ToolX")
+set(CPACK_PACKAGE_VENDOR "ToolX")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ToolX C++20 toolkit libraries plus cfgtool and toolx-sync CLIs.")
+set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
+set(CPACK_PACKAGE_CONTACT "ToolX Maintainers")
+set(CPACK_MONOLITHIC_INSTALL ON)
+set(CPACK_ARCHIVE_COMPONENT_INSTALL OFF)
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+set(CPACK_VERBATIM_VARIABLES YES)
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+
+if(WIN32)
+    set(CPACK_GENERATOR "ZIP")
+else()
+    set(CPACK_GENERATOR "TGZ")
+endif()
+
+set(CPACK_PACKAGE_FILE_NAME "ToolX-v${PROJECT_VERSION}-${TOOLX_PACKAGE_PLATFORM}-${TOOLX_PACKAGE_ARCH}")
+set(CPACK_SOURCE_GENERATOR "TGZ")
+set(CPACK_SOURCE_PACKAGE_FILE_NAME "ToolX-v${PROJECT_VERSION}-source")
+set(CPACK_SOURCE_IGNORE_FILES
+    "[\\\\/][.]git[\\\\/]"
+    "[\\\\/][.]vscode[\\\\/]"
+    "[\\\\/]temp[\\\\/]"
+    "[\\\\/]build[\\\\/]"
+    "[\\\\/]build-[^\\\\/]+[\\\\/]"
+)
+
+include(CPack)

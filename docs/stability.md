@@ -84,7 +84,10 @@ The following are intentionally outside the 0.1.x stable surface:
 
 ## CLI Contracts
 
-`cfgtool` is a 0.1.x product contract.
+`cfgtool` is a 0.1.x product contract. Stable subcommands currently include
+`load`, `adapters`, `adapter-activate`, `doctor`, `snapshot-export`,
+`snapshot-restore`, `get`, `set`, `exists`, `merge`, `validate`, and
+`reload-dryrun`.
 
 Exit codes:
 

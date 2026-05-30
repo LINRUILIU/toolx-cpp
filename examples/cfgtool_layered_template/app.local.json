@@ -1,0 +1,9 @@
+{
+  "svc": {
+    "port": 9090,
+    "mode": "local"
+  },
+  "logging": {
+    "level": "debug"
+  }
+}

@@ -108,19 +108,24 @@ jobs:
 
       - name: Format check
         if: matrix.run_format_check == 'ON'
+        shell: bash
         run: cmake --build "${BUILD_DIR}" --target format-check
 
       - name: Lint check
         if: matrix.enable_tidy == 'ON'
+        shell: bash
         run: cmake --build "${BUILD_DIR}" --target lint-check
 
       - name: Build
+        shell: bash
         run: cmake --build "${BUILD_DIR}" --parallel
 
       - name: Test
+        shell: bash
         run: ctest --test-dir "${BUILD_DIR}" --output-on-failure
 
       - name: Install package
+        shell: bash
         run: cmake --install "${BUILD_DIR}" --prefix "${{ github.workspace }}/stage"
 
       - name: Verify exported package
@@ -131,15 +136,18 @@ jobs:
           cmake --build build-consumer --parallel
 
       - name: Release smoke
+        shell: bash
         run: >
           cmake
           -DTOOLX_STAGE_PREFIX="${{ github.workspace }}/stage"
           -P cmake/release_smoke.cmake
 
       - name: Package binary release archive
+        shell: bash
         run: cpack --config "${BUILD_DIR}/CPackConfig.cmake"
 
       - name: Verify packaged release archive
+        shell: bash
         run: >
           cmake
           -DPACKAGE_DIR="${{ github.workspace }}/${BUILD_DIR}/packages"
@@ -148,6 +156,7 @@ jobs:
 
       - name: Package source archive
         if: runner.os == 'Linux'
+        shell: bash
         run: cpack --config "${BUILD_DIR}/CPackSourceConfig.cmake"
 
       - name: Generate coverage

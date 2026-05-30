@@ -23,6 +23,8 @@ extern "C" __declspec(dllimport) char* __stdcall GetEnvironmentStringsA(
 extern "C" __declspec(dllimport) int __stdcall FreeEnvironmentStringsA(
     char*); // Windows
             // API函数，释放由GetEnvironmentStringsA返回的环境变量块，参数是指向环境变量块的指针，返回非零表示成功，零表示失败
+#else
+extern "C" char** environ;
 #endif
 
 namespace cfgx
@@ -291,7 +293,6 @@ std::vector<std::pair<std::string, std::string>> CollectEnvironmentPairs()
 
     FreeEnvironmentStringsA(block);
 #else
-    extern char** environ;
     if (environ == nullptr)
     {
         return out;

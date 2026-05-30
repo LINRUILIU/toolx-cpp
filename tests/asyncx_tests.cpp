@@ -149,7 +149,7 @@ TEST(AsyncxTests, TryPostReturnsQueueFullWhenNoSlot)
     EXPECT_TRUE(pool.Join().ok);
 }
 
-TEST(AsyncxTests, PriorityTasksRunHighBeforeLow)
+TEST(AsyncxTests, PriorityTasksFavorHighOverLow)
 {
     asyncx::PoolOptions options;
     options.worker_count = 1;
@@ -162,7 +162,7 @@ TEST(AsyncxTests, PriorityTasksRunHighBeforeLow)
     std::vector<int> order;
     std::mutex order_mu;
 
-    ASSERT_TRUE(pool.Post([hold]() { hold.wait(); }).ok);
+    ASSERT_TRUE(pool.PostWithPriority(asyncx::TaskPriority::High, [hold]() { hold.wait(); }).ok);
 
     ASSERT_TRUE(pool.PostWithPriority(asyncx::TaskPriority::Low,
                                       [&order, &order_mu]()

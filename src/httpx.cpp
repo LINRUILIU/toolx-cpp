@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <poll.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -863,6 +864,7 @@ WaitState WaitSocketReady(SocketHandle socket, bool want_read, std::uint64_t tim
         *error_code = 0;
     }
 
+#if defined(_WIN32)
     fd_set read_set;
     fd_set write_set;
     fd_set error_set;
@@ -884,11 +886,7 @@ WaitState WaitSocketReady(SocketHandle socket, bool want_read, std::uint64_t tim
     tv.tv_sec = static_cast<long>(timeout_ms / 1000u);
     tv.tv_usec = static_cast<long>((timeout_ms % 1000u) * 1000u);
 
-#if defined(_WIN32)
     const int rc = select(0, &read_set, &write_set, &error_set, &tv);
-#else
-    const int rc = select(socket + 1, &read_set, &write_set, &error_set, &tv);
-#endif
     if (rc == 0)
     {
         return WaitState::Timeout;
@@ -916,6 +914,59 @@ WaitState WaitSocketReady(SocketHandle socket, bool want_read, std::uint64_t tim
     }
 
     return WaitState::Ready;
+#else
+    pollfd descriptor{};
+    descriptor.fd = socket;
+    descriptor.events = static_cast<short>(want_read ? POLLIN : POLLOUT);
+
+    const int timeout = timeout_ms > static_cast<std::uint64_t>(std::numeric_limits<int>::max())
+                            ? std::numeric_limits<int>::max()
+                            : static_cast<int>(timeout_ms);
+    const int rc = poll(&descriptor, 1, timeout);
+    if (rc == 0)
+    {
+        return WaitState::Timeout;
+    }
+
+    if (rc < 0)
+    {
+        if (error_code != nullptr)
+        {
+            *error_code = LastSocketError();
+        }
+        return WaitState::Error;
+    }
+
+    if ((descriptor.revents & POLLNVAL) != 0 || (descriptor.revents & POLLERR) != 0)
+    {
+        int so_error = 0;
+        socklen_t so_len = static_cast<socklen_t>(sizeof(so_error));
+        getsockopt(socket, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&so_error), &so_len);
+        if (error_code != nullptr)
+        {
+            *error_code = so_error;
+        }
+        return WaitState::Error;
+    }
+
+    if (want_read)
+    {
+        if ((descriptor.revents & POLLIN) != 0 || (descriptor.revents & POLLHUP) != 0)
+        {
+            return WaitState::Ready;
+        }
+    }
+    else if ((descriptor.revents & POLLOUT) != 0)
+    {
+        return WaitState::Ready;
+    }
+
+    if (error_code != nullptr)
+    {
+        *error_code = LastSocketError();
+    }
+    return WaitState::Error;
+#endif
 }
 
 httpx::Result<ParsedUrl> ParseUrlInternal(std::string_view url)

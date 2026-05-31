@@ -455,13 +455,18 @@ TEST(AsyncxTests, WaitForIdleIncludesScheduledTasks)
 {
     asyncx::ThreadPool pool;
 
-    auto scheduled = pool.PostDelayedFor(std::chrono::milliseconds(100), []() {});
+    std::promise<void> release;
+    auto release_future = release.get_future().share();
+
+    auto scheduled =
+        pool.PostDelayedFor(std::chrono::milliseconds(200), [release_future]() mutable { release_future.wait(); });
     ASSERT_TRUE(scheduled.ok) << scheduled.error.message;
 
     const auto early = pool.WaitForIdleFor(std::chrono::milliseconds(20));
     EXPECT_FALSE(early.ok);
     EXPECT_EQ(early.error.kind, asyncx::ErrorKind::Timeout);
 
+    release.set_value();
     EXPECT_TRUE(pool.WaitForIdleFor(std::chrono::milliseconds(500)).ok);
     EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::Drain).ok);
 }
@@ -509,20 +514,28 @@ TEST(AsyncxTests, WaitAllForCanTimeout)
 {
     asyncx::ThreadPool pool;
 
+    std::promise<void> started;
+    auto started_future = started.get_future();
+    std::promise<void> release;
+    auto release_future = release.get_future().share();
+
     std::vector<std::future<int>> futures;
     auto f = pool.Submit(
-        []()
+        [&started, release_future]() mutable
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+            started.set_value();
+            release_future.wait();
             return 1;
         });
     ASSERT_TRUE(f.ok);
     futures.push_back(std::move(f.value));
+    ASSERT_EQ(started_future.wait_for(std::chrono::milliseconds(200)), std::future_status::ready);
 
     const auto timeout_status = asyncx::WaitAllFor(futures, std::chrono::milliseconds(20));
     EXPECT_FALSE(timeout_status.ok);
     EXPECT_EQ(timeout_status.error.kind, asyncx::ErrorKind::Timeout);
 
+    release.set_value();
     const auto ok_status = asyncx::WaitAllFor(futures, std::chrono::milliseconds(300));
     EXPECT_TRUE(ok_status.ok);
     EXPECT_EQ(futures[0].get(), 1);

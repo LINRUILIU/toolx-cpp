@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <memory>
 #include <optional>
@@ -1645,4 +1647,114 @@ TEST(HttpxClientTests, SoakSequentialRequestsRemainStable)
     }
 
     ASSERT_EQ(static_cast<int>(captured->size()), kRounds);
+}
+
+TEST(HttpxClientTests, DownloadFileWritesThroughTemporaryFile)
+{
+    const auto root = std::filesystem::current_path() / "toolx_test_tmp" / "httpx_download";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+
+    httpx::ClientOptions options;
+    options.transport = [](const httpx::Request& request, const httpx::ClientOptions&)
+    {
+        httpx::Result<httpx::Response> out;
+        if (request.on_response_chunk)
+        {
+            EXPECT_TRUE(request.on_response_chunk("he"));
+            EXPECT_TRUE(request.on_response_chunk("llo"));
+        }
+        out.ok = true;
+        out.value.status_code = 200;
+        return out;
+    };
+    httpx::Client client(options);
+
+    std::uint64_t progress = 0;
+    httpx::DownloadOptions download;
+    download.on_progress = [&progress](std::uint64_t value) { progress = value; };
+    const auto status = client.DownloadFile("http://example.test/file", (root / "file.txt").string(), download);
+    ASSERT_TRUE(status.ok) << status.error.message;
+
+    std::ifstream in(root / "file.txt", std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(text, "hello");
+    EXPECT_EQ(progress, 5u);
+}
+
+TEST(HttpxClientTests, UploadFileBuildsMultipartRequest)
+{
+    const auto root = std::filesystem::current_path() / "toolx_test_tmp" / "httpx_upload";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    {
+        std::ofstream out(root / "blob.bin", std::ios::binary);
+        out << "payload";
+    }
+
+    bool saw_file = false;
+    httpx::ClientOptions options;
+    options.transport = [&saw_file](const httpx::Request& request, const httpx::ClientOptions&)
+    {
+        saw_file = request.multipart.size() == 1 && request.multipart[0].name == "file" &&
+                   request.multipart[0].filename == "blob.bin" && request.multipart[0].data == "payload";
+        httpx::Result<httpx::Response> out;
+        out.ok = true;
+        out.value.status_code = 200;
+        return out;
+    };
+
+    httpx::Client client(options);
+    const auto response = client.UploadFile("http://example.test/upload", "file", (root / "blob.bin").string());
+    ASSERT_TRUE(response.ok) << response.error.message;
+    EXPECT_TRUE(saw_file);
+}
+
+TEST(HttpxClientTests, RetryPolicyAndCircuitBreakerWork)
+{
+    std::atomic<int> attempts{0};
+    httpx::ClientOptions options;
+    options.retry_policy.max_attempts = 1;
+    options.retry_policy.retry_transient_errors = true;
+    options.circuit_breaker.enabled = true;
+    options.circuit_breaker.failure_threshold = 1;
+    options.circuit_breaker.reset_timeout_ms = 10000;
+    options.transport = [&attempts](const httpx::Request&, const httpx::ClientOptions&)
+    {
+        httpx::Result<httpx::Response> out;
+        if (attempts.fetch_add(1) == 0)
+        {
+            out.ok = false;
+            out.error.kind = httpx::ErrorKind::Timeout;
+            out.error.retryable = true;
+            out.error.message = "transient";
+            return out;
+        }
+        out.ok = true;
+        out.value.status_code = 200;
+        return out;
+    };
+
+    httpx::Client client(options);
+    ASSERT_TRUE(client.Get("http://example.test/retry").ok);
+    EXPECT_EQ(attempts.load(), 2);
+
+    options.retry_policy.max_attempts = 0;
+    options.transport = [](const httpx::Request&, const httpx::ClientOptions&)
+    {
+        httpx::Result<httpx::Response> out;
+        out.ok = false;
+        out.error.kind = httpx::ErrorKind::Network;
+        out.error.retryable = true;
+        out.error.message = "down";
+        return out;
+    };
+    httpx::Client circuit_client(options);
+    EXPECT_FALSE(circuit_client.Get("http://example.test/fail").ok);
+    const auto blocked = circuit_client.Get("http://example.test/blocked");
+    EXPECT_FALSE(blocked.ok);
+    EXPECT_EQ(blocked.error.kind, httpx::ErrorKind::CircuitOpen);
+    EXPECT_TRUE(circuit_client.CircuitSnapshot().open);
 }

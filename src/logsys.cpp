@@ -24,6 +24,23 @@
 namespace logsys
 {
 
+namespace
+{
+thread_local std::vector<ExtField> g_context_fields;
+
+void ApplyThreadContext(LogEvent* event)
+{
+    if (event == nullptr)
+    {
+        return;
+    }
+    for (const auto& field : g_context_fields)
+    {
+        (void)event->SetField(field.key, field.value);
+    }
+}
+} // namespace
+
 #if defined(_WIN32)
 namespace
 {
@@ -659,6 +676,34 @@ bool LogEvent::SetField(std::string key, std::string value)
     }
     ext_fields[ext_count++] = ExtField{std::move(key), std::move(value)};
     return true;
+}
+
+LogContext& LogContext::SetField(std::string key, std::string value)
+{
+    if (key.size() <= LogEvent::kMaxKeyLen && value.size() <= LogEvent::kMaxValueLen &&
+        fields.size() < LogEvent::kMaxExtFields)
+    {
+        fields.push_back(ExtField{std::move(key), std::move(value)});
+    }
+    return *this;
+}
+
+ScopedLogContext::ScopedLogContext(LogContext context)
+{
+    pushed_count_ = context.fields.size();
+    for (auto& field : context.fields)
+    {
+        g_context_fields.push_back(std::move(field));
+    }
+}
+
+ScopedLogContext::~ScopedLogContext()
+{
+    while (pushed_count_ > 0 && !g_context_fields.empty())
+    {
+        g_context_fields.pop_back();
+        --pushed_count_;
+    }
 }
 
 const ErrorDictionary& ErrorDictionary::Instance()
@@ -1862,6 +1907,26 @@ void Logger::ResetBackpressureCountersForTestOnly()
     pending_event_count_.store(0, std::memory_order_relaxed);
 }
 
+LoggerMetricsSnapshot Logger::GetMetricsSnapshot() const noexcept
+{
+    LoggerMetricsSnapshot snapshot;
+    snapshot.accepted = metrics_accepted_.load(std::memory_order_relaxed);
+    snapshot.emitted = metrics_emitted_.load(std::memory_order_relaxed);
+    snapshot.dropped = dropped_by_backpressure_.load(std::memory_order_relaxed);
+    snapshot.queued = metrics_queued_.load(std::memory_order_relaxed);
+    snapshot.flushed = metrics_flushed_.load(std::memory_order_relaxed);
+    return snapshot;
+}
+
+void Logger::ResetMetrics() noexcept
+{
+    metrics_accepted_.store(0, std::memory_order_relaxed);
+    metrics_emitted_.store(0, std::memory_order_relaxed);
+    metrics_queued_.store(0, std::memory_order_relaxed);
+    metrics_flushed_.store(0, std::memory_order_relaxed);
+    dropped_by_backpressure_.store(0, std::memory_order_relaxed);
+}
+
 bool Logger::SetLevelFromString(std::string_view level_text)
 {
     const auto parsed = ParseLogLevel(level_text);
@@ -2154,6 +2219,7 @@ void Logger::FlushGroupedOutputsLocked()
                     sink->Write(entry.line);
                 }
             }
+            metrics_emitted_.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
@@ -2222,6 +2288,9 @@ std::string Logger::Sanitize(std::string message)
 
 void Logger::Enqueue(LogEvent event)
 {
+    ApplyThreadContext(&event);
+    metrics_accepted_.fetch_add(1, std::memory_order_relaxed);
+
     BackpressureConfigV2 backpressure;
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -2241,11 +2310,13 @@ void Logger::Enqueue(LogEvent event)
         std::lock_guard<std::mutex> lk(async_mu_);
         async_queue_.push_back(std::move(event));
     }
+    metrics_queued_.fetch_add(1, std::memory_order_relaxed);
     async_cv_.notify_one();
 }
 
 void Logger::LogEventNow(LogEvent event)
 {
+    ApplyThreadContext(&event);
     if (auto_fill_missing_metadata_.load(std::memory_order_relaxed))
     {
         if (event.code == 0)
@@ -2375,6 +2446,7 @@ void Logger::LogEventNow(LogEvent event)
             sink->Write(line);
         }
     }
+    metrics_emitted_.fetch_add(1, std::memory_order_relaxed);
 
     if (event.level == LogLevel::Fatal && FlushOnFatal())
     {
@@ -2460,6 +2532,45 @@ void Logger::Flush()
             sink->Flush();
         }
     }
+    metrics_flushed_.fetch_add(1, std::memory_order_relaxed);
+}
+
+TraceSpan::TraceSpan(std::string name, Logger& logger, LogLevel level)
+    : logger_(&logger), name_(std::move(name)), level_(level), started_at_(std::chrono::steady_clock::now())
+{
+}
+
+TraceSpan::~TraceSpan()
+{
+    if (logger_ == nullptr)
+    {
+        return;
+    }
+
+    const auto duration_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at_).count();
+    LogEvent event;
+    event.timestamp = std::chrono::system_clock::now();
+    event.level = level_;
+    event.code = logger_->DefaultCodeForLevel(level_);
+    event.category = logger_->DefaultCategory();
+    event.file = "<span>";
+    event.function = name_;
+    event.thread_id = static_cast<std::uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    event.message = "span " + name_ + " completed";
+    (void)event.SetField("span", name_);
+    (void)event.SetField("duration_ms", std::to_string(duration_ms));
+    for (const auto& field : fields_.fields)
+    {
+        (void)event.SetField(field.key, field.value);
+    }
+    logger_->Enqueue(std::move(event));
+}
+
+TraceSpan& TraceSpan::SetField(std::string key, std::string value)
+{
+    fields_.SetField(std::move(key), std::move(value));
+    return *this;
 }
 
 LogStreamBuilder::LogStreamBuilder(Logger& logger, LogLevel level, ErrorCode code, ErrorCategory category,

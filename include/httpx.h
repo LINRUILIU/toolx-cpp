@@ -41,6 +41,7 @@ enum class ErrorKind
     Redirect,
     TransportUnavailable,
     Internal,
+    CircuitOpen,
 };
 
 enum class LogSeverity
@@ -158,6 +159,46 @@ struct FailureStats
     std::uint64_t consecutive_failures{0};
 };
 
+struct RetryPolicy
+{
+    // 0 keeps the legacy max_retry_attempts behavior. Otherwise this is the
+    // total number of Send attempts, including the first attempt.
+    std::size_t max_attempts{0};
+    std::uint64_t delay_ms{0};
+    // When true, retryable transport errors are retried even without a custom
+    // should_retry callback.
+    bool retry_transient_errors{true};
+};
+
+struct CircuitBreakerOptions
+{
+    bool enabled{false};
+    // Number of consecutive failed requests needed before the circuit opens.
+    std::uint64_t failure_threshold{5};
+    // Open circuits fail fast until this timeout elapses; the next request then
+    // probes the transport and closes the circuit on success.
+    std::uint64_t reset_timeout_ms{30000};
+};
+
+struct CircuitSnapshot
+{
+    bool enabled{false};
+    bool open{false};
+    std::uint64_t consecutive_failures{0};
+    std::uint64_t reset_timeout_ms{0};
+};
+
+struct DownloadOptions
+{
+    HeaderList headers;
+    // DownloadFile writes output_path + temp_suffix first, then replaces the
+    // destination on success.
+    std::string temp_suffix{".part"};
+    // false fails when output_path already exists.
+    bool overwrite{true};
+    std::function<void(std::uint64_t received_bytes)> on_progress;
+};
+
 struct LogEvent
 {
     LogSeverity severity{LogSeverity::Info};
@@ -184,6 +225,8 @@ struct ClientOptions
     bool redact_sensitive_data{true};
     bool use_proxy_from_environment{true};
     std::size_t max_retry_attempts{0};
+    RetryPolicy retry_policy{};
+    CircuitBreakerOptions circuit_breaker{};
 
     std::function<bool(const Error& error, std::size_t attempt)> should_retry;
     std::function<void(const LogEvent& event)> logger;
@@ -222,12 +265,21 @@ class Client
     Result<Response> Post(std::string url, std::string body, HeaderList headers = {});
     Result<Response> Put(std::string url, std::string body, HeaderList headers = {});
     Result<Response> Patch(std::string url, std::string body, HeaderList headers = {});
+    // Safe file download helper. The final path is replaced only after a
+    // successful response body has been fully written to the temp file.
+    Status DownloadFile(std::string url, std::string output_path, DownloadOptions options = {});
+    // Multipart file upload helper. The file is read into one multipart part
+    // named field_name; large streaming upload is outside the MVP.
+    Result<Response> UploadFile(std::string url, std::string field_name, std::string file_path,
+                                HeaderList headers = {});
 
     Status ApplyFlatConfig(const std::vector<FlatConfigEntry>& entries);
 
     const ClientOptions& Options() const noexcept;
     FailureStats GetFailureStats() const;
     void ResetFailureStats();
+    // Snapshot is lock-protected and safe to call while other requests run.
+    httpx::CircuitSnapshot CircuitSnapshot() const;
 
   private:
     Result<Response> SendOnce(const Request& request, const ClientOptions& effective_options,
@@ -238,6 +290,8 @@ class Client
     ClientOptions options_{};
     mutable std::mutex mu_{};
     FailureStats stats_{};
+    bool circuit_open_{false};
+    std::chrono::steady_clock::time_point circuit_opened_at_{};
 };
 
 } // namespace httpx

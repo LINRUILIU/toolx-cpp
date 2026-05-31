@@ -318,6 +318,43 @@ struct LogEvent
                   std::string value); // 设置扩展字段的成员函数，返回是否成功设置（如键值长度合法且未超过最大数量）。
 };
 
+struct LogContext
+{
+    // Context fields are appended to every event emitted while a
+    // ScopedLogContext is alive on the current thread. Invalid or overflow
+    // fields are ignored by SetField.
+    std::vector<ExtField> fields;
+
+    LogContext& SetField(std::string key, std::string value);
+};
+
+class ScopedLogContext
+{
+  public:
+    // Pushes context fields onto a thread-local stack and pops exactly those
+    // fields on destruction. Nested scopes inherit outer fields.
+    explicit ScopedLogContext(LogContext context);
+    ~ScopedLogContext();
+
+    ScopedLogContext(const ScopedLogContext&) = delete;
+    ScopedLogContext& operator=(const ScopedLogContext&) = delete;
+
+  private:
+    std::size_t pushed_count_{0};
+};
+
+struct LoggerMetricsSnapshot
+{
+    // accepted: events accepted past record_level. emitted: formatted lines
+    // written to sinks. dropped: backpressure drops. queued: events placed into
+    // the async queue. flushed: explicit Flush calls.
+    std::uint64_t accepted{0};
+    std::uint64_t emitted{0};
+    std::uint64_t dropped{0};
+    std::uint64_t queued{0};
+    std::uint64_t flushed{0};
+};
+
 struct ErrorDictionaryEntry
 {
     ErrorCode code;                    // 错误代码，唯一标识一个错误类型。
@@ -569,6 +606,10 @@ class Logger
     std::uint64_t DroppedByBackpressureCount()
         const noexcept; // 获取因回压策略而被丢弃的日志事件数量的函数，返回一个 64 位无符号整数。
     void ResetBackpressureCountersForTestOnly(); // 重置回压相关计数器的函数，仅供测试使用。
+    // Metrics are monotonic until ResetMetrics() and are safe to read from any
+    // thread.
+    LoggerMetricsSnapshot GetMetricsSnapshot() const noexcept;
+    void ResetMetrics() noexcept;
 
     // V2 async extension point: currently synchronous forwarding.
     void Enqueue(LogEvent event);     // 将日志事件加入处理队列的函数，接受一个 LogEvent 对象，目前实现为同步转发。
@@ -687,15 +728,19 @@ class Logger
     std::thread periodic_flush_thread_{};                    // 定期刷新线程。
     std::atomic<std::uint64_t> pending_event_count_{0};      // 当前待处理日志事件的数量，用于回压策略。
     std::atomic<std::uint64_t> dropped_by_backpressure_{0};  // 因回压策略而被丢弃的日志事件数量。
-    std::vector<PendingOutputV2> grouped_outputs_{};         // 分组待输出日志事件列表，用于批量处理和输出。
-    std::mutex async_mu_;                                    // 保护异步队列和工作线程状态。
-    std::condition_variable async_cv_;                       // 通知异步工作线程有新事件。
-    std::condition_variable async_drain_cv_;                 // 用于 Flush 等待异步队列排空。
-    std::deque<LogEvent> async_queue_{};                     // 异步待处理事件队列。
-    bool async_worker_stop_requested_{false};                // 异步线程停止标志。
-    bool async_worker_processing_{false};                    // 异步线程是否正在处理一个事件。
-    std::thread::id async_worker_thread_id_{};               // 异步线程 id，用于避免线程内 Flush 死锁。
-    std::thread async_worker_thread_{};                      // 异步日志工作线程。
+    std::atomic<std::uint64_t> metrics_accepted_{0};
+    std::atomic<std::uint64_t> metrics_emitted_{0};
+    std::atomic<std::uint64_t> metrics_queued_{0};
+    std::atomic<std::uint64_t> metrics_flushed_{0};
+    std::vector<PendingOutputV2> grouped_outputs_{}; // 分组待输出日志事件列表，用于批量处理和输出。
+    std::mutex async_mu_;                            // 保护异步队列和工作线程状态。
+    std::condition_variable async_cv_;               // 通知异步工作线程有新事件。
+    std::condition_variable async_drain_cv_;         // 用于 Flush 等待异步队列排空。
+    std::deque<LogEvent> async_queue_{};             // 异步待处理事件队列。
+    bool async_worker_stop_requested_{false};        // 异步线程停止标志。
+    bool async_worker_processing_{false};            // 异步线程是否正在处理一个事件。
+    std::thread::id async_worker_thread_id_{};       // 异步线程 id，用于避免线程内 Flush 死锁。
+    std::thread async_worker_thread_{};              // 异步日志工作线程。
 
     // Category counters are fixed-size atomics to avoid runtime map allocations.
     std::array<std::atomic<std::uint64_t>, static_cast<std::size_t>(ErrorCategory::Count)>
@@ -704,6 +749,27 @@ class Logger
     std::array<CodeBucket, kCodeBucketCount>
         code_counts_{}; // 错误代码计数数组，使用固定大小的 CodeBucket
                         // 结构存储错误代码和对应的事件数量，通过哈希分散错误代码以减少竞争。
+};
+
+class TraceSpan
+{
+  public:
+    // Logs one event on destruction with fields span=<name> and duration_ms.
+    // The destructor never throws; it is safe for normal RAII scope timing.
+    explicit TraceSpan(std::string name, Logger& logger = Logger::Instance(), LogLevel level = LogLevel::Info);
+    ~TraceSpan();
+
+    TraceSpan(const TraceSpan&) = delete;
+    TraceSpan& operator=(const TraceSpan&) = delete;
+
+    TraceSpan& SetField(std::string key, std::string value);
+
+  private:
+    Logger* logger_{nullptr};
+    std::string name_;
+    LogLevel level_{LogLevel::Info};
+    std::chrono::steady_clock::time_point started_at_;
+    LogContext fields_;
 };
 
 } // namespace logsys

@@ -3,7 +3,10 @@
 #include "utils.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -70,6 +73,41 @@ bool path_exists(const Path& p)
 {
     std::error_code ec;
     return std::filesystem::exists(p, ec) && !ec;
+}
+
+bool files_have_same_content(const Path& lhs, const Path& rhs)
+{
+    std::error_code ec;
+    if (std::filesystem::file_size(lhs, ec) != std::filesystem::file_size(rhs, ec) || ec)
+    {
+        return false;
+    }
+
+    std::ifstream left(lhs, std::ios::binary);
+    std::ifstream right(rhs, std::ios::binary);
+    if (!left || !right)
+    {
+        return false;
+    }
+
+    std::array<char, 8192> left_buffer{};
+    std::array<char, 8192> right_buffer{};
+    while (left && right)
+    {
+        left.read(left_buffer.data(), static_cast<std::streamsize>(left_buffer.size()));
+        right.read(right_buffer.data(), static_cast<std::streamsize>(right_buffer.size()));
+        const auto left_count = left.gcount();
+        const auto right_count = right.gcount();
+        if (left_count != right_count)
+        {
+            return false;
+        }
+        if (!std::equal(left_buffer.begin(), left_buffer.begin() + left_count, right_buffer.begin()))
+        {
+            return false;
+        }
+    }
+    return left.eof() && right.eof();
 }
 
 std::string escape_field(std::string_view in)
@@ -503,6 +541,153 @@ bool rename_file(const Path& src, const Path& dst, const RunOptions& options, Ex
     return true;
 }
 
+bool copy_file_tracked(const Path& src, const Path& dst, const RunOptions& options, ExecuteState* state,
+                       std::string* error, bool* skipped)
+{
+    if (skipped != nullptr)
+    {
+        *skipped = false;
+    }
+    if (!path_exists(src))
+    {
+        *error = utils::err::join_context("fsx", "copy_file", "source file not found");
+        return false;
+    }
+    if (!ensure_parent(dst, error))
+    {
+        return false;
+    }
+
+    const bool destination_exists = path_exists(dst);
+    Path destination_backup;
+    if (destination_exists)
+    {
+        if (options.conflict_policy == ConflictPolicy::Skip)
+        {
+            if (skipped != nullptr)
+            {
+                *skipped = true;
+            }
+            return true;
+        }
+        if (options.conflict_policy == ConflictPolicy::Fail)
+        {
+            *error = utils::err::join_context("fsx", "copy_file", "destination exists");
+            return false;
+        }
+        destination_backup = make_temp_path(dst, "old");
+        bool ignored = false;
+        if (!move_file_force(dst, destination_backup, ConflictPolicy::Fail, &ignored, error))
+        {
+            return false;
+        }
+    }
+
+    std::error_code ec;
+    std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec)
+    {
+        if (destination_exists)
+        {
+            std::string restore_error;
+            bool ignored = false;
+            (void)move_file_force(destination_backup, dst, ConflictPolicy::Overwrite, &ignored, &restore_error);
+        }
+        *error = utils::err::join_context("fsx", "copy_file", ec.message());
+        return false;
+    }
+
+    if (destination_exists)
+    {
+        state->undo_stack.push_back({UndoAction::Kind::MovePath, destination_backup, dst});
+        state->undo_stack.push_back({UndoAction::Kind::RemovePath, dst, {}});
+    }
+    else
+    {
+        state->undo_stack.push_back({UndoAction::Kind::RemovePath, dst, {}});
+    }
+    return true;
+}
+
+bool remove_path_tracked(const Path& target, const RunOptions& options, ExecuteState* state, std::string* error,
+                         bool* skipped)
+{
+    if (skipped != nullptr)
+    {
+        *skipped = false;
+    }
+    if (!path_exists(target))
+    {
+        if (skipped != nullptr)
+        {
+            *skipped = true;
+        }
+        return true;
+    }
+
+    if (options.conflict_policy == ConflictPolicy::Skip)
+    {
+        if (skipped != nullptr)
+        {
+            *skipped = true;
+        }
+        return true;
+    }
+
+    const Path backup = make_temp_path(target, "removed");
+    bool ignored = false;
+    if (!move_file_force(target, backup, ConflictPolicy::Fail, &ignored, error))
+    {
+        return false;
+    }
+    state->undo_stack.push_back({UndoAction::Kind::MovePath, backup, target});
+    return true;
+}
+
+bool copy_tree_tracked(const Path& src, const Path& dst, const RunOptions& options, ExecuteState* state,
+                       std::string* error, bool* skipped)
+{
+    if (skipped != nullptr)
+    {
+        *skipped = false;
+    }
+    if (!path_exists(src) || !std::filesystem::is_directory(src))
+    {
+        *error = utils::err::join_context("fsx", "copy_tree", "source directory not found");
+        return false;
+    }
+
+    WalkOptions walk_options;
+    walk_options.recursive = true;
+    walk_options.include_directories = false;
+    walk_options.include_files = true;
+    walk_options.relative_path = true;
+    const auto walked = WalkDirectory(src.string(), walk_options);
+    if (!walked.ok)
+    {
+        *error = walked.error;
+        return false;
+    }
+
+    bool any_skipped = false;
+    for (const auto& entry : walked.entries)
+    {
+        const Path child_src = src / Path(entry.path);
+        const Path child_dst = dst / Path(entry.path);
+        bool child_skipped = false;
+        if (!copy_file_tracked(child_src, child_dst, options, state, error, &child_skipped))
+        {
+            return false;
+        }
+        any_skipped = any_skipped || child_skipped;
+    }
+    if (skipped != nullptr)
+    {
+        *skipped = any_skipped && walked.entries.empty();
+    }
+    return true;
+}
+
 bool rollback(ExecuteState* state, RunResult* result, RollbackMode mode)
 {
     bool all_ok = true;
@@ -806,6 +991,12 @@ OpType to_public_op(BatchPlan::ActionKind kind)
         return OpType::SafeReplace;
     case BatchPlan::ActionKind::Rename:
         return OpType::Rename;
+    case BatchPlan::ActionKind::CopyFile:
+        return OpType::CopyFile;
+    case BatchPlan::ActionKind::RemovePath:
+        return OpType::RemovePath;
+    case BatchPlan::ActionKind::CopyTree:
+        return OpType::CopyTree;
     }
     return OpType::AtomicWrite;
 }
@@ -837,6 +1028,35 @@ BatchPlan& BatchPlan::AddRename(std::string src, std::string dst)
 {
     Action op;
     op.kind = ActionKind::Rename;
+    op.src = std::move(src);
+    op.dst = std::move(dst);
+    actions_.push_back(std::move(op));
+    return *this;
+}
+
+BatchPlan& BatchPlan::AddCopyFile(std::string src, std::string dst)
+{
+    Action op;
+    op.kind = ActionKind::CopyFile;
+    op.src = std::move(src);
+    op.dst = std::move(dst);
+    actions_.push_back(std::move(op));
+    return *this;
+}
+
+BatchPlan& BatchPlan::AddRemovePath(std::string path)
+{
+    Action op;
+    op.kind = ActionKind::RemovePath;
+    op.dst = std::move(path);
+    actions_.push_back(std::move(op));
+    return *this;
+}
+
+BatchPlan& BatchPlan::AddCopyTree(std::string src, std::string dst)
+{
+    Action op;
+    op.kind = ActionKind::CopyTree;
     op.src = std::move(src);
     op.dst = std::move(dst);
     actions_.push_back(std::move(op));
@@ -887,6 +1107,26 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
         {
             bool skipped = false;
             outcome.ok = rename_file(Path(action.src), Path(action.dst), options, &state, &outcome.error, &skipped);
+            outcome.skipped = skipped;
+        }
+        else if (action.kind == BatchPlan::ActionKind::CopyFile)
+        {
+            bool skipped = false;
+            outcome.ok =
+                copy_file_tracked(Path(action.src), Path(action.dst), options, &state, &outcome.error, &skipped);
+            outcome.skipped = skipped;
+        }
+        else if (action.kind == BatchPlan::ActionKind::RemovePath)
+        {
+            bool skipped = false;
+            outcome.ok = remove_path_tracked(Path(action.dst), options, &state, &outcome.error, &skipped);
+            outcome.skipped = skipped;
+        }
+        else if (action.kind == BatchPlan::ActionKind::CopyTree)
+        {
+            bool skipped = false;
+            outcome.ok =
+                copy_tree_tracked(Path(action.src), Path(action.dst), options, &state, &outcome.error, &skipped);
             outcome.skipped = skipped;
         }
 
@@ -1183,6 +1423,398 @@ WalkResult WalkDirectory(std::string_view root, const WalkOptions& options)
     return out;
 }
 
+DirectoryDiff BuildDirectoryDiff(std::string_view source_root, std::string_view destination_root, bool include_removed)
+{
+    DirectoryDiff diff;
+    WalkOptions options;
+    options.recursive = true;
+    options.include_directories = false;
+    options.include_files = true;
+    options.relative_path = true;
+
+    const auto source_walk = WalkDirectory(source_root, options);
+    if (!source_walk.ok)
+    {
+        diff.error = source_walk.error;
+        return diff;
+    }
+
+    std::map<std::string, WalkEntry> source_entries;
+    std::map<std::string, WalkEntry> destination_entries;
+    for (const auto& entry : source_walk.entries)
+    {
+        source_entries[entry.path] = entry;
+    }
+
+    const Path dst_root{std::string(destination_root)};
+    std::error_code ec;
+    if (std::filesystem::exists(dst_root, ec) && !ec)
+    {
+        const auto destination_walk = WalkDirectory(destination_root, options);
+        if (!destination_walk.ok)
+        {
+            diff.error = destination_walk.error;
+            return diff;
+        }
+        for (const auto& entry : destination_walk.entries)
+        {
+            destination_entries[entry.path] = entry;
+        }
+    }
+
+    const Path src_root{std::string(source_root)};
+    for (const auto& [relative, source_entry] : source_entries)
+    {
+        const auto dst_it = destination_entries.find(relative);
+        DirectoryDiffKind kind = DirectoryDiffKind::Added;
+        if (dst_it != destination_entries.end())
+        {
+            const auto source_path = src_root / Path(relative);
+            const auto destination_path = dst_root / Path(relative);
+            if (dst_it->second.size == source_entry.size && files_have_same_content(source_path, destination_path))
+            {
+                continue;
+            }
+            kind = DirectoryDiffKind::Modified;
+        }
+        diff.entries.push_back(
+            {kind, relative, (src_root / Path(relative)).string(), (dst_root / Path(relative)).string()});
+    }
+
+    if (include_removed)
+    {
+        for (const auto& [relative, destination_entry] : destination_entries)
+        {
+            if (source_entries.find(relative) == source_entries.end())
+            {
+                (void)destination_entry;
+                diff.entries.push_back(
+                    {DirectoryDiffKind::Removed, relative, "", (dst_root / Path(relative)).string()});
+            }
+        }
+    }
+
+    std::sort(diff.entries.begin(), diff.entries.end(),
+              [](const DirectoryDiffEntry& lhs, const DirectoryDiffEntry& rhs)
+              {
+                  if (lhs.relative_path != rhs.relative_path)
+                  {
+                      return lhs.relative_path < rhs.relative_path;
+                  }
+                  return static_cast<int>(lhs.kind) < static_cast<int>(rhs.kind);
+              });
+    diff.ok = true;
+    return diff;
+}
+
+BatchPlan BuildSyncPlan(std::string_view source_root, std::string_view destination_root, bool remove_extra)
+{
+    BatchPlan plan;
+    const auto diff = BuildDirectoryDiff(source_root, destination_root, remove_extra);
+    if (!diff.ok)
+    {
+        return plan;
+    }
+
+    for (const auto& entry : diff.entries)
+    {
+        if (entry.kind == DirectoryDiffKind::Removed)
+        {
+            plan.AddRemovePath(entry.destination_path);
+        }
+        else
+        {
+            plan.AddCopyFile(entry.source_path, entry.destination_path);
+        }
+    }
+    return plan;
+}
+
+namespace
+{
+void write_tar_octal(char* field, std::size_t width, std::uintmax_t value)
+{
+    std::snprintf(field, width, "%0*llo", static_cast<int>(width - 1), static_cast<unsigned long long>(value));
+}
+
+bool write_tar_header(std::ostream& out, std::string name, bool directory, std::uintmax_t size, std::string* error)
+{
+    if (name.empty())
+    {
+        *error = utils::err::join_context("fsx", "tar", "empty archive entry name");
+        return false;
+    }
+    if (name.size() > 100)
+    {
+        *error = utils::err::join_context("fsx", "tar", "entry path exceeds ustar MVP limit");
+        return false;
+    }
+    if (directory && name.back() != '/')
+    {
+        name.push_back('/');
+    }
+
+    std::array<char, 512> header{};
+    std::memcpy(header.data(), name.data(), name.size());
+    write_tar_octal(header.data() + 100, 8, 0644);
+    write_tar_octal(header.data() + 108, 8, 0);
+    write_tar_octal(header.data() + 116, 8, 0);
+    write_tar_octal(header.data() + 124, 12, directory ? 0 : size);
+    write_tar_octal(header.data() + 136, 12, 0);
+    std::memset(header.data() + 148, ' ', 8);
+    header[156] = directory ? '5' : '0';
+    std::memcpy(header.data() + 257, "ustar", 5);
+    std::memcpy(header.data() + 263, "00", 2);
+
+    unsigned int checksum = 0;
+    for (unsigned char ch : header)
+    {
+        checksum += ch;
+    }
+    std::snprintf(header.data() + 148, 8, "%06o", checksum);
+    header[154] = '\0';
+    header[155] = ' ';
+
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    return out.good();
+}
+
+std::uintmax_t parse_tar_octal(const char* field, std::size_t width)
+{
+    std::uintmax_t value = 0;
+    for (std::size_t i = 0; i < width && field[i] != '\0' && field[i] != ' '; ++i)
+    {
+        if (field[i] >= '0' && field[i] <= '7')
+        {
+            value = (value * 8u) + static_cast<std::uintmax_t>(field[i] - '0');
+        }
+    }
+    return value;
+}
+
+bool tar_name_is_safe(std::string_view name)
+{
+    return !name.empty() && name.front() != '/' && name.find("..") == std::string_view::npos;
+}
+
+std::size_t bounded_cstr_len(const char* text, std::size_t max_len)
+{
+    std::size_t len = 0;
+    while (len < max_len && text[len] != '\0')
+    {
+        ++len;
+    }
+    return len;
+}
+} // namespace
+
+Status CreateArchive(std::string_view source_root, std::string_view archive_path, const ArchiveOptions& options)
+{
+    Status status;
+    const Path root{std::string(source_root)};
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec) || ec)
+    {
+        status.error = utils::err::join_context("fsx", "tar", "source root does not exist");
+        return status;
+    }
+
+    std::string ensure_error;
+    if (!ensure_parent(Path(std::string(archive_path)), &ensure_error))
+    {
+        status.error = ensure_error;
+        return status;
+    }
+
+    if (path_exists(Path(std::string(archive_path))) && options.conflict_policy == ConflictPolicy::Fail)
+    {
+        status.error = utils::err::join_context("fsx", "tar", "archive already exists");
+        return status;
+    }
+
+    std::ofstream out(std::string(archive_path), std::ios::binary | std::ios::trunc);
+    if (!out.is_open())
+    {
+        status.error = utils::err::join_context("fsx", "tar", "failed to open archive for writing");
+        return status;
+    }
+
+    WalkOptions walk_options;
+    walk_options.recursive = true;
+    walk_options.include_directories = true;
+    walk_options.include_files = true;
+    walk_options.relative_path = true;
+
+    if (options.include_root_directory)
+    {
+        std::string root_name = root.filename().generic_string();
+        if (!write_tar_header(out, root_name, true, 0, &status.error))
+        {
+            return status;
+        }
+    }
+
+    const auto walked =
+        std::filesystem::is_directory(root, ec) ? WalkDirectory(root.string(), walk_options) : WalkResult{};
+    if (std::filesystem::is_regular_file(root, ec))
+    {
+        const std::string name = root.filename().generic_string();
+        const std::uintmax_t size = std::filesystem::file_size(root, ec);
+        if (!write_tar_header(out, name, false, size, &status.error))
+        {
+            return status;
+        }
+        std::ifstream in(root, std::ios::binary);
+        out << in.rdbuf();
+        const std::uintmax_t padding = (512u - (size % 512u)) % 512u;
+        if (padding > 0)
+        {
+            std::array<char, 512> zeros{};
+            out.write(zeros.data(), static_cast<std::streamsize>(padding));
+        }
+    }
+    else
+    {
+        if (!walked.ok)
+        {
+            status.error = walked.error;
+            return status;
+        }
+        for (const auto& entry : walked.entries)
+        {
+            std::string name = entry.path;
+            if (options.include_root_directory)
+            {
+                name = root.filename().generic_string() + "/" + name;
+            }
+            if (!write_tar_header(out, name, entry.is_directory, entry.size, &status.error))
+            {
+                return status;
+            }
+            if (!entry.is_directory)
+            {
+                std::ifstream in(root / Path(entry.path), std::ios::binary);
+                out << in.rdbuf();
+                const std::uintmax_t padding = (512u - (entry.size % 512u)) % 512u;
+                if (padding > 0)
+                {
+                    std::array<char, 512> zeros{};
+                    out.write(zeros.data(), static_cast<std::streamsize>(padding));
+                }
+            }
+        }
+    }
+
+    std::array<char, 1024> end{};
+    out.write(end.data(), static_cast<std::streamsize>(end.size()));
+    status.ok = out.good();
+    if (!status.ok)
+    {
+        status.error = utils::err::join_context("fsx", "tar", "failed to finish archive");
+    }
+    return status;
+}
+
+Status ExtractArchive(std::string_view archive_path, std::string_view destination_root, const ArchiveOptions& options)
+{
+    Status status;
+    std::ifstream in(std::string(archive_path), std::ios::binary);
+    if (!in.is_open())
+    {
+        status.error = utils::err::join_context("fsx", "tar", "failed to open archive for reading");
+        return status;
+    }
+
+    const Path root{std::string(destination_root)};
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    if (ec)
+    {
+        status.error = utils::err::join_context("fsx", "tar", ec.message());
+        return status;
+    }
+
+    for (;;)
+    {
+        std::array<char, 512> header{};
+        in.read(header.data(), static_cast<std::streamsize>(header.size()));
+        if (in.gcount() == 0)
+        {
+            break;
+        }
+        if (in.gcount() != static_cast<std::streamsize>(header.size()))
+        {
+            status.error = utils::err::join_context("fsx", "tar", "truncated header");
+            return status;
+        }
+        if (std::all_of(header.begin(), header.end(), [](char ch) { return ch == '\0'; }))
+        {
+            break;
+        }
+
+        std::string name(header.data(), bounded_cstr_len(header.data(), 100));
+        if (!tar_name_is_safe(name))
+        {
+            status.error = utils::err::join_context("fsx", "tar", "unsafe archive entry");
+            return status;
+        }
+        const bool directory = header[156] == '5';
+        const std::uintmax_t size = parse_tar_octal(header.data() + 124, 12);
+        const Path target = root / Path(name);
+
+        if (directory)
+        {
+            std::filesystem::create_directories(target, ec);
+            if (ec)
+            {
+                status.error = utils::err::join_context("fsx", "tar", ec.message());
+                return status;
+            }
+            continue;
+        }
+
+        if (path_exists(target) && options.conflict_policy == ConflictPolicy::Fail)
+        {
+            status.error = utils::err::join_context("fsx", "tar", "destination exists");
+            return status;
+        }
+        if (!ensure_parent(target, &status.error))
+        {
+            return status;
+        }
+        std::ofstream out(target, std::ios::binary | std::ios::trunc);
+        if (!out.is_open())
+        {
+            status.error = utils::err::join_context("fsx", "tar", "failed to create output file");
+            return status;
+        }
+
+        std::array<char, 4096> buffer{};
+        std::uintmax_t remaining = size;
+        while (remaining > 0)
+        {
+            const auto chunk = static_cast<std::streamsize>(std::min<std::uintmax_t>(remaining, buffer.size()));
+            in.read(buffer.data(), chunk);
+            if (in.gcount() != chunk)
+            {
+                status.error = utils::err::join_context("fsx", "tar", "truncated file payload");
+                return status;
+            }
+            out.write(buffer.data(), chunk);
+            remaining -= static_cast<std::uintmax_t>(chunk);
+        }
+
+        const std::uintmax_t padding = (512u - (size % 512u)) % 512u;
+        if (padding > 0)
+        {
+            in.ignore(static_cast<std::streamsize>(padding));
+        }
+    }
+
+    status.ok = true;
+    return status;
+}
+
 Status CreateLink(std::string_view target, std::string_view link_path, LinkType type, bool overwrite)
 {
     Status out;
@@ -1244,6 +1876,7 @@ CapabilityInfo QueryCapabilities()
 #else
     caps.symbolic_link = true;
 #endif
+    caps.tar_archive = true;
     return caps;
 }
 
@@ -1257,6 +1890,12 @@ const char* ToString(OpType op) noexcept
         return "SafeReplace";
     case OpType::Rename:
         return "Rename";
+    case OpType::CopyFile:
+        return "CopyFile";
+    case OpType::RemovePath:
+        return "RemovePath";
+    case OpType::CopyTree:
+        return "CopyTree";
     }
     return "Unknown";
 }
@@ -1311,6 +1950,20 @@ const char* ToString(LinkType type) noexcept
         return "Hard";
     case LinkType::Symbolic:
         return "Symbolic";
+    }
+    return "Unknown";
+}
+
+const char* ToString(DirectoryDiffKind kind) noexcept
+{
+    switch (kind)
+    {
+    case DirectoryDiffKind::Added:
+        return "Added";
+    case DirectoryDiffKind::Modified:
+        return "Modified";
+    case DirectoryDiffKind::Removed:
+        return "Removed";
     }
     return "Unknown";
 }

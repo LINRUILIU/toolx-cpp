@@ -205,7 +205,14 @@ std::size_t Utf8CharLen(unsigned char c)
     return 1;
 }
 
+void DrawUtf8StyledClipped(FrameBuffer& frame, const Rect& bounds, std::string_view text, CellStyle style);
+
 void DrawUtf8Clipped(FrameBuffer& frame, const Rect& bounds, std::string_view text)
+{
+    DrawUtf8StyledClipped(frame, bounds, text, CellStyle{});
+}
+
+void DrawUtf8StyledClipped(FrameBuffer& frame, const Rect& bounds, std::string_view text, CellStyle style)
 {
     if (bounds.width == 0 || bounds.height == 0)
     {
@@ -231,7 +238,7 @@ void DrawUtf8Clipped(FrameBuffer& frame, const Rect& bounds, std::string_view te
             break;
         }
 
-        frame.Put(col, bounds.y, ch, width);
+        frame.PutStyled(col, bounds.y, ch, style, width);
         col = static_cast<std::uint16_t>(col + safe_width);
         i += len;
     }
@@ -271,13 +278,32 @@ std::uint16_t AdvanceDisplayCell(const FrameBuffer& frame, std::uint16_t x, std:
     return static_cast<std::uint16_t>(x + DisplayWidthOrOne(*cell));
 }
 
+void PrintStyledCell(Terminal& terminal, const FrameCell& cell)
+{
+    const bool has_style = cell.fg != Color::Default || cell.bg != Color::Default || cell.bold;
+    if (has_style)
+    {
+        terminal.SetColor(cell.fg, cell.bg);
+        if (cell.bold)
+        {
+            terminal.Print("\x1B[1m");
+        }
+    }
+    terminal.Print(cell.utf8);
+    if (has_style)
+    {
+        terminal.ResetStyle();
+    }
+}
+
 bool CellsEquivalent(const FrameCell* a, const FrameCell* b)
 {
     if (a == nullptr || b == nullptr)
     {
         return a == b;
     }
-    return a->utf8 == b->utf8 && a->display_width == b->display_width && a->continuation == b->continuation;
+    return a->utf8 == b->utf8 && a->display_width == b->display_width && a->continuation == b->continuation &&
+           a->fg == b->fg && a->bg == b->bg && a->bold == b->bold;
 }
 
 Widget* FindFocusedWidget(Widget* widget)
@@ -1151,10 +1177,19 @@ void FrameBuffer::Clear(char fill)
         cell.utf8.assign(1, fill);
         cell.display_width = 1;
         cell.continuation = false;
+        cell.fg = Color::Default;
+        cell.bg = Color::Default;
+        cell.bold = false;
     }
 }
 
 bool FrameBuffer::Put(std::uint16_t x, std::uint16_t y, std::string_view utf8, std::uint8_t display_width)
+{
+    return PutStyled(x, y, utf8, CellStyle{}, display_width);
+}
+
+bool FrameBuffer::PutStyled(std::uint16_t x, std::uint16_t y, std::string_view utf8, CellStyle style,
+                            std::uint8_t display_width)
 {
     if (x >= width_ || y >= height_)
     {
@@ -1180,6 +1215,9 @@ bool FrameBuffer::Put(std::uint16_t x, std::uint16_t y, std::string_view utf8, s
             data_[idx].utf8 = " ";
             data_[idx].display_width = 1;
             data_[idx].continuation = false;
+            data_[idx].fg = Color::Default;
+            data_[idx].bg = Color::Default;
+            data_[idx].bold = false;
         }
     };
 
@@ -1201,6 +1239,9 @@ bool FrameBuffer::Put(std::uint16_t x, std::uint16_t y, std::string_view utf8, s
     data_[idx].utf8.assign(utf8.data(), utf8.size());
     data_[idx].display_width = static_cast<std::uint8_t>(safe_width);
     data_[idx].continuation = false;
+    data_[idx].fg = style.fg;
+    data_[idx].bg = style.bg;
+    data_[idx].bold = style.bold;
     for (std::uint16_t d = 1; d < safe_width; ++d)
     {
         const std::uint16_t tx = static_cast<std::uint16_t>(x + d);
@@ -1212,6 +1253,9 @@ bool FrameBuffer::Put(std::uint16_t x, std::uint16_t y, std::string_view utf8, s
         data_[tail_idx].utf8 = " ";
         data_[tail_idx].display_width = 1;
         data_[tail_idx].continuation = true;
+        data_[tail_idx].fg = style.fg;
+        data_[tail_idx].bg = style.bg;
+        data_[tail_idx].bold = style.bold;
     }
     return true;
 }
@@ -1307,6 +1351,36 @@ const std::vector<std::shared_ptr<Widget>>& Layout::Children() const noexcept
     return children_;
 }
 
+void Layout::SetGap(std::uint16_t gap) noexcept
+{
+    gap_ = gap;
+}
+
+std::uint16_t Layout::gap() const noexcept
+{
+    return gap_;
+}
+
+void Layout::SetPadding(Insets padding) noexcept
+{
+    padding_ = padding;
+}
+
+Insets Layout::padding() const noexcept
+{
+    return padding_;
+}
+
+void Layout::SetFlexWeights(std::vector<std::uint16_t> weights)
+{
+    flex_weights_ = std::move(weights);
+}
+
+const std::vector<std::uint16_t>& Layout::flex_weights() const noexcept
+{
+    return flex_weights_;
+}
+
 bool Layout::HandleEvent(const InputEvent& event)
 {
     if (event.type == EventType::Mouse)
@@ -1352,18 +1426,40 @@ void VerticalLayout::Layout(const Rect& bounds)
     }
 
     const std::uint16_t n = static_cast<std::uint16_t>(children_.size());
-    const std::uint16_t base_h = (n == 0) ? 0 : static_cast<std::uint16_t>(bounds.height / n);
-    const std::uint16_t extra = (n == 0) ? 0 : static_cast<std::uint16_t>(bounds.height % n);
+    const std::uint16_t horizontal_padding = static_cast<std::uint16_t>(padding_.left + padding_.right);
+    const std::uint16_t vertical_padding = static_cast<std::uint16_t>(padding_.top + padding_.bottom);
+    const std::uint16_t gap_total = static_cast<std::uint16_t>(n > 0 ? gap_ * (n - 1) : 0);
+    const std::uint16_t inner_w =
+        bounds.width > horizontal_padding ? static_cast<std::uint16_t>(bounds.width - horizontal_padding) : 0;
+    const std::uint16_t inner_h = bounds.height > static_cast<std::uint16_t>(vertical_padding + gap_total)
+                                      ? static_cast<std::uint16_t>(bounds.height - vertical_padding - gap_total)
+                                      : 0;
 
-    std::uint16_t y = bounds.y;
+    std::uint32_t total_weight = 0;
     for (std::uint16_t i = 0; i < n; ++i)
     {
-        const std::uint16_t h = static_cast<std::uint16_t>(base_h + (i < extra ? 1 : 0));
+        total_weight += (i < flex_weights_.size() && flex_weights_[i] > 0) ? flex_weights_[i] : 1;
+    }
+
+    std::uint16_t y = static_cast<std::uint16_t>(bounds.y + padding_.top);
+    std::uint16_t used_h = 0;
+    std::uint32_t remaining_weight = total_weight;
+    for (std::uint16_t i = 0; i < n; ++i)
+    {
+        const std::uint32_t weight = (i < flex_weights_.size() && flex_weights_[i] > 0) ? flex_weights_[i] : 1;
+        const std::uint16_t remaining_h = static_cast<std::uint16_t>(inner_h - used_h);
+        std::uint16_t h =
+            (i + 1 == n || remaining_weight == 0)
+                ? remaining_h
+                : static_cast<std::uint16_t>(
+                      ((static_cast<std::uint32_t>(remaining_h) * weight) + remaining_weight - 1) / remaining_weight);
         if (children_[i])
         {
-            children_[i]->Layout(Rect{bounds.x, y, bounds.width, h});
+            children_[i]->Layout(Rect{static_cast<std::uint16_t>(bounds.x + padding_.left), y, inner_w, h});
         }
-        y = static_cast<std::uint16_t>(y + h);
+        used_h = static_cast<std::uint16_t>(used_h + h);
+        remaining_weight -= std::min(remaining_weight, weight);
+        y = static_cast<std::uint16_t>(y + h + gap_);
     }
 }
 
@@ -1387,18 +1483,40 @@ void HorizontalLayout::Layout(const Rect& bounds)
     }
 
     const std::uint16_t n = static_cast<std::uint16_t>(children_.size());
-    const std::uint16_t base_w = (n == 0) ? 0 : static_cast<std::uint16_t>(bounds.width / n);
-    const std::uint16_t extra = (n == 0) ? 0 : static_cast<std::uint16_t>(bounds.width % n);
+    const std::uint16_t horizontal_padding = static_cast<std::uint16_t>(padding_.left + padding_.right);
+    const std::uint16_t vertical_padding = static_cast<std::uint16_t>(padding_.top + padding_.bottom);
+    const std::uint16_t gap_total = static_cast<std::uint16_t>(n > 0 ? gap_ * (n - 1) : 0);
+    const std::uint16_t inner_w = bounds.width > static_cast<std::uint16_t>(horizontal_padding + gap_total)
+                                      ? static_cast<std::uint16_t>(bounds.width - horizontal_padding - gap_total)
+                                      : 0;
+    const std::uint16_t inner_h =
+        bounds.height > vertical_padding ? static_cast<std::uint16_t>(bounds.height - vertical_padding) : 0;
 
-    std::uint16_t x = bounds.x;
+    std::uint32_t total_weight = 0;
     for (std::uint16_t i = 0; i < n; ++i)
     {
-        const std::uint16_t w = static_cast<std::uint16_t>(base_w + (i < extra ? 1 : 0));
+        total_weight += (i < flex_weights_.size() && flex_weights_[i] > 0) ? flex_weights_[i] : 1;
+    }
+
+    std::uint16_t x = static_cast<std::uint16_t>(bounds.x + padding_.left);
+    std::uint16_t used_w = 0;
+    std::uint32_t remaining_weight = total_weight;
+    for (std::uint16_t i = 0; i < n; ++i)
+    {
+        const std::uint32_t weight = (i < flex_weights_.size() && flex_weights_[i] > 0) ? flex_weights_[i] : 1;
+        const std::uint16_t remaining_w = static_cast<std::uint16_t>(inner_w - used_w);
+        std::uint16_t w =
+            (i + 1 == n || remaining_weight == 0)
+                ? remaining_w
+                : static_cast<std::uint16_t>(
+                      ((static_cast<std::uint32_t>(remaining_w) * weight) + remaining_weight - 1) / remaining_weight);
         if (children_[i])
         {
-            children_[i]->Layout(Rect{x, bounds.y, w, bounds.height});
+            children_[i]->Layout(Rect{x, static_cast<std::uint16_t>(bounds.y + padding_.top), w, inner_h});
         }
-        x = static_cast<std::uint16_t>(x + w);
+        used_w = static_cast<std::uint16_t>(used_w + w);
+        remaining_weight -= std::min(remaining_weight, weight);
+        x = static_cast<std::uint16_t>(x + w + gap_);
     }
 }
 
@@ -1428,6 +1546,255 @@ const std::string& Label::text() const noexcept
 void Label::Render(FrameBuffer& frame) const
 {
     DrawUtf8Clipped(frame, bounds(), text_);
+}
+
+Panel::Panel(std::string title) : title_(std::move(title)) {}
+
+void Panel::SetTitle(std::string title)
+{
+    title_ = std::move(title);
+}
+
+const std::string& Panel::title() const noexcept
+{
+    return title_;
+}
+
+void Panel::SetTheme(Theme theme)
+{
+    theme_ = theme;
+}
+
+const Theme& Panel::theme() const noexcept
+{
+    return theme_;
+}
+
+void Panel::Layout(const Rect& bounds)
+{
+    Widget::Layout(bounds);
+    if (bounds.width <= 2 || bounds.height <= 2)
+    {
+        for (const auto& child : children_)
+        {
+            if (child)
+            {
+                child->Layout(Rect{bounds.x, bounds.y, 0, 0});
+            }
+        }
+        return;
+    }
+
+    Rect inner{static_cast<std::uint16_t>(bounds.x + 1), static_cast<std::uint16_t>(bounds.y + 1),
+               static_cast<std::uint16_t>(bounds.width - 2), static_cast<std::uint16_t>(bounds.height - 2)};
+    for (const auto& child : children_)
+    {
+        if (child)
+        {
+            child->Layout(inner);
+        }
+    }
+}
+
+void Panel::Render(FrameBuffer& frame) const
+{
+    const Rect b = bounds();
+    if (b.width == 0 || b.height == 0)
+    {
+        return;
+    }
+    const std::uint16_t right = static_cast<std::uint16_t>(b.x + b.width - 1);
+    const std::uint16_t bottom = static_cast<std::uint16_t>(b.y + b.height - 1);
+    for (std::uint16_t x = b.x; x <= right; ++x)
+    {
+        frame.PutStyled(x, b.y, x == b.x || x == right ? "+" : "-", theme_.border);
+        frame.PutStyled(x, bottom, x == b.x || x == right ? "+" : "-", theme_.border);
+    }
+    for (std::uint16_t y = b.y; y <= bottom; ++y)
+    {
+        frame.PutStyled(b.x, y, y == b.y || y == bottom ? "+" : "|", theme_.border);
+        frame.PutStyled(right, y, y == b.y || y == bottom ? "+" : "|", theme_.border);
+    }
+    if (!title_.empty() && b.width > 4)
+    {
+        DrawUtf8StyledClipped(
+            frame, Rect{static_cast<std::uint16_t>(b.x + 2), b.y, static_cast<std::uint16_t>(b.width - 4), 1}, title_,
+            theme_.accent);
+    }
+    for (const auto& child : children_)
+    {
+        if (child && child->visible())
+        {
+            child->Render(frame);
+        }
+    }
+}
+
+TextInput::TextInput(std::string text) : text_(std::move(text)), cursor_(text_.size())
+{
+    SetFocusable(true);
+}
+
+void TextInput::SetText(std::string text)
+{
+    text_ = std::move(text);
+    cursor_ = std::min(cursor_, text_.size());
+}
+
+const std::string& TextInput::text() const noexcept
+{
+    return text_;
+}
+
+void TextInput::SetPlaceholder(std::string placeholder)
+{
+    placeholder_ = std::move(placeholder);
+}
+
+const std::string& TextInput::placeholder() const noexcept
+{
+    return placeholder_;
+}
+
+std::size_t TextInput::cursor() const noexcept
+{
+    return cursor_;
+}
+
+void TextInput::Render(FrameBuffer& frame) const
+{
+    const std::string prefix = focused() ? "> " : "  ";
+    const std::string visible_text = text_.empty() ? placeholder_ : text_;
+    DrawUtf8Clipped(frame, bounds(), prefix + visible_text);
+    if (focused() && bounds().width > 0)
+    {
+        const std::uint16_t cursor_x =
+            static_cast<std::uint16_t>(bounds().x + std::min<std::size_t>(bounds().width - 1, cursor_ + 2));
+        frame.PutStyled(cursor_x, bounds().y, "_", CellStyle{Color::Black, Color::BrightWhite, true});
+    }
+}
+
+bool TextInput::HandleEvent(const InputEvent& event)
+{
+    if (!focused() || event.type != EventType::Key)
+    {
+        return false;
+    }
+    if (event.key.key == Key::ArrowLeft)
+    {
+        if (cursor_ > 0)
+        {
+            --cursor_;
+        }
+        return true;
+    }
+    if (event.key.key == Key::ArrowRight)
+    {
+        if (cursor_ < text_.size())
+        {
+            ++cursor_;
+        }
+        return true;
+    }
+    if (event.key.key == Key::Backspace)
+    {
+        if (cursor_ > 0)
+        {
+            text_.erase(cursor_ - 1, 1);
+            --cursor_;
+        }
+        return true;
+    }
+    if (event.key.key == Key::Character && !event.key.text.empty())
+    {
+        text_.insert(cursor_, event.key.text);
+        cursor_ += event.key.text.size();
+        return true;
+    }
+    return false;
+}
+
+ListView::ListView(std::vector<std::string> items) : items_(std::move(items))
+{
+    SetFocusable(true);
+}
+
+void ListView::SetItems(std::vector<std::string> items)
+{
+    items_ = std::move(items);
+    if (items_.empty())
+    {
+        selected_index_ = 0;
+    }
+    else if (selected_index_ >= items_.size())
+    {
+        selected_index_ = items_.size() - 1;
+    }
+}
+
+const std::vector<std::string>& ListView::items() const noexcept
+{
+    return items_;
+}
+
+void ListView::SetSelectedIndex(std::size_t index) noexcept
+{
+    selected_index_ = items_.empty() ? 0 : std::min(index, items_.size() - 1);
+}
+
+std::size_t ListView::selected_index() const noexcept
+{
+    return selected_index_;
+}
+
+void ListView::Render(FrameBuffer& frame) const
+{
+    const Rect b = bounds();
+    for (std::uint16_t row = 0; row < b.height && row < items_.size(); ++row)
+    {
+        const std::size_t index = row;
+        const bool selected = index == selected_index_;
+        const std::string line = (selected ? "> " : "  ") + items_[index];
+        DrawUtf8StyledClipped(frame, Rect{b.x, static_cast<std::uint16_t>(b.y + row), b.width, 1}, line,
+                              selected && focused() ? CellStyle{Color::Black, Color::BrightCyan, true} : CellStyle{});
+    }
+}
+
+bool ListView::HandleEvent(const InputEvent& event)
+{
+    if (items_.empty())
+    {
+        return false;
+    }
+    if (event.type == EventType::Key && focused())
+    {
+        if (event.key.key == Key::ArrowUp)
+        {
+            if (selected_index_ > 0)
+            {
+                --selected_index_;
+            }
+            return true;
+        }
+        if (event.key.key == Key::ArrowDown)
+        {
+            if (selected_index_ + 1 < items_.size())
+            {
+                ++selected_index_;
+            }
+            return true;
+        }
+    }
+    if (event.type == EventType::Mouse && HitTest(event.mouse.x, event.mouse.y))
+    {
+        const std::size_t index = static_cast<std::size_t>(event.mouse.y - bounds().y);
+        if (index < items_.size())
+        {
+            selected_index_ = index;
+            return true;
+        }
+    }
+    return false;
 }
 
 Button::Button(std::string text) : text_(std::move(text))
@@ -1884,7 +2251,7 @@ std::size_t Terminal::RenderFrameDiff(const FrameBuffer& frame, FrameBuffer* pre
                 }
                 if (!cell->continuation)
                 {
-                    Print(cell->utf8);
+                    PrintStyledCell(*this, *cell);
                     ++updates;
                 }
                 x = AdvanceDisplayCell(frame, x, y);
@@ -1918,7 +2285,7 @@ std::size_t Terminal::RenderFrameDiff(const FrameBuffer& frame, FrameBuffer* pre
             }
 
             MoveTo(static_cast<std::uint16_t>(origin_x + x), static_cast<std::uint16_t>(origin_y + y));
-            Print(now->utf8);
+            PrintStyledCell(*this, *now);
             ++updates;
 
             const std::uint16_t now_width = DisplayWidthOrOne(*now);

@@ -739,3 +739,50 @@ TEST(AsyncxTests, StopCancelPendingClearsScheduledTasks)
     EXPECT_EQ(snapshot.scheduled_count, 0U);
     EXPECT_GE(snapshot.scheduler.cancelled, 2U);
 }
+
+TEST(AsyncxTests, CancellationSourceAndTaskGroupTrackOutcomes)
+{
+    asyncx::PoolOptions options;
+    options.worker_count = 1;
+    options.queue_capacity = 8;
+    asyncx::ThreadPool pool(options);
+
+    asyncx::TaskGroup group(pool);
+    std::atomic<int> ran{0};
+    ASSERT_TRUE(group
+                    .Submit(asyncx::TaskOptions{},
+                            [&ran](asyncx::CancellationToken token)
+                            {
+                                EXPECT_FALSE(token.IsCancellationRequested());
+                                ++ran;
+                            })
+                    .ok);
+    ASSERT_TRUE(group.WaitFor(std::chrono::milliseconds(500)).ok);
+
+    auto stats = group.Stats();
+    EXPECT_EQ(stats.submitted, 1u);
+    EXPECT_EQ(stats.completed, 1u);
+    EXPECT_EQ(ran.load(), 1);
+
+    group.Cancel();
+    const auto rejected = group.Submit(asyncx::TaskOptions{}, [](asyncx::CancellationToken) {});
+    EXPECT_FALSE(rejected.ok);
+    EXPECT_EQ(rejected.error.kind, asyncx::ErrorKind::Cancelled);
+
+    EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::Drain).ok);
+}
+
+TEST(AsyncxTests, PostWithOptionsHonorsPreCancelledToken)
+{
+    asyncx::ThreadPool pool;
+    asyncx::CancellationSource source;
+    source.Cancel();
+
+    asyncx::TaskOptions options;
+    options.cancellation = source.Token();
+    const auto status = pool.PostWithOptions(options, [](asyncx::CancellationToken) {});
+    EXPECT_FALSE(status.ok);
+    EXPECT_EQ(status.error.kind, asyncx::ErrorKind::Cancelled);
+
+    EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::Drain).ok);
+}

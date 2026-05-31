@@ -372,9 +372,55 @@ TEST(FsxTests, CreateLinkFailsWhenDestinationExistsWithoutOverwrite)
     std::filesystem::remove_all(root, ec);
 }
 
-TEST(FsxTests, ArchiveCapabilitiesAreFutureWork)
+TEST(FsxTests, ArchiveCapabilitiesExposeTarMvp)
 {
     const auto caps = fsx::QueryCapabilities();
     EXPECT_FALSE(caps.zip_archive);
-    EXPECT_FALSE(caps.tar_archive);
+    EXPECT_TRUE(caps.tar_archive);
+}
+
+TEST(FsxTests, DirectoryDiffBuildsSyncPlan)
+{
+    const auto root = TestRoot() / "sync_plan";
+    const auto src = root / "src";
+    const auto dst = root / "dst";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    WriteText(src / "a.txt", "new");
+    WriteText(src / "nested" / "b.txt", "b");
+    WriteText(dst / "a.txt", "old");
+    WriteText(dst / "remove.txt", "remove");
+
+    const auto diff = fsx::BuildDirectoryDiff(src.string(), dst.string(), true);
+    ASSERT_TRUE(diff.ok) << diff.error;
+    ASSERT_EQ(diff.entries.size(), 3u);
+
+    auto plan = fsx::BuildSyncPlan(src.string(), dst.string(), true);
+    fsx::RunOptions options;
+    options.conflict_policy = fsx::ConflictPolicy::Overwrite;
+    const auto run = fsx::Run(plan, options);
+    ASSERT_TRUE(run.ok) << run.error;
+    EXPECT_EQ(ReadText(dst / "a.txt"), "new");
+    EXPECT_EQ(ReadText(dst / "nested" / "b.txt"), "b");
+    EXPECT_FALSE(std::filesystem::exists(dst / "remove.txt"));
+}
+
+TEST(FsxTests, TarArchiveCreateAndExtractRoundTrip)
+{
+    const auto root = TestRoot() / "tar_archive";
+    const auto src = root / "src";
+    const auto out = root / "out";
+    const auto archive = root / "bundle.tar";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    WriteText(src / "a.txt", "alpha");
+    WriteText(src / "nested" / "b.txt", "beta");
+
+    ASSERT_TRUE(fsx::CreateArchive(src.string(), archive.string()).ok);
+    ASSERT_TRUE(fsx::ExtractArchive(archive.string(), out.string()).ok);
+
+    EXPECT_EQ(ReadText(out / "a.txt"), "alpha");
+    EXPECT_EQ(ReadText(out / "nested" / "b.txt"), "beta");
 }

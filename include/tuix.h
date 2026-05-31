@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <functional>
 #include <iosfwd>
 #include <memory>
@@ -205,9 +206,14 @@ class InputSource
 
 struct FrameCell
 {
+    // One logical cell. Wide glyph tails are represented by continuation=true
+    // cells so diff rendering can clear stale width correctly.
     std::string utf8{" "};
     std::uint8_t display_width{1};
     bool continuation{false};
+    Color fg{Color::Default};
+    Color bg{Color::Default};
+    bool bold{false};
 };
 
 struct Rect
@@ -216,6 +222,31 @@ struct Rect
     std::uint16_t y{0};
     std::uint16_t width{0};
     std::uint16_t height{0};
+};
+
+struct Insets
+{
+    std::uint16_t top{0};
+    std::uint16_t right{0};
+    std::uint16_t bottom{0};
+    std::uint16_t left{0};
+};
+
+struct CellStyle
+{
+    Color fg{Color::Default};
+    Color bg{Color::Default};
+    bool bold{false};
+};
+
+struct Theme
+{
+    // Lightweight value type used by MVP widgets. Themes are copied into
+    // widgets; changing a Theme after SetTheme does not mutate existing widgets.
+    CellStyle text{};
+    CellStyle accent{Color::BrightCyan, Color::Default, false};
+    CellStyle focused{Color::Black, Color::BrightCyan, true};
+    CellStyle border{Color::BrightBlack, Color::Default, false};
 };
 
 class FrameBuffer
@@ -228,6 +259,10 @@ class FrameBuffer
 
     void Clear(char fill = ' ');
     bool Put(std::uint16_t x, std::uint16_t y, std::string_view utf8, std::uint8_t display_width = 1);
+    // PutStyled has the same clipping/continuation behavior as Put, but stores
+    // fg/bg/bold metadata for diff rendering.
+    bool PutStyled(std::uint16_t x, std::uint16_t y, std::string_view utf8, CellStyle style,
+                   std::uint8_t display_width = 1);
     const FrameCell* Get(std::uint16_t x, std::uint16_t y) const;
 
   private:
@@ -269,10 +304,23 @@ class Layout : public Widget
   public:
     void AddChild(std::shared_ptr<Widget> child);
     const std::vector<std::shared_ptr<Widget>>& Children() const noexcept;
+    // Gap is inserted between adjacent children only; padding is applied around
+    // the full child area.
+    void SetGap(std::uint16_t gap) noexcept;
+    std::uint16_t gap() const noexcept;
+    void SetPadding(Insets padding) noexcept;
+    Insets padding() const noexcept;
+    // Missing or zero flex weights fall back to weight 1. Layout distributes
+    // any rounding remainder to earlier children for stable bounds.
+    void SetFlexWeights(std::vector<std::uint16_t> weights);
+    const std::vector<std::uint16_t>& flex_weights() const noexcept;
     bool HandleEvent(const InputEvent& event) override;
 
   protected:
     std::vector<std::shared_ptr<Widget>> children_;
+    std::uint16_t gap_{0};
+    Insets padding_{};
+    std::vector<std::uint16_t> flex_weights_;
 };
 
 class VerticalLayout final : public Layout
@@ -301,6 +349,66 @@ class Label final : public Widget
 
   private:
     std::string text_;
+};
+
+class Panel final : public Layout
+{
+  public:
+    explicit Panel(std::string title = "");
+
+    void SetTitle(std::string title);
+    const std::string& title() const noexcept;
+    void SetTheme(Theme theme);
+    const Theme& theme() const noexcept;
+
+    void Layout(const Rect& bounds) override;
+    void Render(FrameBuffer& frame) const override;
+
+  private:
+    std::string title_;
+    Theme theme_{};
+};
+
+class TextInput final : public Widget
+{
+  public:
+    explicit TextInput(std::string text = "");
+
+    void SetText(std::string text);
+    const std::string& text() const noexcept;
+    void SetPlaceholder(std::string placeholder);
+    const std::string& placeholder() const noexcept;
+    std::size_t cursor() const noexcept;
+
+    void Render(FrameBuffer& frame) const override;
+    // MVP editing is byte-oriented and intended for ASCII command/config input.
+    // Unknown keys return false; handled editing keys return true.
+    bool HandleEvent(const InputEvent& event) override;
+
+  private:
+    std::string text_;
+    std::string placeholder_;
+    std::size_t cursor_{0};
+};
+
+class ListView final : public Widget
+{
+  public:
+    explicit ListView(std::vector<std::string> items = {});
+
+    void SetItems(std::vector<std::string> items);
+    const std::vector<std::string>& items() const noexcept;
+    void SetSelectedIndex(std::size_t index) noexcept;
+    std::size_t selected_index() const noexcept;
+
+    void Render(FrameBuffer& frame) const override;
+    // Handles ArrowUp/ArrowDown and left mouse clicks inside bounds. Selection
+    // is clamped to the available item count.
+    bool HandleEvent(const InputEvent& event) override;
+
+  private:
+    std::vector<std::string> items_;
+    std::size_t selected_index_{0};
 };
 
 class Button final : public Widget

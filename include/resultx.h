@@ -53,6 +53,8 @@ inline ErrorKind MapAsyncxErrorKind(asyncx::ErrorKind kind) noexcept
         return ErrorKind::WouldBlock;
     case asyncx::ErrorKind::NotFound:
         return ErrorKind::NotFound;
+    case asyncx::ErrorKind::Cancelled:
+        return ErrorKind::Interrupted;
     case asyncx::ErrorKind::Internal:
     default:
         return ErrorKind::Internal;
@@ -74,6 +76,8 @@ inline ErrorKind MapHttpxErrorKind(httpx::ErrorKind kind) noexcept
         return ErrorKind::TimedOut;
     case httpx::ErrorKind::Network:
         return ErrorKind::NetworkUnreachable;
+    case httpx::ErrorKind::CircuitOpen:
+        return ErrorKind::WouldBlock;
     case httpx::ErrorKind::Proxy:
     case httpx::ErrorKind::Tls:
     case httpx::ErrorKind::Protocol:

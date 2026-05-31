@@ -39,6 +39,8 @@ const char* ToString(ErrorKind kind) noexcept
         return "not_found";
     case ErrorKind::Internal:
         return "internal";
+    case ErrorKind::Cancelled:
+        return "cancelled";
     default:
         return "unknown";
     }
@@ -100,6 +102,40 @@ Status MakeErrorStatus(ErrorKind kind, std::string message, bool retryable)
     status.error.retryable = retryable;
     status.error.message = std::move(message);
     return status;
+}
+
+CancellationToken::CancellationToken(std::shared_ptr<std::atomic_bool> state) : state_(std::move(state)) {}
+
+bool CancellationToken::IsCancellationRequested() const noexcept
+{
+    return state_ != nullptr && state_->load(std::memory_order_relaxed);
+}
+
+bool CancellationToken::CanBeCancelled() const noexcept
+{
+    return state_ != nullptr;
+}
+
+CancellationSource::CancellationSource() : state_(std::make_shared<std::atomic_bool>(false)) {}
+
+CancellationToken CancellationSource::Token() const noexcept
+{
+    return CancellationToken(state_);
+}
+
+void CancellationSource::Cancel() noexcept
+{
+    state_->store(true, std::memory_order_relaxed);
+}
+
+void CancellationSource::RequestCancel() noexcept
+{
+    Cancel();
+}
+
+bool CancellationSource::IsCancellationRequested() const noexcept
+{
+    return state_->load(std::memory_order_relaxed);
 }
 
 ThreadPool::ThreadPool(PoolOptions options) : options_(std::move(options))
@@ -446,6 +482,33 @@ Status ThreadPool::PostWithPriorityUntil(std::chrono::steady_clock::time_point d
                                          std::function<void()> task)
 {
     return EnqueueTask(std::move(task), deadline, true, priority);
+}
+
+Status ThreadPool::PostWithOptions(TaskOptions options, std::function<void(CancellationToken)> task)
+{
+    if (!task)
+    {
+        return MakeErrorStatus(ErrorKind::InvalidArgument, "task must not be empty");
+    }
+    if (options.cancellation.IsCancellationRequested())
+    {
+        return MakeErrorStatus(ErrorKind::Cancelled, "task cancelled before enqueue");
+    }
+
+    CancellationToken token = options.cancellation;
+    auto wrapped = [task = std::move(task), token]() mutable
+    {
+        if (!token.IsCancellationRequested())
+        {
+            task(token);
+        }
+    };
+
+    if (options.deadline.has_value())
+    {
+        return EnqueueTask(std::move(wrapped), *options.deadline, true, options.priority);
+    }
+    return EnqueueTask(std::move(wrapped), std::nullopt, ShouldWaitOnBackpressure(), options.priority);
 }
 
 Result<std::uint64_t> ThreadPool::PostDelayedUntil(std::chrono::steady_clock::time_point due_time,
@@ -875,6 +938,154 @@ void ThreadPool::WorkerLoop()
             }
         }
     }
+}
+
+TaskGroup::TaskGroup(ThreadPool& pool) : pool_(&pool) {}
+
+Status TaskGroup::Submit(TaskOptions options, std::function<void(CancellationToken)> task)
+{
+    if (pool_ == nullptr)
+    {
+        return MakeErrorStatus(ErrorKind::InvalidArgument, "task group has no pool");
+    }
+    if (!task)
+    {
+        return MakeErrorStatus(ErrorKind::InvalidArgument, "task must not be empty");
+    }
+    if (source_.IsCancellationRequested())
+    {
+        return MakeErrorStatus(ErrorKind::Cancelled, "task group is cancelled");
+    }
+
+    const CancellationToken group_token = source_.Token();
+    const CancellationToken user_token = options.cancellation;
+    if (!options.cancellation.CanBeCancelled())
+    {
+        options.cancellation = group_token;
+    }
+
+    std::promise<void> promise;
+    std::future<void> future = promise.get_future();
+    auto shared_promise = std::make_shared<std::promise<void>>(std::move(promise));
+
+    auto wrapped =
+        [this, shared_promise, group_token, user_token, task = std::move(task)](CancellationToken token) mutable
+    {
+        const bool cancelled = group_token.IsCancellationRequested() || user_token.IsCancellationRequested() ||
+                               token.IsCancellationRequested();
+        if (cancelled)
+        {
+            {
+                std::lock_guard<sysx::sync::Mutex> lock(mu_);
+                ++stats_.cancelled;
+            }
+            shared_promise->set_value();
+            return;
+        }
+
+        try
+        {
+            task(group_token);
+            {
+                std::lock_guard<sysx::sync::Mutex> lock(mu_);
+                ++stats_.completed;
+            }
+            shared_promise->set_value();
+        }
+        catch (...)
+        {
+            {
+                std::lock_guard<sysx::sync::Mutex> lock(mu_);
+                ++stats_.failed;
+            }
+            shared_promise->set_exception(std::current_exception());
+        }
+    };
+
+    Status status = pool_->PostWithOptions(std::move(options), std::move(wrapped));
+    if (!status.ok)
+    {
+        return status;
+    }
+
+    std::lock_guard<sysx::sync::Mutex> lock(mu_);
+    ++stats_.submitted;
+    futures_.push_back(std::move(future));
+    return OkStatus();
+}
+
+void TaskGroup::Cancel() noexcept
+{
+    source_.Cancel();
+}
+
+Status TaskGroup::Wait()
+{
+    std::vector<std::future<void>> local;
+    {
+        std::lock_guard<sysx::sync::Mutex> lock(mu_);
+        local.swap(futures_);
+    }
+
+    for (auto& future : local)
+    {
+        try
+        {
+            future.get();
+        }
+        catch (...)
+        {
+        }
+    }
+    return OkStatus();
+}
+
+Status TaskGroup::WaitUntil(std::chrono::steady_clock::time_point deadline)
+{
+    std::vector<std::future<void>> local;
+    {
+        std::lock_guard<sysx::sync::Mutex> lock(mu_);
+        local.swap(futures_);
+    }
+
+    std::vector<std::future<void>> pending;
+    for (auto& future : local)
+    {
+        if (future.wait_until(deadline) == std::future_status::timeout)
+        {
+            pending.push_back(std::move(future));
+            continue;
+        }
+        try
+        {
+            future.get();
+        }
+        catch (...)
+        {
+        }
+    }
+
+    if (!pending.empty())
+    {
+        std::lock_guard<sysx::sync::Mutex> lock(mu_);
+        for (auto& future : pending)
+        {
+            futures_.push_back(std::move(future));
+        }
+        return MakeErrorStatus(ErrorKind::Timeout, "task group wait timed out", true);
+    }
+    return OkStatus();
+}
+
+TaskGroupStats TaskGroup::Stats() const
+{
+    std::lock_guard<sysx::sync::Mutex> lock(mu_);
+    return stats_;
+}
+
+CancellationToken TaskGroup::Token() const noexcept
+{
+    return source_.Token();
 }
 
 } // namespace asyncx

@@ -469,4 +469,81 @@ TEST(TuixTerminalTests, PrefersWin32BackendWhenConsoleIsAvailable)
     const auto backend = t.CurrentBackend();
     EXPECT_TRUE(backend == tuix::Terminal::Backend::Win32 || backend == tuix::Terminal::Backend::Ansi);
 }
+
+TEST(TuixFrameBufferTests, StyledCellsParticipateInDiffs)
+{
+    tuix::FrameBuffer old_frame(2, 1, ' ');
+    tuix::FrameBuffer new_frame(2, 1, ' ');
+    ASSERT_TRUE(new_frame.PutStyled(0, 0, "x", tuix::CellStyle{tuix::Color::BrightRed, tuix::Color::Default, true}));
+    const auto* cell = new_frame.Get(0, 0);
+    ASSERT_NE(cell, nullptr);
+    EXPECT_EQ(cell->fg, tuix::Color::BrightRed);
+    EXPECT_TRUE(cell->bold);
+
+    std::ostringstream out;
+    tuix::Terminal terminal(out, true);
+    EXPECT_GE(terminal.RenderFrameDiff(new_frame, &old_frame), 1u);
+    EXPECT_NE(out.str().find("\x1B[1m"), std::string::npos);
+}
+
+TEST(TuixFrameworkTests, LayoutGapPaddingAndFlexAffectChildBounds)
+{
+    auto left = std::make_shared<MarkWidget>('L');
+    auto right = std::make_shared<MarkWidget>('R');
+    tuix::HorizontalLayout layout;
+    layout.SetPadding({1, 1, 1, 1});
+    layout.SetGap(2);
+    layout.SetFlexWeights({1, 3});
+    layout.AddChild(left);
+    layout.AddChild(right);
+
+    layout.Layout(tuix::Rect{0, 0, 20, 5});
+    EXPECT_EQ(left->bounds().x, 1);
+    EXPECT_EQ(left->bounds().width, 4);
+    EXPECT_EQ(right->bounds().x, 7);
+    EXPECT_EQ(right->bounds().width, 12);
+}
+
+TEST(TuixFrameworkTests, TextInputEditsFocusedText)
+{
+    tuix::TextInput input("a");
+    input.Layout(tuix::Rect{0, 0, 8, 1});
+    input.SetFocused(true);
+
+    tuix::InputEvent ch;
+    ch.type = tuix::EventType::Key;
+    ch.key.key = tuix::Key::Character;
+    ch.key.ch = 'b';
+    ch.key.text = "b";
+    EXPECT_TRUE(input.HandleEvent(ch));
+    EXPECT_EQ(input.text(), "ab");
+
+    tuix::InputEvent backspace;
+    backspace.type = tuix::EventType::Key;
+    backspace.key.key = tuix::Key::Backspace;
+    EXPECT_TRUE(input.HandleEvent(backspace));
+    EXPECT_EQ(input.text(), "a");
+}
+
+TEST(TuixFrameworkTests, ListViewKeyboardAndMouseSelectionWork)
+{
+    tuix::ListView list({"one", "two", "three"});
+    list.Layout(tuix::Rect{0, 0, 10, 3});
+    list.SetFocused(true);
+
+    tuix::InputEvent down;
+    down.type = tuix::EventType::Key;
+    down.key.key = tuix::Key::ArrowDown;
+    EXPECT_TRUE(list.HandleEvent(down));
+    EXPECT_EQ(list.selected_index(), 1u);
+
+    tuix::InputEvent click;
+    click.type = tuix::EventType::Mouse;
+    click.mouse.x = 1;
+    click.mouse.y = 2;
+    click.mouse.button = tuix::MouseButton::Left;
+    click.mouse.action = tuix::MouseAction::Click;
+    EXPECT_TRUE(list.HandleEvent(click));
+    EXPECT_EQ(list.selected_index(), 2u);
+}
 #endif

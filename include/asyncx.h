@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -32,6 +33,7 @@ enum class ErrorKind
     NotRunning,
     NotFound,
     Internal,
+    Cancelled,
 };
 
 enum class StopMode
@@ -51,6 +53,60 @@ enum class TaskPriority
     High = 0,
     Normal,
     Low,
+};
+
+class CancellationToken
+{
+  public:
+    // Default tokens are valid "never cancelled" tokens. CanBeCancelled() is
+    // false, and IsCancellationRequested() always returns false.
+    CancellationToken() = default;
+
+    bool IsCancellationRequested() const noexcept;
+    bool CanBeCancelled() const noexcept;
+
+  private:
+    explicit CancellationToken(std::shared_ptr<std::atomic_bool> state);
+
+    std::shared_ptr<std::atomic_bool> state_;
+
+    friend class CancellationSource;
+};
+
+class CancellationSource
+{
+  public:
+    CancellationSource();
+
+    CancellationToken Token() const noexcept;
+    void Cancel() noexcept;
+    void RequestCancel() noexcept;
+    bool IsCancellationRequested() const noexcept;
+
+  private:
+    std::shared_ptr<std::atomic_bool> state_;
+};
+
+struct TaskOptions
+{
+    // Priority affects queue dispatch order; it does not preempt a running task.
+    TaskPriority priority{TaskPriority::Normal};
+    // Deadline is checked while enqueueing. A task already running is not
+    // interrupted when the deadline passes.
+    std::optional<std::chrono::steady_clock::time_point> deadline;
+    // Cooperative cancellation is visible to PostWithOptions tasks and checked
+    // before SubmitWithOptions starts its packaged task.
+    CancellationToken cancellation;
+    // Optional diagnostic label reserved for logging/metrics integrations.
+    std::string name;
+};
+
+struct TaskGroupStats
+{
+    std::uint64_t submitted{0};
+    std::uint64_t completed{0};
+    std::uint64_t cancelled{0};
+    std::uint64_t failed{0};
 };
 
 struct Error
@@ -168,6 +224,9 @@ class ThreadPool
     Status TryPostWithPriority(TaskPriority priority, std::function<void()> task);
     Status PostWithPriorityUntil(std::chrono::steady_clock::time_point deadline, TaskPriority priority,
                                  std::function<void()> task);
+    // Returns Cancelled immediately if options.cancellation was already
+    // cancelled. Running tasks must check the token themselves.
+    Status PostWithOptions(TaskOptions options, std::function<void(CancellationToken)> task);
 
     Result<std::uint64_t> PostDelayedUntil(std::chrono::steady_clock::time_point due_time, std::function<void()> task);
 
@@ -293,6 +352,50 @@ class ThreadPool
         return SubmitUntil(deadline, std::forward<Fn>(fn), std::forward<Args>(args)...);
     }
 
+    template <typename Fn, typename... Args>
+    auto SubmitWithOptions(TaskOptions options, Fn&& fn, Args&&... args)
+        -> Result<std::future<std::invoke_result_t<Fn, Args...>>>
+    {
+        using ReturnType = std::invoke_result_t<Fn, Args...>;
+
+        auto bound = std::bind(std::forward<Fn>(fn), std::forward<Args>(args)...);
+        CancellationToken token = options.cancellation;
+        auto task = std::make_shared<std::packaged_task<ReturnType()>>(
+            [bound = std::move(bound), token]() mutable -> ReturnType
+            {
+                if (token.IsCancellationRequested())
+                {
+                    throw std::runtime_error("asyncx task cancelled before execution");
+                }
+                if constexpr (std::is_void_v<ReturnType>)
+                {
+                    bound();
+                    return;
+                }
+                else
+                {
+                    return bound();
+                }
+            });
+
+        Result<std::future<ReturnType>> out;
+        std::future<ReturnType> future = task->get_future();
+        Status status = options.deadline.has_value()
+                            ? EnqueueTask([task]() mutable { (*task)(); }, *options.deadline, true, options.priority)
+                            : EnqueueTask([task]() mutable { (*task)(); }, std::nullopt, ShouldWaitOnBackpressure(),
+                                          options.priority);
+        if (!status.ok)
+        {
+            out.ok = false;
+            out.error = std::move(status.error);
+            return out;
+        }
+
+        out.ok = true;
+        out.value = std::move(future);
+        return out;
+    }
+
   private:
     using Task = std::function<void()>;
     using OptionalDeadline = std::optional<std::chrono::steady_clock::time_point>;
@@ -355,6 +458,39 @@ class ThreadPool
     std::atomic<std::uint64_t> scheduled_fired_{0};
     std::atomic<std::uint64_t> scheduled_cancelled_{0};
     std::atomic<std::uint64_t> periodic_rescheduled_{0};
+};
+
+class TaskGroup
+{
+  public:
+    explicit TaskGroup(ThreadPool& pool);
+
+    // Submit joins the group's cancellation token with the per-task token.
+    // Stats count each accepted task as submitted and classify the final
+    // outcome after Wait/WaitFor/WaitUntil observes its future.
+    Status Submit(TaskOptions options, std::function<void(CancellationToken)> task);
+    // Requests cooperative cancellation for every task submitted through this
+    // group. It does not forcibly stop currently running user code.
+    void Cancel() noexcept;
+    Status Wait();
+
+    template <typename Rep, typename Period> Status WaitFor(std::chrono::duration<Rep, Period> timeout)
+    {
+        const auto deadline =
+            sysx::time::SteadyNow() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(timeout);
+        return WaitUntil(deadline);
+    }
+
+    Status WaitUntil(std::chrono::steady_clock::time_point deadline);
+    TaskGroupStats Stats() const;
+    CancellationToken Token() const noexcept;
+
+  private:
+    ThreadPool* pool_{nullptr};
+    CancellationSource source_{};
+    mutable sysx::sync::Mutex mu_{};
+    std::vector<std::future<void>> futures_{};
+    TaskGroupStats stats_{};
 };
 
 template <typename T> Status WaitAll(std::vector<std::future<T>>& futures)

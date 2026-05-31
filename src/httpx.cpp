@@ -9,11 +9,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <optional>
 #include <sstream>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -3809,6 +3811,8 @@ const char* ToString(ErrorKind kind) noexcept
         return "transport_unavailable";
     case ErrorKind::Internal:
         return "internal";
+    case ErrorKind::CircuitOpen:
+        return "circuit_open";
     default:
         return "unknown";
     }
@@ -4172,6 +4176,33 @@ Result<Response> Client::Send(const Request& request)
     }
     const auto deadline = started_at + std::chrono::milliseconds(effective.timeout.total_ms);
 
+    if (effective.circuit_breaker.enabled)
+    {
+        bool reject_for_open_circuit = false;
+        {
+            std::scoped_lock lock(mu_);
+            if (circuit_open_)
+            {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - circuit_opened_at_);
+                reject_for_open_circuit =
+                    elapsed.count() < static_cast<long long>(effective.circuit_breaker.reset_timeout_ms);
+            }
+        }
+        if (reject_for_open_circuit)
+        {
+            Result<Response> out;
+            out.error = MakeError(ErrorKind::CircuitOpen, "circuit breaker is open", true);
+            EmitLog(request, out, 0, effective, LogSeverity::Warning);
+
+            std::scoped_lock lock(mu_);
+            ++stats_.total_requests;
+            ++stats_.total_failures;
+            ++stats_.consecutive_failures;
+            return out;
+        }
+    }
+
     if (request.url.empty())
     {
         Result<Response> out;
@@ -4236,7 +4267,8 @@ Result<Response> Client::Send(const Request& request)
 
     Result<Response> last;
     std::size_t attempt = 0;
-    const std::size_t max_attempt = effective.max_retry_attempts;
+    const std::size_t max_attempt =
+        effective.retry_policy.max_attempts > 0 ? effective.retry_policy.max_attempts : effective.max_retry_attempts;
     for (;;)
     {
         if (RemainingMs(deadline) == 0)
@@ -4254,12 +4286,17 @@ Result<Response> Client::Send(const Request& request)
 
         const bool can_retry = attempt < max_attempt;
         const bool should_retry =
-            can_retry && effective.should_retry && effective.should_retry(last.error, attempt + 1);
+            can_retry && ((effective.should_retry && effective.should_retry(last.error, attempt + 1)) ||
+                          (effective.retry_policy.retry_transient_errors && last.error.retryable));
         if (!should_retry)
         {
             break;
         }
         ++attempt;
+        if (effective.retry_policy.delay_ms > 0)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(effective.retry_policy.delay_ms));
+        }
     }
 
     const auto duration_ms = static_cast<std::uint64_t>(
@@ -4276,11 +4313,18 @@ Result<Response> Client::Send(const Request& request)
         if (last.ok)
         {
             stats_.consecutive_failures = 0;
+            circuit_open_ = false;
         }
         else
         {
             ++stats_.total_failures;
             ++stats_.consecutive_failures;
+            const std::uint64_t threshold = std::max<std::uint64_t>(1, effective.circuit_breaker.failure_threshold);
+            if (effective.circuit_breaker.enabled && stats_.consecutive_failures >= threshold)
+            {
+                circuit_open_ = true;
+                circuit_opened_at_ = std::chrono::steady_clock::now();
+            }
         }
     }
 
@@ -4373,6 +4417,126 @@ Result<Response> Client::Patch(std::string url, std::string body, HeaderList hea
     return Send(req);
 }
 
+Status Client::DownloadFile(std::string url, std::string output_path, DownloadOptions options)
+{
+    Status status;
+    if (output_path.empty())
+    {
+        status.error = MakeError(ErrorKind::InvalidArgument, "output path cannot be empty");
+        return status;
+    }
+
+    const std::filesystem::path target(output_path);
+    const std::filesystem::path temp = target.string() + options.temp_suffix;
+    std::error_code ec;
+    if (std::filesystem::exists(target, ec) && !options.overwrite)
+    {
+        status.error = MakeError(ErrorKind::InvalidArgument, "output file already exists");
+        return status;
+    }
+    if (!target.parent_path().empty())
+    {
+        std::filesystem::create_directories(target.parent_path(), ec);
+        if (ec)
+        {
+            status.error = MakeError(ErrorKind::Internal, "failed to create output directory: " + ec.message());
+            return status;
+        }
+    }
+
+    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+    if (!out.is_open())
+    {
+        status.error = MakeError(ErrorKind::Internal, "failed to open temporary download file");
+        return status;
+    }
+
+    std::uint64_t received = 0;
+    bool wrote_chunks = false;
+    Request request;
+    request.method = HttpMethod::Get;
+    request.url = std::move(url);
+    request.headers = std::move(options.headers);
+    request.on_response_chunk = [&](std::string_view chunk)
+    {
+        wrote_chunks = true;
+        out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+        received += static_cast<std::uint64_t>(chunk.size());
+        if (options.on_progress)
+        {
+            options.on_progress(received);
+        }
+        return out.good();
+    };
+
+    const auto response = Send(request);
+    if (!response.ok)
+    {
+        out.close();
+        std::filesystem::remove(temp, ec);
+        status.error = response.error;
+        return status;
+    }
+
+    if (!wrote_chunks && !response.value.body.empty())
+    {
+        out.write(response.value.body.data(), static_cast<std::streamsize>(response.value.body.size()));
+        received += static_cast<std::uint64_t>(response.value.body.size());
+        if (options.on_progress)
+        {
+            options.on_progress(received);
+        }
+    }
+    out.close();
+    if (!out.good())
+    {
+        std::filesystem::remove(temp, ec);
+        status.error = MakeError(ErrorKind::Internal, "failed to write downloaded file");
+        return status;
+    }
+
+    if (std::filesystem::exists(target, ec))
+    {
+        std::filesystem::remove(target, ec);
+        if (ec)
+        {
+            std::filesystem::remove(temp, ec);
+            status.error = MakeError(ErrorKind::Internal, "failed to replace output file: " + ec.message());
+            return status;
+        }
+    }
+    std::filesystem::rename(temp, target, ec);
+    if (ec)
+    {
+        std::filesystem::remove(temp, ec);
+        status.error = MakeError(ErrorKind::Internal, "failed to publish downloaded file: " + ec.message());
+        return status;
+    }
+
+    status.ok = true;
+    return status;
+}
+
+Result<Response> Client::UploadFile(std::string url, std::string field_name, std::string file_path, HeaderList headers)
+{
+    Result<Response> out;
+    std::ifstream in(file_path, std::ios::binary);
+    if (!in.is_open())
+    {
+        out.error = MakeError(ErrorKind::InvalidArgument, "upload file cannot be opened");
+        return out;
+    }
+    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    Request request;
+    request.method = HttpMethod::Post;
+    request.url = std::move(url);
+    request.headers = std::move(headers);
+    request.multipart.push_back({std::move(field_name), std::filesystem::path(file_path).filename().string(),
+                                 "application/octet-stream", data});
+    return Send(request);
+}
+
 Status Client::ApplyFlatConfig(const std::vector<FlatConfigEntry>& entries)
 {
     const auto parsed = ParseOptionsFromFlatConfig(entries);
@@ -4398,6 +4562,8 @@ Status Client::ApplyFlatConfig(const std::vector<FlatConfigEntry>& entries)
     options_.redact_sensitive_data = parsed.value.redact_sensitive_data;
     options_.use_proxy_from_environment = parsed.value.use_proxy_from_environment;
     options_.max_retry_attempts = parsed.value.max_retry_attempts;
+    options_.retry_policy = parsed.value.retry_policy;
+    options_.circuit_breaker = parsed.value.circuit_breaker;
 
     st.ok = true;
     return st;
@@ -4418,6 +4584,18 @@ void Client::ResetFailureStats()
 {
     std::scoped_lock lock(mu_);
     stats_ = {};
+    circuit_open_ = false;
+}
+
+httpx::CircuitSnapshot Client::CircuitSnapshot() const
+{
+    std::scoped_lock lock(mu_);
+    httpx::CircuitSnapshot snapshot;
+    snapshot.enabled = options_.circuit_breaker.enabled;
+    snapshot.open = circuit_open_;
+    snapshot.consecutive_failures = stats_.consecutive_failures;
+    snapshot.reset_timeout_ms = options_.circuit_breaker.reset_timeout_ms;
+    return snapshot;
 }
 
 Result<Response> Client::SendOnce(const Request& request, const ClientOptions& effective_options,

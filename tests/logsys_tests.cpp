@@ -502,3 +502,45 @@ TEST(LoggerTests, JsonProfilesSupportModuleAndFileOverrides)
     std::error_code ec;
     std::filesystem::remove(cfg_path, ec);
 }
+
+TEST(LoggerTests, ScopedContextTraceSpanAndMetricsWork)
+{
+    using namespace logsys;
+
+    auto& logger = Logger::Instance();
+    logger.ConfigureSimpleLogger(LogLevel::Info, false, false, "", LogLevel::Trace);
+    logger.SetTextFieldMask(kTextFieldMaskDefault);
+    logger.ResetMetrics();
+
+    auto sink = std::make_shared<MemorySink>();
+    logger.AddDefaultSink(sink);
+
+    LogContext context;
+    context.SetField("request", "abc");
+    {
+        ScopedLogContext scoped(std::move(context));
+        logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, __func__, "context-message");
+    }
+    {
+        TraceSpan span("unit-span");
+        span.SetField("phase", "test");
+    }
+    logger.Flush();
+
+    const auto metrics = logger.GetMetricsSnapshot();
+    EXPECT_GE(metrics.accepted, 2u);
+    EXPECT_GE(metrics.queued, 2u);
+    EXPECT_GE(metrics.emitted, 2u);
+    EXPECT_GE(metrics.flushed, 1u);
+
+    bool saw_context = false;
+    bool saw_span = false;
+    for (const auto& line : sink->lines)
+    {
+        saw_context = saw_context || line.find("request=abc") != std::string::npos;
+        saw_span = saw_span ||
+                   (line.find("span=unit-span") != std::string::npos && line.find("duration_ms=") != std::string::npos);
+    }
+    EXPECT_TRUE(saw_context);
+    EXPECT_TRUE(saw_span);
+}

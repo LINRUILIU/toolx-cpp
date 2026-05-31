@@ -26,7 +26,10 @@ enum class OpType
 {
     AtomicWrite,
     SafeReplace,
-    Rename
+    Rename,
+    CopyFile,
+    RemovePath,
+    CopyTree
 }; // 操作类型，AtomicWrite表示原子写入；SafeReplace表示安全替换；Rename表示重命名。
 
 struct StepReport
@@ -98,6 +101,39 @@ struct WalkResult
     std::vector<WalkEntry> entries;
 };
 
+enum class DirectoryDiffKind
+{
+    Added,
+    Modified,
+    Removed
+};
+
+struct DirectoryDiffEntry
+{
+    // Added/Modified entries carry both source_path and destination_path.
+    // Removed entries have an empty source_path and a populated destination_path.
+    DirectoryDiffKind kind{DirectoryDiffKind::Added};
+    std::string relative_path;
+    std::string source_path;
+    std::string destination_path;
+};
+
+struct DirectoryDiff
+{
+    bool ok{false};
+    std::string error;
+    std::vector<DirectoryDiffEntry> entries;
+};
+
+struct ArchiveOptions
+{
+    // false archives the contents of source_root. true includes source_root's
+    // final path component as the top-level archive directory.
+    bool include_root_directory{false};
+    // Extraction conflicts use the same semantics as batch operations.
+    ConflictPolicy conflict_policy{ConflictPolicy::Overwrite};
+};
+
 enum class LinkType
 {
     Hard,
@@ -132,8 +168,8 @@ struct CapabilityInfo
     bool watcher_polling{true};
     bool hard_link{true};
     bool symbolic_link{false};
-    bool zip_archive{false}; // Future capability; stable API reports false until implemented.
-    bool tar_archive{false}; // Future capability; stable API reports false until implemented.
+    bool zip_archive{false}; // Not implemented in the 0.2.0 MVP.
+    bool tar_archive{false}; // true when deterministic tar create/extract is available.
 };
 
 class IFileWatcher
@@ -150,7 +186,10 @@ class BatchPlan
     {
         AtomicWrite,
         SafeReplace,
-        Rename
+        Rename,
+        CopyFile,
+        RemovePath,
+        CopyTree
     }; // 操作种类，AtomicWrite表示原子写入；SafeReplace表示安全替换；Rename表示重命名。
 
     struct Action
@@ -166,6 +205,13 @@ class BatchPlan
     BatchPlan& AddSafeReplace(std::string src, std::string dst,
                               bool backup = false); // 添加安全替换操作，参数为源路径、目标路径以及是否需要备份。
     BatchPlan& AddRename(std::string src, std::string dst); // 添加重命名操作，参数为源路径和目标路径。
+    // AddCopyFile copies one regular file. The parent directory is created.
+    BatchPlan& AddCopyFile(std::string src, std::string dst);
+    // AddRemovePath removes a file or directory tree and records rollback state
+    // when possible.
+    BatchPlan& AddRemovePath(std::string path);
+    // AddCopyTree recursively copies a directory tree into dst.
+    BatchPlan& AddCopyTree(std::string src, std::string dst);
 
     const std::vector<Action>& Actions() const; // 获取操作列表，返回一个包含所有操作的向量。
 
@@ -180,6 +226,17 @@ RecoverFromJournal(std::string_view journal_path,
                    const RecoverOptions& options = {}); // 从日志中恢复，参数为日志路径和恢复选项，返回运行结果。
 
 WalkResult WalkDirectory(std::string_view root, const WalkOptions& options = {}); // 目录遍历接口（phase D 骨架）。
+// Compares regular files under source_root and destination_root. File contents
+// are compared when sizes match, so same-size edits are reported as Modified.
+DirectoryDiff BuildDirectoryDiff(std::string_view source_root, std::string_view destination_root,
+                                 bool include_removed = true);
+// Converts BuildDirectoryDiff into a BatchPlan using CopyFile/RemovePath steps.
+BatchPlan BuildSyncPlan(std::string_view source_root, std::string_view destination_root, bool remove_extra = true);
+// Deterministic tar MVP: regular files and directories only, ordered by
+// archive path. Unsafe absolute/".." entries are rejected on extract.
+Status CreateArchive(std::string_view source_root, std::string_view archive_path, const ArchiveOptions& options = {});
+Status ExtractArchive(std::string_view archive_path, std::string_view destination_root,
+                      const ArchiveOptions& options = {});
 Status CreateLink(std::string_view target, std::string_view link_path, LinkType type,
                   bool overwrite = false);                         // 链接操作接口（phase D 骨架）。
 std::unique_ptr<IFileWatcher> CreateFileWatcher(std::string path); // 文件变更监控抽象（轮询实现）。
@@ -191,5 +248,6 @@ const char*
 ToString(ConflictPolicy policy) noexcept; // 将冲突处理策略转换为字符串，参数为冲突处理策略，返回对应的字符串表示。
 const char* ToString(WatchEventKind kind) noexcept;
 const char* ToString(LinkType type) noexcept;
+const char* ToString(DirectoryDiffKind kind) noexcept;
 
 } // namespace fsx

@@ -4539,7 +4539,7 @@ Result<Response> Client::UploadFile(std::string url, std::string field_name, std
 
 Status Client::ApplyFlatConfig(const std::vector<FlatConfigEntry>& entries)
 {
-    const auto parsed = ParseOptionsFromFlatConfig(entries);
+    auto parsed = ParseOptionsFromFlatConfig(entries);
 
     Status st;
     if (!parsed.ok)

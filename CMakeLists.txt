@@ -498,6 +498,7 @@ if(TOOLX_BUILD_TESTS)
                 --filter "${CMAKE_CURRENT_SOURCE_DIR}/include"
                 --exclude "${CMAKE_CURRENT_SOURCE_DIR}/tests"
                 --exclude "${CMAKE_CURRENT_SOURCE_DIR}/examples"
+                --gcov-ignore-parse-errors negative_hits.warn_once_per_file
                 --xml-pretty
                 --output "${CMAKE_BINARY_DIR}/coverage.xml"
                 --html-details

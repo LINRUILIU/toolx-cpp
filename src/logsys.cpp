@@ -630,7 +630,7 @@ std::string ColorizeForConsole(std::string_view line, LogLevel level, bool enabl
         return std::string(line);
     }
 
-    const char* code = "\x1b[37m";
+    const char* code = nullptr;
     switch (level)
     {
     case LogLevel::Trace:
@@ -653,6 +653,9 @@ std::string ColorizeForConsole(std::string_view line, LogLevel level, bool enabl
         break;
     case LogLevel::Critical:
         code = "\x1b[1;35m";
+        break;
+    default:
+        code = "\x1b[37m";
         break;
     }
 
@@ -2351,8 +2354,8 @@ void Logger::LogEventNow(LogEvent event)
 
     event.text_field_mask = text_field_mask_.load(std::memory_order_relaxed);
 
-    LogLevel resolved_record_level = record_level_.load(std::memory_order_relaxed);
-    LogLevel resolved_output_level = level_.load(std::memory_order_relaxed);
+    LogLevel resolved_record_level;
+    LogLevel resolved_output_level;
     bool allow_console = true;
     bool allow_file = true;
     bool allow_debugger = true;
@@ -2362,6 +2365,8 @@ void Logger::LogEventNow(LogEvent event)
 
     {
         std::lock_guard<std::mutex> lk(mu_);
+        resolved_record_level = record_level_.load(std::memory_order_relaxed);
+        resolved_output_level = level_.load(std::memory_order_relaxed);
         const auto resolved = ProfileResolverV2::Resolve(config_v2_, event.file, ModuleFromCode(event.code));
         resolved_record_level = resolved.record_level;
         resolved_output_level = resolved.output_level;

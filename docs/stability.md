@@ -1,7 +1,7 @@
 # ToolX Stability Boundary
 
-This document defines the 0.1.x public stability boundary. ToolX does not
-promise ABI stability in 0.1.x. It does aim to preserve source compatibility for
+This document defines the 0.2.x public stability boundary. ToolX does not
+promise ABI stability in 0.2.x. It does aim to preserve source compatibility for
 the stable core APIs unless a safety or correctness bug requires a breaking
 change.
 
@@ -14,18 +14,37 @@ tools and small-to-medium C++20 projects:
 | --- | --- |
 | `argtool` | Parser builders, subcommand roots, help layouts, validation constraints, JSON parse-result contract |
 | `cfgx` | `Node`, path API, JSON/INI load-save, validation rules, layering, polling reload, snapshots, parser adapter registry |
-| `asyncx` | `ThreadPool`, submit/post APIs, wait helpers, scheduling, metrics, priority, backpressure policy |
-| `fsx` | `BatchPlan`, `Run`, rollback reports, journal recovery, directory walk, polling watcher, link capability reporting |
-| `logsys` | Logger configuration, default/simple setup, sinks, async queue, rolling, JSON config V2, fatal flush policy |
+| `asyncx` | `ThreadPool`, submit/post APIs, wait helpers, scheduling, metrics, priority, cooperative cancellation, `TaskGroup`, backpressure policy |
+| `fsx` | `BatchPlan`, `Run`, rollback reports, journal recovery, directory walk/sync, tar archive MVP, polling watcher, link/archive capability reporting |
+| `logsys` | Logger configuration, default/simple setup, sinks, structured context fields, trace spans, metrics snapshots, async queue, rolling, JSON config V2, fatal flush policy |
 | `resultx` | Result/status normalization helpers across ToolX modules |
 | `utils`, `sysx`, `hashx`, `textcodec` | Helper APIs used by the stable modules |
 
 Stable means:
 
-- Existing public names should remain callable through 0.1.x.
-- Existing JSON/CLI fields should remain additive-only through 0.1.x.
+- Existing public names should remain callable through 0.2.x.
+- Existing JSON/CLI fields should remain additive-only through 0.2.x.
 - Behavior documented in README and covered by tests should not regress without
   release notes and migration guidance.
+
+## Experimental MVP
+
+`schemax` is an experimental MVP layered on top of `cfgx`. It intentionally
+supports a practical schema subset first: `type`, `required`, `properties`,
+`items`, `minimum`, `maximum`, `enum`, `minLength`, `maxLength`, and
+`additionalProperties`.
+
+Stable enough to use:
+
+- `Schema`, `Options`, `Issue`, `Compile`, `Validate`, and `ToCfgxIssues`.
+- Schema-backed validation in `cfgtool validate`, `cfgtool doctor`, and
+  `toolx-sync` through `--schema`.
+
+Not yet promised:
+
+- Full JSON Schema compliance.
+- `$ref`, combinators, formats, pattern validation, or schema draft selection.
+- Long-term issue code taxonomy beyond the tested MVP codes.
 
 ## Bounded Stable
 
@@ -35,7 +54,8 @@ Stable in default builds:
 
 - HTTP request/response model.
 - Convenience methods for common HTTP verbs.
-- Redirect, cookie jar, retry hook, proxy option parsing, connection pooling.
+- Redirect, cookie jar, retry hook/policy, circuit breaker, download/upload
+  helpers, proxy option parsing, connection pooling.
 - Error classification covered by tests.
 
 Backend-dependent:
@@ -54,12 +74,13 @@ Stable enough to use:
 - Terminal clear/move/color/print primitives.
 - Frame buffer diff rendering.
 - Poll-only input abstraction.
-- Basic layout/widget controls used by tests.
+- Theme and styled frame cells.
+- Basic gap/padding/flex layout controls.
+- `Panel`, `TextInput`, and `ListView` MVP widgets used by tests and examples.
 
 Not yet promised:
 
 - Full retained UI tree.
-- Theme system.
 - Advanced widgets.
 - Long-term event model.
 - Framework-level API compatibility.
@@ -69,10 +90,10 @@ exclusive consume depending on platform/input source.
 
 ## Future Work
 
-The following are intentionally outside the 0.1.x stable surface:
+The following are intentionally outside the 0.2.x stable surface:
 
-- `fsx` archive creation. `QueryCapabilities()` reports archive support as
-  unavailable until implemented.
+- `fsx` zip archive creation. `QueryCapabilities()` reports `tar_archive=true`
+  for the deterministic tar MVP and `zip_archive=false`.
 - Cryptographic hash guarantees. `hashx`/`utils::hash` are non-cryptographic.
 - Full UTF-8/UTF-16/GBK conversion suite in `textcodec`.
 - Full YAML/TOML parser compliance. `cfgx` supports practical subsets unless a
@@ -84,7 +105,7 @@ The following are intentionally outside the 0.1.x stable surface:
 
 ## CLI Contracts
 
-`cfgtool` is a 0.1.x product contract. Stable subcommands currently include
+`cfgtool` is a 0.2.x product contract. Stable subcommands currently include
 `load`, `adapters`, `adapter-activate`, `doctor`, `snapshot-export`,
 `snapshot-restore`, `get`, `set`, `exists`, `merge`, `validate`, and
 `reload-dryrun`.
@@ -113,15 +134,20 @@ JSON envelope:
 }
 ```
 
+`cfgtool validate` and `cfgtool doctor` accept `--schema FILE`. Schema
+validation failures return exit code `4` and add `schema_issues` in JSON mode
+without removing existing fields.
+
 `toolx-sync` is a scenario CLI. Its output contract starts at
 `schema=toolx.sync.result`, `schema_version=1` and may evolve more quickly than
-`cfgtool`.
+`cfgtool`. In `v0.2.0`, it also accepts `--schema FILE` and reports
+`schema_issues` additively in JSON mode.
 
 ## Versioning
 
-Recommended first public tag: `v0.1.0`.
+Recommended current public tag: `v0.2.0`.
 
-For 0.1.x:
+For 0.2.x:
 
 - Patch releases should be source-compatible for stable modules.
 - Minor version increments may add APIs or promote experimental APIs.

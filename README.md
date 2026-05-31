@@ -1,9 +1,10 @@
 # ToolX C++ Toolkit
 
 ToolX is a practical C++20 toolkit for small tools and small-to-medium projects.
-The `v0.1.0` release line focuses on installable libraries plus two shipped CLIs:
-`cfgtool` as the first productized command-line tool, and `toolx-sync` as the
-end-to-end scenario tool for validation and atomic publishing.
+The `v0.2.0` release line keeps the `v0.1.0` installable library and CLI
+contracts source-compatible while expanding the toolkit with schema validation,
+a more usable terminal UI foundation, and focused API growth in async, file,
+HTTP, and logging utilities.
 
 ## Stability
 
@@ -11,13 +12,14 @@ end-to-end scenario tool for validation and atomic publishing.
 | --- | --- | --- |
 | `argtool` | Stable core | CLI argument parsing, help, constraints, JSON parse output |
 | `cfgx` | Stable core | Config parsing, path edits, validation, reload, snapshots |
-| `asyncx` | Stable core | Thread pool, scheduling, priority, wait helpers |
-| `fsx` | Stable core | Atomic writes, batch plans, rollback reports, watcher basics |
-| `logsys` | Stable core | Logging, rolling files, async queue, structured fields |
+| `schemax` | Experimental MVP | Config schema compile/validate helpers on top of `cfgx` |
+| `asyncx` | Stable core | Thread pool, scheduling, cancellation, task groups, wait helpers |
+| `fsx` | Stable core | Atomic writes, batch plans, directory sync, tar archives, watcher basics |
+| `logsys` | Stable core | Logging, context fields, trace spans, metrics, async queue |
 | `resultx` | Stable core | Cross-module result/status adapters |
 | `utils`, `sysx`, `hashx`, `textcodec` | Stable support | Common helpers, platform wrappers, hashes, text codecs |
-| `httpx` | Bounded stable | HTTP client utilities; TLS depends on selected backend |
-| `tuix` | Experimental foundation | Terminal UI building blocks, not a committed TUI framework |
+| `httpx` | Bounded stable | HTTP client, retries, circuit breaker, upload/download; TLS depends on selected backend |
+| `tuix` | Experimental foundation | Terminal UI building blocks, styled frames, layouts, and MVP widgets |
 
 Public stability commitments live in [docs/stability.md](docs/stability.md).
 `cfgtool` contract details live in [docs/cfgtool.md](docs/cfgtool.md).
@@ -41,9 +43,9 @@ ctest --preset dev
 Equivalent explicit configure:
 
 ```bash
-cmake -S . -B build-release-v010 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
-cmake --build build-release-v010 --parallel
-ctest --test-dir build-release-v010 --output-on-failure
+cmake -S . -B build-release-v020 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
+cmake --build build-release-v020 --parallel
+ctest --test-dir build-release-v020 --output-on-failure
 ```
 
 Deprecated `COPILOT_*` CMake options still exist for one compatibility cycle,
@@ -54,7 +56,7 @@ but new integrations should use `TOOLX_*`.
 Install a local stage tree:
 
 ```bash
-cmake --install build-release-v010 --prefix build-release-v010-stage
+cmake --install build-release-v020 --prefix build-release-v020-stage
 ```
 
 Consumer project:
@@ -63,17 +65,17 @@ Consumer project:
 find_package(ToolX CONFIG REQUIRED)
 
 add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE toolx::cfgx toolx::logsys)
+target_link_libraries(my_app PRIVATE toolx::cfgx toolx::logsys toolx::schemax)
 ```
 
 Installed tools:
 
 ```bash
-cmake -S examples/install_consumer -B build-release-v010-consumer \
-  -DCMAKE_PREFIX_PATH="$PWD/build-release-v010-stage"
-cmake --build build-release-v010-consumer --parallel
-build-release-v010-stage/bin/cfgtool --help
-build-release-v010-stage/bin/toolx-sync --help
+cmake -S examples/install_consumer -B build-release-v020-consumer \
+  -DCMAKE_PREFIX_PATH="$PWD/build-release-v020-stage"
+cmake --build build-release-v020-consumer --parallel
+build-release-v020-stage/bin/cfgtool --help
+build-release-v020-stage/bin/toolx-sync --help
 ```
 
 The install tree is also the shape of the prebuilt release archives:
@@ -85,12 +87,12 @@ The install tree is also the shape of the prebuilt release archives:
 
 ## Release Artifacts
 
-The first public release is distributed through GitHub Releases with:
+The `v0.2.0` release is distributed through GitHub Releases with:
 
-- `ToolX-v0.1.0-source.tar.gz`
-- `ToolX-v0.1.0-windows-x86_64.zip`
-- `ToolX-v0.1.0-linux-x86_64.tar.gz`
-- `ToolX-v0.1.0-macos-universal.tar.gz` or `ToolX-v0.1.0-macos-x86_64.tar.gz`
+- `ToolX-v0.2.0-source.tar.gz`
+- `ToolX-v0.2.0-windows-x86_64.zip`
+- `ToolX-v0.2.0-linux-x86_64.tar.gz`
+- `ToolX-v0.2.0-macos-universal.tar.gz` or `ToolX-v0.2.0-macos-x86_64.tar.gz`
 - `SHA256SUMS`
 
 Each binary archive is validated by unpacking it, running `cfgtool --help` and
@@ -107,13 +109,13 @@ machine-readable output.
 ```bash
 cfgtool set --file app.json --path svc.port --value 8080 --type int
 cfgtool get --file app.json --path svc.port
-cfgtool validate --file app.json --require svc.host --range svc.port=1:65535
+cfgtool validate --file app.json --schema schema.json --require svc.host --range svc.port=1:65535
 cfgtool reload-dryrun --current current.json --candidate candidate.json --json
-cfgtool doctor --file app.json --require svc.host --expect svc.port=int --json
+cfgtool doctor --file app.json --schema schema.json --require svc.host --expect svc.port=int --json
 ```
 
 `--json` output uses `schema=cfgtool.result` and `schema_version=2`. Fields may
-be added, but existing fields are additive-only within the `0.1.x` line. The
+be added, but existing fields are additive-only within the `0.2.x` line. The
 full CLI reference is in [docs/cfgtool.md](docs/cfgtool.md).
 
 ## `cfgtool` Cookbook
@@ -123,6 +125,18 @@ preflight checks with `cfgtool doctor`, layered merge review, and snapshot
 export/restore. A realistic starter lives in
 [`examples/cfgtool_layered_template`](examples/cfgtool_layered_template).
 
+## Module Cookbooks
+
+Every public module has a focused `examples/*_cookbook.cpp` executable. Each
+cookbook contains 3-5 commented scenarios covering normal use, boundary behavior,
+and the 0.2.0 API additions without requiring network access or external
+services.
+
+```bash
+cmake --build build-release-v020 --target asyncx_cookbook
+build-release-v020/asyncx_cookbook
+```
+
 ## `toolx-sync`
 
 `toolx-sync` demonstrates a real module composition path: config load, optional
@@ -131,7 +145,7 @@ audit logging.
 
 ```bash
 toolx-sync --base app.json --out resolved.json --snapshot snapshot.json \
-  --require svc.port --range svc.port=1:65535 --json
+  --schema schema.json --require svc.port --range svc.port=1:65535 --json
 ```
 
 `toolx-sync` uses its own envelope, `schema=toolx.sync.result` and
@@ -143,17 +157,17 @@ scenario CLI rather than the main long-term compatibility contract.
 Release candidates should pass:
 
 ```bash
-cmake -S . -B build-release-v010 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
-cmake --build build-release-v010 --target format-check
-cmake --build build-release-v010 --parallel
-ctest --test-dir build-release-v010 --output-on-failure
-cmake --install build-release-v010 --prefix build-release-v010-stage
-cmake -S examples/install_consumer -B build-release-v010-consumer -DCMAKE_PREFIX_PATH="$PWD/build-release-v010-stage"
-cmake --build build-release-v010-consumer --parallel
-cmake -DTOOLX_STAGE_PREFIX=build-release-v010-stage -P cmake/release_smoke.cmake
-cpack --config build-release-v010/CPackConfig.cmake
-cmake -DPACKAGE_DIR=build-release-v010/packages -P cmake/release_archive_smoke.cmake
-cpack --config build-release-v010/CPackSourceConfig.cmake
+cmake -S . -B build-release-v020 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
+cmake --build build-release-v020 --target format-check
+cmake --build build-release-v020 --parallel
+ctest --test-dir build-release-v020 --output-on-failure
+cmake --install build-release-v020 --prefix build-release-v020-stage
+cmake -S examples/install_consumer -B build-release-v020-consumer -DCMAKE_PREFIX_PATH="$PWD/build-release-v020-stage"
+cmake --build build-release-v020-consumer --parallel
+cmake -DTOOLX_STAGE_PREFIX=build-release-v020-stage -P cmake/release_smoke.cmake
+cpack --config build-release-v020/CPackConfig.cmake
+cmake -DPACKAGE_DIR=build-release-v020/packages -P cmake/release_archive_smoke.cmake
+cpack --config build-release-v020/CPackSourceConfig.cmake
 ```
 
 Maintainer workflow details are in [README.dev.md](README.dev.md).

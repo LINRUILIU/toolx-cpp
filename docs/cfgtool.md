@@ -1,6 +1,6 @@
 # cfgtool CLI Reference
 
-`cfgtool` is the first productized ToolX CLI. It is the primary `0.1.x`
+`cfgtool` is the first productized ToolX CLI. It is the primary `0.2.x`
 command-line compatibility contract in this repository.
 
 ## Stable Contract
@@ -26,9 +26,9 @@ command-line compatibility contract in this repository.
 ```
 
 - `schema`, `schema_version`, `ok`, `code`, `message`, `issues`, and `data`
-  are additive-only for `0.1.x`.
+  are additive-only for `0.2.x`.
 - Existing fields may gain new siblings, but they should not be removed or
-  redefined within the `0.1.x` line.
+  redefined within the `0.2.x` line.
 
 ## Common Options
 
@@ -67,6 +67,17 @@ These flags are used by `doctor`, `validate`, and `reload-dryrun`:
 - `--strlen <PATH=MIN:MAX>`: string length range
 - `--fail-fast`: stop validation on the first issue
 
+Schema-backed validation is available for `doctor` and `validate`:
+
+- `--schema <FILE>`: load and compile a `schemax` schema file, then validate the
+  target config after the normal `cfgx` validation rules
+
+The `v0.2.0` schema MVP supports `type`, `required`, `properties`, `items`,
+`minimum`, `maximum`, `enum`, `minLength`, `maxLength`, and
+`additionalProperties`. Schema failures return exit code `4`, the same as other
+validation failures. In `--json` mode, schema issues are reported additively in
+`data.schema_issues` and are also folded into the top-level `issues` list.
+
 For `set`, `--type` accepts `string`, `int`, `double`, `bool`, `null`, and
 `json`.
 
@@ -76,7 +87,7 @@ Inspect and edit:
 
 ```bash
 cfgtool load --file app.json
-cfgtool doctor --file app.json --require svc.host --expect svc.port=int --json
+cfgtool doctor --file app.json --schema schema.json --require svc.host --expect svc.port=int --json
 cfgtool get --file app.json --path svc.port
 cfgtool set --file app.json --path svc.port --value 8080 --type int
 cfgtool exists --file app.json --path svc.host
@@ -84,7 +95,7 @@ cfgtool exists --file app.json --path svc.host
 
 `doctor` returns the normal `cfgtool.result` envelope in `--json` mode and adds
 diagnostic `data` fields such as `checks`, `recommendations`, `rules_count`,
-and `issues_count`. These fields are additive-only inside `0.1.x`.
+and `issues_count`. These fields are additive-only inside `0.2.x`.
 
 Snapshot flow:
 
@@ -97,7 +108,7 @@ Merge and validate:
 
 ```bash
 cfgtool merge --base base.json --overlay overlay.json --out merged.json --json
-cfgtool validate --file merged.json --require svc.host --range svc.port=1:65535 --json
+cfgtool validate --file merged.json --schema schema.json --require svc.host --range svc.port=1:65535 --json
 ```
 
 Reload dry-run:
@@ -128,7 +139,7 @@ cfgtool snapshot-restore --file app.json --snapshot snapshot.json --out restored
 Machine-readable preflight:
 
 ```bash
-cfgtool doctor --file app.json --require svc.host --expect svc.port=int --json
+cfgtool doctor --file app.json --schema schema.json --require svc.host --expect svc.port=int --json
 ```
 
 See [`examples/cfgtool_layered_template`](../examples/cfgtool_layered_template)

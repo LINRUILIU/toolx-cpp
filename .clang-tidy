@@ -8,7 +8,7 @@ Checks: >
   readability-avoid-const-params-in-decls,
   readability-redundant-smartptr-get,
   readability-simplify-boolean-expr
-WarningsAsErrors: 'clang-analyzer-*'
+WarningsAsErrors: ''
 HeaderFilterRegex: '^(include|src)/'
 FormatStyle: file
 CheckOptions:

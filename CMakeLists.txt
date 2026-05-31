@@ -158,7 +158,7 @@ if(CLANG_TIDY_BIN)
     add_custom_target(lint-check
         COMMAND "${CLANG_TIDY_BIN}"
             -p "${CMAKE_BINARY_DIR}"
-            --config-file="${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy"
+            --config-file=${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy
             ${TOOLX_LINT_FILES}
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         COMMENT "Running clang-tidy on ToolX module sources"
@@ -172,6 +172,9 @@ function(toolx_add_module name)
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    if(TOOLX_ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(${name} PUBLIC --coverage)
+    endif()
     set_target_properties(${name} PROPERTIES
         EXPORT_NAME ${name}
         POSITION_INDEPENDENT_CODE ON)

@@ -9,4 +9,4 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(ToolX CONFIG REQUIRED)
 
 add_executable(toolx_install_consumer main.cpp)
-target_link_libraries(toolx_install_consumer PRIVATE toolx::logsys toolx::cfgx)
+target_link_libraries(toolx_install_consumer PRIVATE toolx::asyncx toolx::cfgx toolx::logsys toolx::schemax)

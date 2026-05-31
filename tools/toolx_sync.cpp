@@ -16,6 +16,7 @@
 #include "fsx.h"
 #include "httpx.h"
 #include "logsys.h"
+#include "schemax.h"
 
 namespace
 {
@@ -73,6 +74,21 @@ cfgx::Node BuildIssueArray(const std::vector<cfgx::ValidationIssue>& issues)
     {
         arr.emplace_back(BuildDataObject({
             {"path", cfgx::Node(issue.path)},
+            {"message", cfgx::Node(issue.message)},
+        }));
+    }
+    return cfgx::Node(std::move(arr));
+}
+
+cfgx::Node BuildSchemaIssueArray(const std::vector<schemax::Issue>& issues)
+{
+    cfgx::Node::Array arr;
+    arr.reserve(issues.size());
+    for (const auto& issue : issues)
+    {
+        arr.emplace_back(BuildDataObject({
+            {"path", cfgx::Node(issue.path)},
+            {"code", cfgx::Node(issue.code)},
             {"message", cfgx::Node(issue.message)},
         }));
     }
@@ -249,6 +265,26 @@ cfgx::RemoteFetcher MakeHttpxFetcher(httpx::Client* client)
     };
 }
 
+cfgx::Result<std::vector<schemax::Issue>> RunSchemaValidation(const std::string& schema_path,
+                                                              const cfgx::Node& document)
+{
+    if (schema_path.empty())
+    {
+        return cfgx::Result<std::vector<schemax::Issue>>{true, {}, ""};
+    }
+    const auto loaded = cfgx::LoadFromFile(schema_path);
+    if (!loaded.ok)
+    {
+        return cfgx::Result<std::vector<schemax::Issue>>{false, {}, "failed to load schema: " + loaded.error};
+    }
+    const auto compiled = schemax::Compile(loaded.value);
+    if (!compiled.ok)
+    {
+        return cfgx::Result<std::vector<schemax::Issue>>{false, {}, "failed to compile schema: " + compiled.error};
+    }
+    return cfgx::Result<std::vector<schemax::Issue>>{true, schemax::Validate(document, compiled.value), ""};
+}
+
 } // namespace
 
 int main(int argc, const char* const argv[])
@@ -263,6 +299,7 @@ int main(int argc, const char* const argv[])
     parser.Option("out", 'o').String().ValueName("FILE").Description("Resolved output file.").Done();
     parser.Option("snapshot", 's').String().ValueName("FILE").Description("Optional snapshot file.").Done();
     parser.Option("journal", 'j').String().ValueName("FILE").Description("Optional fsx journal file.").Done();
+    parser.Option("schema").String().ValueName("FILE").Description("Optional schemax schema file.").Done();
     parser.Option("remote-url").String().ValueName("URL").Description("Optional remote config URL.").Done();
     parser.Option("remote-format")
         .String()
@@ -384,12 +421,21 @@ int main(int argc, const char* const argv[])
     }
 
     const auto validation = cfgx::Validate(composed.value, rules);
-    if (!validation.ok)
+    std::vector<cfgx::ValidationIssue> combined_issues = validation.value;
+    const auto schema_validation = RunSchemaValidation(parsed.GetString("schema", ""), composed.value);
+    if (!schema_validation.ok)
+    {
+        return ExitError(json_mode, kExitRuntimeError, schema_validation.error);
+    }
+    auto schema_cfgx_issues = schemax::ToCfgxIssues(schema_validation.value);
+    combined_issues.insert(combined_issues.end(), schema_cfgx_issues.begin(), schema_cfgx_issues.end());
+    if (!validation.ok || !schema_validation.value.empty())
     {
         return ExitError(
             json_mode, kExitValidationFailed, "validation failed",
-            BuildDataObject({{"issues_count", cfgx::Node(static_cast<std::int64_t>(validation.value.size()))}}),
-            validation.value);
+            BuildDataObject({{"issues_count", cfgx::Node(static_cast<std::int64_t>(combined_issues.size()))},
+                             {"schema_issues", BuildSchemaIssueArray(schema_validation.value)}}),
+            combined_issues);
     }
 
     const int indent = parsed.GetInt("indent", 2);
@@ -427,6 +473,8 @@ int main(int argc, const char* const argv[])
         {"out", cfgx::Node(out_path)},
         {"snapshot", cfgx::Node(snapshot_path)},
         {"journal", cfgx::Node(journal_path)},
+        {"schema", cfgx::Node(parsed.GetString("schema", ""))},
+        {"schema_issues", BuildSchemaIssueArray(schema_validation.value)},
         {"steps", cfgx::Node(static_cast<std::int64_t>(run.steps.size()))},
     });
 

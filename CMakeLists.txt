@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(ToolX VERSION 0.1.0 LANGUAGES CXX)
+project(ToolX VERSION 0.2.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -123,6 +123,7 @@ set(TOOLX_LINT_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/hashx.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/httpx.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/logsys.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/schemax.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/textcodec.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tuix.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/examples/cfgtool_example.cpp"
@@ -255,6 +256,9 @@ if(WIN32)
     target_link_libraries(logsys PUBLIC ws2_32)
 endif()
 
+toolx_add_module(schemax)
+target_link_libraries(schemax PUBLIC cfgx)
+
 toolx_add_module(textcodec)
 target_link_libraries(textcodec PUBLIC utils)
 
@@ -271,20 +275,40 @@ set(TOOLX_EXPORT_TARGETS
     hashx
     httpx
     logsys
+    schemax
     textcodec
     tuix
 )
 
 if(TOOLX_BUILD_TOOLS)
     add_executable(cfgtool examples/cfgtool_example.cpp)
-    target_link_libraries(cfgtool PRIVATE argtool cfgx)
+    target_link_libraries(cfgtool PRIVATE argtool cfgx schemax)
 
     add_executable(toolx_sync tools/toolx_sync.cpp)
     set_target_properties(toolx_sync PROPERTIES OUTPUT_NAME "toolx-sync")
-    target_link_libraries(toolx_sync PRIVATE argtool asyncx cfgx fsx httpx logsys)
+    target_link_libraries(toolx_sync PRIVATE argtool asyncx cfgx fsx httpx logsys schemax)
 endif()
 
 if(TOOLX_BUILD_EXAMPLES)
+    function(toolx_add_example target)
+        add_executable(${target} examples/${target}.cpp)
+        target_link_libraries(${target} PRIVATE ${ARGN})
+    endfunction()
+
+    toolx_add_example(argtool_cookbook argtool)
+    toolx_add_example(asyncx_cookbook asyncx)
+    toolx_add_example(cfgx_cookbook cfgx)
+    toolx_add_example(fsx_cookbook fsx)
+    toolx_add_example(hashx_cookbook hashx)
+    toolx_add_example(httpx_cookbook httpx)
+    toolx_add_example(logsys_cookbook logsys)
+    toolx_add_example(resultx_cookbook resultx asyncx cfgx fsx httpx)
+    toolx_add_example(schemax_cookbook schemax)
+    toolx_add_example(sysx_cookbook sysx)
+    toolx_add_example(textcodec_cookbook textcodec)
+    toolx_add_example(tuix_cookbook tuix)
+    toolx_add_example(utils_cookbook utils)
+
     add_executable(argtool_example examples/argtool_example.cpp)
     target_link_libraries(argtool_example PRIVATE argtool)
 
@@ -332,6 +356,9 @@ if(TOOLX_BUILD_EXAMPLES)
 
     add_executable(tuix_showcase examples/tuix_showcase.cpp)
     target_link_libraries(tuix_showcase PRIVATE tuix)
+
+    add_executable(tuix_config_inspector examples/tuix_config_inspector.cpp)
+    target_link_libraries(tuix_config_inspector PRIVATE cfgx schemax tuix)
 
     add_executable(utils_example examples/utils_example.cpp)
     target_link_libraries(utils_example PRIVATE utils)
@@ -392,6 +419,10 @@ if(TOOLX_BUILD_TESTS)
     target_link_libraries(logsys_tests PRIVATE logsys GTest::gtest_main)
     add_test(NAME logsys_tests COMMAND logsys_tests)
 
+    add_executable(schemax_tests tests/schemax_tests.cpp)
+    target_link_libraries(schemax_tests PRIVATE schemax GTest::gtest_main)
+    add_test(NAME schemax_tests COMMAND schemax_tests)
+
     add_executable(resultx_tests tests/resultx_tests.cpp)
     target_link_libraries(resultx_tests PRIVATE resultx GTest::gtest_main)
     add_test(NAME resultx_tests COMMAND resultx_tests)
@@ -431,6 +462,29 @@ if(TOOLX_BUILD_TESTS)
                 -DTOOLX_SYNC_EXE=$<TARGET_FILE:toolx_sync>
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolx_sync_cli_scenario.cmake")
     endif()
+
+    if(TARGET tuix_config_inspector)
+        add_test(NAME tuix_config_inspector_smoke COMMAND tuix_config_inspector)
+    endif()
+
+    foreach(toolx_cookbook IN ITEMS
+        argtool_cookbook
+        asyncx_cookbook
+        cfgx_cookbook
+        fsx_cookbook
+        hashx_cookbook
+        httpx_cookbook
+        logsys_cookbook
+        resultx_cookbook
+        schemax_cookbook
+        sysx_cookbook
+        textcodec_cookbook
+        tuix_cookbook
+        utils_cookbook)
+        if(TARGET ${toolx_cookbook})
+            add_test(NAME ${toolx_cookbook}_smoke COMMAND ${toolx_cookbook})
+        endif()
+    endforeach()
 
     if(TOOLX_ENABLE_COVERAGE AND GCOVR_BIN)
         add_custom_target(coverage

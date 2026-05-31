@@ -22,8 +22,10 @@ file(REMOVE_RECURSE "${smoke_root}")
 file(MAKE_DIRECTORY "${smoke_root}")
 
 set(app_json "${smoke_root}/app.json")
+set(schema_json "${smoke_root}/schema.json")
 set(resolved_json "${smoke_root}/resolved.json")
 file(WRITE "${app_json}" [=[{"svc":{"host":"127.0.0.1","port":8080}}]=])
+file(WRITE "${schema_json}" [=[{"type":"object","required":["svc"],"properties":{"svc":{"type":"object","required":["host","port"],"properties":{"host":{"type":"string","minLength":1},"port":{"type":"integer","minimum":1,"maximum":65535}}}}}]=])
 
 function(run_smoke case_name expected_code)
     execute_process(
@@ -54,8 +56,9 @@ endfunction()
 run_smoke(CFGTOOL_HELP 0 "${cfgtool_exe}" --help)
 assert_contains(CFGTOOL_HELP "${CFGTOOL_HELP_OUT}" "cfgtool - thin CLI over cfgx")
 
-run_smoke(CFGTOOL_DOCTOR 0 "${cfgtool_exe}" doctor --file "${app_json}" --require svc.host --expect svc.port=int --json)
+run_smoke(CFGTOOL_DOCTOR 0 "${cfgtool_exe}" doctor --file "${app_json}" --schema "${schema_json}" --require svc.host --expect svc.port=int --json)
 assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"message\": \"doctor passed\"")
+assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"schema_issues\": []")
 
 run_smoke(CFGTOOL_SET 0 "${cfgtool_exe}" set --file "${app_json}" --path svc.port --value 9090 --type int)
 run_smoke(CFGTOOL_GET 0 "${cfgtool_exe}" get --file "${app_json}" --path svc.port)
@@ -65,10 +68,12 @@ run_smoke(TOOLX_SYNC 0
     "${toolx_sync_exe}"
     --base "${app_json}"
     --out "${resolved_json}"
+    --schema "${schema_json}"
     --require svc.port
     --range svc.port=1:65535
     --json)
 assert_contains(TOOLX_SYNC "${TOOLX_SYNC_OUT}" "\"schema\": \"toolx.sync.result\"")
+assert_contains(TOOLX_SYNC "${TOOLX_SYNC_OUT}" "\"schema_issues\": []")
 
 if(NOT EXISTS "${resolved_json}")
     message(FATAL_ERROR "toolx-sync release smoke did not create ${resolved_json}")

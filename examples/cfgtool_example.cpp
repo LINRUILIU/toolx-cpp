@@ -9,6 +9,7 @@
 
 #include "argtool.h"
 #include "cfgx.h"
+#include "schemax.h"
 
 namespace
 {
@@ -49,6 +50,21 @@ cfgx::Node BuildStringArray(const std::vector<std::string>& items)
     for (const auto& item : items)
     {
         arr.emplace_back(cfgx::Node(item));
+    }
+    return cfgx::Node(std::move(arr));
+}
+
+cfgx::Node BuildSchemaIssuesArray(const std::vector<schemax::Issue>& issues)
+{
+    cfgx::Node::Array arr;
+    arr.reserve(issues.size());
+    for (const auto& issue : issues)
+    {
+        arr.emplace_back(BuildDataObject({
+            {"path", cfgx::Node(issue.path)},
+            {"code", cfgx::Node(issue.code)},
+            {"message", cfgx::Node(issue.message)},
+        }));
     }
     return cfgx::Node(std::move(arr));
 }
@@ -536,6 +552,31 @@ bool BuildValidationRules(const argtool::ParseResult& result, std::vector<cfgx::
     return true;
 }
 
+cfgx::Result<std::vector<schemax::Issue>> RunSchemaValidation(const std::string& schema_path,
+                                                              const cfgx::Node& document, bool fail_fast)
+{
+    if (schema_path.empty())
+    {
+        return cfgx::Result<std::vector<schemax::Issue>>{true, {}, ""};
+    }
+
+    const auto loaded_schema = cfgx::LoadFromFile(schema_path);
+    if (!loaded_schema.ok)
+    {
+        return cfgx::Result<std::vector<schemax::Issue>>{false, {}, "failed to load schema: " + loaded_schema.error};
+    }
+
+    const auto compiled = schemax::Compile(loaded_schema.value);
+    if (!compiled.ok)
+    {
+        return cfgx::Result<std::vector<schemax::Issue>>{false, {}, "failed to compile schema: " + compiled.error};
+    }
+
+    schemax::Options options;
+    options.fail_fast = fail_fast;
+    return cfgx::Result<std::vector<schemax::Issue>>{true, schemax::Validate(document, compiled.value, options), ""};
+}
+
 std::string CanonicalText(const cfgx::Node& node)
 {
     return cfgx::ToJson(node, 0);
@@ -588,6 +629,7 @@ int main(int argc, const char* const argv[])
     parser.Option("overlay", 'o').String().ValueName("FILE").Description("Overlay config for merge.").Done();
     parser.Option("out", 'w').String().ValueName("FILE").Description("Output file path.").Done();
     parser.Option("snapshot", 's').String().ValueName("FILE").Description("Snapshot file path.").Done();
+    parser.Option("schema").String().ValueName("FILE").Description("Optional schemax schema file.").Done();
     parser.Option("current").String().ValueName("FILE").Description("Current config file for reload-dryrun.").Done();
     parser.Option("candidate")
         .String()
@@ -917,15 +959,36 @@ int main(int argc, const char* const argv[])
         }
 
         const auto validation = cfgx::Validate(loaded.value, rules);
-        if (validation.ok)
+        std::vector<cfgx::ValidationIssue> combined_issues = validation.value;
+        const auto schema_validation =
+            RunSchemaValidation(result.GetString("schema", ""), loaded.value, result.GetBool("fail-fast", false));
+        if (!schema_validation.ok)
+        {
+            append_check("schema", false, schema_validation.error, "fix the schema file and rerun cfgtool doctor");
+            combined_issues.push_back({"$", schema_validation.error});
+        }
+        else if (!schema_validation.value.empty())
+        {
+            append_check("schema", false, std::to_string(schema_validation.value.size()) + " schema issue(s)",
+                         "fix the reported schema issues and rerun cfgtool doctor");
+            auto schema_cfgx_issues = schemax::ToCfgxIssues(schema_validation.value);
+            combined_issues.insert(combined_issues.end(), schema_cfgx_issues.begin(), schema_cfgx_issues.end());
+        }
+        else if (result.Has("schema"))
+        {
+            append_check("schema", true, "schema validation passed");
+        }
+
+        const bool all_valid = validation.ok && schema_validation.ok && schema_validation.value.empty();
+        if (all_valid)
         {
             append_check("validation", true, rules.empty() ? "no validation rules supplied" : "validation passed");
         }
         else
         {
-            append_check("validation", false, std::to_string(validation.value.size()) + " validation issue(s)",
+            append_check("validation", false, std::to_string(combined_issues.size()) + " validation issue(s)",
                          "fix the reported validation issues and rerun cfgtool doctor");
-            for (const auto& issue : validation.value)
+            for (const auto& issue : combined_issues)
             {
                 AddUniqueRecommendation(&recommendations, RecommendFixForIssue(issue, file));
             }
@@ -941,10 +1004,12 @@ int main(int argc, const char* const argv[])
             {"checks", BuildDoctorChecksArray(checks)},
             {"recommendations", BuildStringArray(recommendations)},
             {"rules_count", cfgx::Node(static_cast<std::int64_t>(rules.size()))},
-            {"issues_count", cfgx::Node(static_cast<std::int64_t>(validation.value.size()))},
+            {"issues_count", cfgx::Node(static_cast<std::int64_t>(combined_issues.size()))},
+            {"schema_issues",
+             schema_validation.ok ? BuildSchemaIssuesArray(schema_validation.value) : cfgx::Node::MakeArray()},
         });
 
-        if (validation.ok)
+        if (all_valid)
         {
             if (json_mode)
             {
@@ -958,12 +1023,12 @@ int main(int argc, const char* const argv[])
 
         if (json_mode)
         {
-            PrintJsonEnvelope(false, kExitValidationFailed, "doctor failed", data, validation.value);
+            PrintJsonEnvelope(false, kExitValidationFailed, "doctor failed", data, combined_issues);
         }
         else
         {
             PrintDoctorPlain(file, cfgx::ToString(format), cfgx::ToString(loaded.value.Kind()), active_adapter,
-                             available_adapters, checks, validation.value, recommendations, false, "doctor failed");
+                             available_adapters, checks, combined_issues, recommendations, false, "doctor failed");
         }
         return kExitValidationFailed;
     }
@@ -1316,27 +1381,39 @@ int main(int argc, const char* const argv[])
         }
 
         const auto validation = cfgx::Validate(loaded.value, rules);
+        std::vector<cfgx::ValidationIssue> combined_issues = validation.value;
+        const auto schema_validation =
+            RunSchemaValidation(result.GetString("schema", ""), loaded.value, result.GetBool("fail-fast", false));
+        if (!schema_validation.ok)
+        {
+            return ExitError(json_mode, kExitRuntimeError, schema_validation.error,
+                             BuildDataObject({{"command", cfgx::Node(command)}}));
+        }
+        auto schema_cfgx_issues = schemax::ToCfgxIssues(schema_validation.value);
+        combined_issues.insert(combined_issues.end(), schema_cfgx_issues.begin(), schema_cfgx_issues.end());
+        const bool validation_ok = validation.ok && schema_validation.value.empty();
         if (json_mode)
         {
             const cfgx::Node data = BuildDataObject({
                 {"command", cfgx::Node(command)},
-                {"issues_count", cfgx::Node(static_cast<std::int64_t>(validation.value.size()))},
+                {"issues_count", cfgx::Node(static_cast<std::int64_t>(combined_issues.size()))},
+                {"schema_issues", BuildSchemaIssuesArray(schema_validation.value)},
             });
-            if (validation.ok)
+            if (validation_ok)
             {
-                return ExitSuccess(true, "validation passed", data, validation.value);
+                return ExitSuccess(true, "validation passed", data, combined_issues);
             }
-            PrintJsonEnvelope(false, kExitValidationFailed, "validation failed", data, validation.value);
+            PrintJsonEnvelope(false, kExitValidationFailed, "validation failed", data, combined_issues);
             return kExitValidationFailed;
         }
 
-        std::cout << "issues=" << validation.value.size() << "\n";
-        for (std::size_t i = 0; i < validation.value.size(); ++i)
+        std::cout << "issues=" << combined_issues.size() << "\n";
+        for (std::size_t i = 0; i < combined_issues.size(); ++i)
         {
-            std::cout << "[" << i + 1 << "] path=" << validation.value[i].path
-                      << " message=" << validation.value[i].message << "\n";
+            std::cout << "[" << i + 1 << "] path=" << combined_issues[i].path
+                      << " message=" << combined_issues[i].message << "\n";
         }
-        return validation.ok ? kExitSuccess : kExitValidationFailed;
+        return validation_ok ? kExitSuccess : kExitValidationFailed;
     }
 
     if (command == "reload-dryrun")

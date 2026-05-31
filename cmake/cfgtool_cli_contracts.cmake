@@ -18,12 +18,16 @@ set(overlay_json "${test_root}/overlay.json")
 set(merged_json "${test_root}/merged.json")
 set(candidate_json "${test_root}/candidate.json")
 set(invalid_json "${test_root}/invalid.json")
+set(schema_json "${test_root}/schema.json")
+set(bad_schema_app_json "${test_root}/bad-schema-app.json")
 
 file(WRITE "${app_json}" [=[{"svc":{"host":"127.0.0.1","port":8080},"tags":["base"]}]=])
 file(WRITE "${base_json}" [=[{"svc":{"port":8080,"mode":"base"},"tags":["base"]}]=])
 file(WRITE "${overlay_json}" [=[{"svc":{"mode":"overlay"},"tags":["overlay"]}]=])
 file(WRITE "${candidate_json}" [=[{"svc":{"host":"127.0.0.1","port":8081},"tags":["base"]}]=])
 file(WRITE "${invalid_json}" [=[{"svc":]=])
+file(WRITE "${schema_json}" [=[{"type":"object","required":["svc"],"properties":{"svc":{"type":"object","required":["host","port"],"properties":{"host":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535}}}}}]=])
+file(WRITE "${bad_schema_app_json}" [=[{"svc":{"host":"127.0.0.1","port":70000}}]=])
 
 function(run_cfgtool case_name expected_code)
     execute_process(
@@ -81,6 +85,9 @@ run_cfgtool(DOCTOR_JSON 0 doctor --file "${app_json}" --require svc.host --expec
 assert_contains(DOCTOR_JSON "${DOCTOR_JSON_OUT}" "\"message\": \"doctor passed\"")
 assert_contains(DOCTOR_JSON "${DOCTOR_JSON_OUT}" "\"checks\"")
 
+run_cfgtool(DOCTOR_SCHEMA_JSON 0 doctor --file "${app_json}" --schema "${schema_json}" --json)
+assert_contains(DOCTOR_SCHEMA_JSON "${DOCTOR_SCHEMA_JSON_OUT}" "\"schema_issues\"")
+
 run_cfgtool(DOCTOR_MISSING_FILE 3 doctor --file "${test_root}/missing.json" --json)
 assert_contains(DOCTOR_MISSING_FILE "${DOCTOR_MISSING_FILE_OUT}" "\"code\": 3")
 assert_contains(DOCTOR_MISSING_FILE "${DOCTOR_MISSING_FILE_OUT}" "\"recommendations\"")
@@ -136,6 +143,12 @@ assert_contains(VALIDATE_PASS "${VALIDATE_PASS_OUT}" "\"message\": \"validation 
 
 run_cfgtool(VALIDATE_FAIL 4 validate --file "${app_json}" --range svc.port=1:10)
 assert_contains(VALIDATE_FAIL "${VALIDATE_FAIL_OUT}" "issues=1")
+
+run_cfgtool(VALIDATE_SCHEMA_PASS 0 validate --file "${app_json}" --schema "${schema_json}" --json)
+assert_contains(VALIDATE_SCHEMA_PASS "${VALIDATE_SCHEMA_PASS_OUT}" "\"schema_issues\"")
+
+run_cfgtool(VALIDATE_SCHEMA_FAIL 4 validate --file "${bad_schema_app_json}" --schema "${schema_json}" --json)
+assert_contains(VALIDATE_SCHEMA_FAIL "${VALIDATE_SCHEMA_FAIL_OUT}" "\"code\": \"maximum\"")
 
 run_cfgtool(RELOAD_DRYRUN 0 reload-dryrun --current "${restored_json}" --candidate "${candidate_json}" --range svc.port=1:65535 --json)
 assert_contains(RELOAD_DRYRUN "${RELOAD_DRYRUN_OUT}" "\"command\": \"reload-dryrun\"")

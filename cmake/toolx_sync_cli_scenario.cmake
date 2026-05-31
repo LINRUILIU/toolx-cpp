@@ -11,12 +11,16 @@ file(REMOVE_RECURSE "${test_root}")
 file(MAKE_DIRECTORY "${test_root}")
 
 set(base_json "${test_root}/base.json")
+set(schema_json "${test_root}/schema.json")
+set(schema_fail_json "${test_root}/schema-fail.json")
 set(out_json "${test_root}/resolved.json")
 set(snapshot_json "${test_root}/snapshot.json")
 set(journal_path "${test_root}/resolved.journal")
 set(log_path "${test_root}/audit.log")
 
 file(WRITE "${base_json}" [=[{"svc":{"host":"127.0.0.1","port":8080},"feature":{"enabled":true}}]=])
+file(WRITE "${schema_json}" [=[{"type":"object","required":["svc"],"properties":{"svc":{"type":"object","required":["port"],"properties":{"port":{"type":"integer","minimum":1,"maximum":65535}}}}}]=])
+file(WRITE "${schema_fail_json}" [=[{"svc":{"host":"127.0.0.1","port":70000}}]=])
 
 function(run_toolx_sync case_name expected_code)
     execute_process(
@@ -54,12 +58,14 @@ run_toolx_sync(PUBLISH_JSON 0
     --snapshot "${snapshot_json}"
     --journal "${journal_path}"
     --log-file "${log_path}"
+    --schema "${schema_json}"
     --require svc.port
     --range svc.port=1:65535
     --json)
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"schema\": \"toolx.sync.result\"")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"ok\": true")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"out\": \"${out_json}\"")
+assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"schema_issues\": []")
 
 if(NOT EXISTS "${out_json}")
     message(FATAL_ERROR "toolx-sync did not create ${out_json}")
@@ -81,3 +87,15 @@ run_toolx_sync(VALIDATION_FAIL 4
     --json)
 assert_contains(VALIDATION_FAIL "${VALIDATION_FAIL_OUT}" "\"ok\": false")
 assert_contains(VALIDATION_FAIL "${VALIDATION_FAIL_OUT}" "\"code\": 4")
+
+run_toolx_sync(SCHEMA_FAIL 4
+    --base "${schema_fail_json}"
+    --out "${test_root}/schema-invalid.json"
+    --schema "${schema_json}"
+    --json)
+assert_contains(SCHEMA_FAIL "${SCHEMA_FAIL_OUT}" "\"schema_issues\"")
+assert_contains(SCHEMA_FAIL "${SCHEMA_FAIL_OUT}" "\"code\": \"maximum\"")
+
+if(EXISTS "${test_root}/schema-invalid.json")
+    message(FATAL_ERROR "toolx-sync created output for schema-invalid config")
+endif()

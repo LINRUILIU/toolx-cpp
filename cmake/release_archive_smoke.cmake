@@ -104,12 +104,27 @@ run_checked(CFGTOOL_HELP 0 "${cfgtool_exe}" --help)
 assert_contains(CFGTOOL_HELP "${CFGTOOL_HELP_OUT}" "cfgtool - thin CLI over cfgx")
 
 set(doctor_json "${extract_root}/doctor-app.json")
+set(schema_json "${extract_root}/doctor-schema.json")
 file(WRITE "${doctor_json}" [=[{"svc":{"host":"127.0.0.1","port":8080}}]=])
-run_checked(CFGTOOL_DOCTOR 0 "${cfgtool_exe}" doctor --file "${doctor_json}" --require svc.host --expect svc.port=int --json)
+file(WRITE "${schema_json}" [=[{"type":"object","required":["svc"],"properties":{"svc":{"type":"object","required":["host","port"],"properties":{"host":{"type":"string","minLength":1},"port":{"type":"integer","minimum":1,"maximum":65535}}}}}]=])
+run_checked(CFGTOOL_DOCTOR 0 "${cfgtool_exe}" doctor --file "${doctor_json}" --schema "${schema_json}" --require svc.host --expect svc.port=int --json)
 assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"message\": \"doctor passed\"")
+assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"schema_issues\": []")
 
 run_checked(TOOLX_SYNC_HELP 0 "${toolx_sync_exe}" --help)
 assert_contains(TOOLX_SYNC_HELP "${TOOLX_SYNC_HELP_OUT}" "toolx-sync - validate and atomically publish composed config")
+
+set(sync_json "${extract_root}/resolved.json")
+run_checked(TOOLX_SYNC_SCHEMA 0
+    "${toolx_sync_exe}"
+    --base "${doctor_json}"
+    --out "${sync_json}"
+    --schema "${schema_json}"
+    --require svc.port
+    --range svc.port=1:65535
+    --json)
+assert_contains(TOOLX_SYNC_SCHEMA "${TOOLX_SYNC_SCHEMA_OUT}" "\"schema\": \"toolx.sync.result\"")
+assert_contains(TOOLX_SYNC_SCHEMA "${TOOLX_SYNC_SCHEMA_OUT}" "\"schema_issues\": []")
 
 set(consumer_source_dir "${CMAKE_CURRENT_LIST_DIR}/../examples/install_consumer")
 set(consumer_build_dir "${extract_root}/consumer-build")

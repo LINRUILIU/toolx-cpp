@@ -497,7 +497,7 @@ if(TOOLX_BUILD_TESTS)
             NAME toolx_http_cli_contracts
             COMMAND toolx_http_cli_contracts
                 $<TARGET_FILE:toolx_http>
-                "${CMAKE_CURRENT_BINARY_DIR}/toolx_http_cli_contracts")
+                "${CMAKE_CURRENT_BINARY_DIR}/toolx_http_cli_contracts_tmp")
     endif()
 
     if(TARGET tuix_config_inspector)

@@ -21,7 +21,7 @@ Use this as the minimum productization template for each new CLI:
 
 1. Product boundary
 - Decide whether the tool is stable, bounded stable, or experimental.
-- State whether the CLI is a primary contract like `cfgtool` or a scenario tool like `toolx-sync`.
+- State whether the CLI is a primary contract like `toolx-config` or a scenario tool like `toolx-sync`.
 
 2. Build and install
 - Add the executable under `TOOLX_BUILD_TOOLS`.
@@ -29,7 +29,7 @@ Use this as the minimum productization template for each new CLI:
 - Ensure `CPack` binary archives include it without adding dev-only files.
 
 3. Contract testing
-- Add a CTest black-box script similar to `cfgtool_cli_contracts.cmake` or `toolx_sync_cli_scenario.cmake`.
+- Add a CTest black-box script similar to `toolx_config_cli_contracts.cmake` or `toolx_sync_cli_scenario.cmake`.
 - Cover help output, plain-text output, JSON output if present, and at least one non-zero exit path.
 
 4. Smoke verification

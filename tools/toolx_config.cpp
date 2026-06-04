@@ -111,7 +111,7 @@ std::string RecommendFixForIssue(const cfgx::ValidationIssue& issue, std::string
     if (issue.message.find("path not found") != std::string::npos ||
         issue.message.find("required") != std::string::npos)
     {
-        return "create the missing path with cfgtool set --file " + std::string(file) + " --path " + issue.path +
+        return "create the missing path with toolx-config set --file " + std::string(file) + " --path " + issue.path +
                " --value <value>";
     }
     if (issue.message.find("expected kind") != std::string::npos)
@@ -195,8 +195,8 @@ void PrintJsonEnvelope(bool ok, int code, std::string_view message, const cfgx::
     }
 
     const cfgx::Node envelope = BuildDataObject({
-        {"schema", cfgx::Node("cfgtool.result")},
-        {"schema_version", cfgx::Node(std::int64_t(2))},
+        {"schema", cfgx::Node("toolx.config.result")},
+        {"schema_version", cfgx::Node(std::int64_t(1))},
         {"ok", cfgx::Node(ok)},
         {"code", cfgx::Node(static_cast<std::int64_t>(code))},
         {"message", cfgx::Node(std::string(message))},
@@ -236,13 +236,13 @@ class CliLogger final : public argtool::IParseLogger
   public:
     void OnError(const argtool::ParseError& error) override
     {
-        std::cerr << "[cfgtool.parse-error] kind=" << static_cast<int>(error.kind) << " field=" << error.field
+        std::cerr << "[toolx-config.parse-error] kind=" << static_cast<int>(error.kind) << " field=" << error.field
                   << " token=" << error.token << " message=" << error.message << "\n";
     }
 
     void OnWarning(std::string_view message) override
     {
-        std::cerr << "[cfgtool.parse-warning] " << message << "\n";
+        std::cerr << "[toolx-config.parse-warning] " << message << "\n";
     }
 };
 
@@ -590,9 +590,9 @@ int main(int argc, const char* const argv[])
     CliLogger logger;
 
     argtool::Parser parser;
-    parser.SetProgramName("cfgtool")
-        .SetDescription("cfgtool - thin CLI over cfgx")
-        .SetUsageExample("cfgtool get --file app.json --path svc.port")
+    parser.SetProgramName("toolx-config")
+        .SetDescription("toolx-config - thin CLI over cfgx")
+        .SetUsageExample("toolx-config get --file app.json --path svc.port")
         .SetHelpLayout(argtool::HelpLayout::Fixed)
         .EnableTrace(false)
         .SetLogger(&logger);
@@ -835,7 +835,7 @@ int main(int argc, const char* const argv[])
         if (exists_ec)
         {
             append_check("file_exists", false, exists_ec.message(),
-                         "fix filesystem access for '" + file + "' and rerun cfgtool doctor");
+                         "fix filesystem access for '" + file + "' and rerun toolx-config doctor");
         }
         else if (!file_exists)
         {
@@ -917,7 +917,7 @@ int main(int argc, const char* const argv[])
             }
             if (!available_adapters.empty())
             {
-                recommendation += " or try cfgtool adapter-activate --adapter <name> before rerunning doctor";
+                recommendation += " or try toolx-config adapter-activate --adapter <name> before rerunning doctor";
             }
 
             append_check("parse", false, loaded.error, recommendation);
@@ -964,13 +964,13 @@ int main(int argc, const char* const argv[])
             RunSchemaValidation(result.GetString("schema", ""), loaded.value, result.GetBool("fail-fast", false));
         if (!schema_validation.ok)
         {
-            append_check("schema", false, schema_validation.error, "fix the schema file and rerun cfgtool doctor");
+            append_check("schema", false, schema_validation.error, "fix the schema file and rerun toolx-config doctor");
             combined_issues.push_back({"$", schema_validation.error});
         }
         else if (!schema_validation.value.empty())
         {
             append_check("schema", false, std::to_string(schema_validation.value.size()) + " schema issue(s)",
-                         "fix the reported schema issues and rerun cfgtool doctor");
+                         "fix the reported schema issues and rerun toolx-config doctor");
             auto schema_cfgx_issues = schemax::ToCfgxIssues(schema_validation.value);
             combined_issues.insert(combined_issues.end(), schema_cfgx_issues.begin(), schema_cfgx_issues.end());
         }
@@ -987,7 +987,7 @@ int main(int argc, const char* const argv[])
         else
         {
             append_check("validation", false, std::to_string(combined_issues.size()) + " validation issue(s)",
-                         "fix the reported validation issues and rerun cfgtool doctor");
+                         "fix the reported validation issues and rerun toolx-config doctor");
             for (const auto& issue : combined_issues)
             {
                 AddUniqueRecommendation(&recommendations, RecommendFixForIssue(issue, file));

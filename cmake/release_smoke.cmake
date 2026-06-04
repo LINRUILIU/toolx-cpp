@@ -8,10 +8,10 @@ else()
     set(exe_suffix "")
 endif()
 
-set(cfgtool_exe "${TOOLX_STAGE_PREFIX}/bin/cfgtool${exe_suffix}")
+set(toolx_config_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-config${exe_suffix}")
 set(toolx_sync_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-sync${exe_suffix}")
 
-foreach(tool IN ITEMS "${cfgtool_exe}" "${toolx_sync_exe}")
+foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}")
     if(NOT EXISTS "${tool}")
         message(FATAL_ERROR "Installed tool is missing: ${tool}")
     endif()
@@ -53,16 +53,16 @@ function(assert_contains case_name text needle)
     endif()
 endfunction()
 
-run_smoke(CFGTOOL_HELP 0 "${cfgtool_exe}" --help)
-assert_contains(CFGTOOL_HELP "${CFGTOOL_HELP_OUT}" "cfgtool - thin CLI over cfgx")
+run_smoke(TOOLX_CONFIG_HELP 0 "${toolx_config_exe}" --help)
+assert_contains(TOOLX_CONFIG_HELP "${TOOLX_CONFIG_HELP_OUT}" "toolx-config - thin CLI over cfgx")
 
-run_smoke(CFGTOOL_DOCTOR 0 "${cfgtool_exe}" doctor --file "${app_json}" --schema "${schema_json}" --require svc.host --expect svc.port=int --json)
-assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"message\": \"doctor passed\"")
-assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"schema_issues\": []")
+run_smoke(TOOLX_CONFIG_DOCTOR 0 "${toolx_config_exe}" doctor --file "${app_json}" --schema "${schema_json}" --require svc.host --expect svc.port=int --json)
+assert_contains(TOOLX_CONFIG_DOCTOR "${TOOLX_CONFIG_DOCTOR_OUT}" "\"message\": \"doctor passed\"")
+assert_contains(TOOLX_CONFIG_DOCTOR "${TOOLX_CONFIG_DOCTOR_OUT}" "\"schema_issues\": []")
 
-run_smoke(CFGTOOL_SET 0 "${cfgtool_exe}" set --file "${app_json}" --path svc.port --value 9090 --type int)
-run_smoke(CFGTOOL_GET 0 "${cfgtool_exe}" get --file "${app_json}" --path svc.port)
-assert_contains(CFGTOOL_GET "${CFGTOOL_GET_OUT}" "9090")
+run_smoke(TOOLX_CONFIG_SET 0 "${toolx_config_exe}" set --file "${app_json}" --path svc.port --value 9090 --type int)
+run_smoke(TOOLX_CONFIG_GET 0 "${toolx_config_exe}" get --file "${app_json}" --path svc.port)
+assert_contains(TOOLX_CONFIG_GET "${TOOLX_CONFIG_GET_OUT}" "9090")
 
 run_smoke(TOOLX_SYNC 0
     "${toolx_sync_exe}"

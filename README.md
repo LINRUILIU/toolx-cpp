@@ -22,7 +22,7 @@ HTTP, and logging utilities.
 | `tuix` | Experimental foundation | Terminal UI building blocks, styled frames, layouts, and MVP widgets |
 
 Public stability commitments live in [docs/stability.md](docs/stability.md).
-`cfgtool` contract details live in [docs/cfgtool.md](docs/cfgtool.md).
+`toolx-config` contract details live in [docs/toolx-config.md](docs/toolx-config.md).
 
 ## Requirements
 
@@ -74,7 +74,7 @@ Installed tools:
 cmake -S examples/install_consumer -B build-release-v020-consumer \
   -DCMAKE_PREFIX_PATH="$PWD/build-release-v020-stage"
 cmake --build build-release-v020-consumer --parallel
-build-release-v020-stage/bin/cfgtool --help
+build-release-v020-stage/bin/toolx-config --help
 build-release-v020-stage/bin/toolx-sync --help
 ```
 
@@ -95,35 +95,35 @@ The `v0.2.0` release is distributed through GitHub Releases with:
 - `ToolX-v0.2.0-macos-universal.tar.gz` or `ToolX-v0.2.0-macos-x86_64.tar.gz`
 - `SHA256SUMS`
 
-Each binary archive is validated by unpacking it, running `cfgtool --help` and
+Each binary archive is validated by unpacking it, running `toolx-config --help` and
 `toolx-sync --help`, and compiling the standalone
 [`examples/install_consumer`](examples/install_consumer) project via
 `find_package(ToolX)`.
 
-## `cfgtool`
+## `toolx-config`
 
-`cfgtool` is the first productized CLI on top of ToolX. It supports config
+`toolx-config` is the first productized CLI on top of ToolX. It supports config
 inspection, editing, merge, validation, reload dry-runs, snapshots, and stable
 machine-readable output.
 
 ```bash
-cfgtool set --file app.json --path svc.port --value 8080 --type int
-cfgtool get --file app.json --path svc.port
-cfgtool validate --file app.json --schema schema.json --require svc.host --range svc.port=1:65535
-cfgtool reload-dryrun --current current.json --candidate candidate.json --json
-cfgtool doctor --file app.json --schema schema.json --require svc.host --expect svc.port=int --json
+toolx-config set --file app.json --path svc.port --value 8080 --type int
+toolx-config get --file app.json --path svc.port
+toolx-config validate --file app.json --schema schema.json --require svc.host --range svc.port=1:65535
+toolx-config reload-dryrun --current current.json --candidate candidate.json --json
+toolx-config doctor --file app.json --schema schema.json --require svc.host --expect svc.port=int --json
 ```
 
-`--json` output uses `schema=cfgtool.result` and `schema_version=2`. Fields may
+`--json` output uses `schema=toolx.config.result` and `schema_version=1`. Fields may
 be added, but existing fields are additive-only within the `0.2.x` line. The
-full CLI reference is in [docs/cfgtool.md](docs/cfgtool.md).
+full CLI reference is in [docs/toolx-config.md](docs/toolx-config.md).
 
-## `cfgtool` Cookbook
+## `toolx-config` Cookbook
 
-Common workflows are documented in [docs/cfgtool.md](docs/cfgtool.md), including
-preflight checks with `cfgtool doctor`, layered merge review, and snapshot
+Common workflows are documented in [docs/toolx-config.md](docs/toolx-config.md), including
+preflight checks with `toolx-config doctor`, layered merge review, and snapshot
 export/restore. A realistic starter lives in
-[`examples/cfgtool_layered_template`](examples/cfgtool_layered_template).
+[`examples/toolx_config_layered_template`](examples/toolx_config_layered_template).
 
 ## Module Cookbooks
 

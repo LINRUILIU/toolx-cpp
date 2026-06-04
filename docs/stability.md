@@ -37,7 +37,7 @@ supports a practical schema subset first: `type`, `required`, `properties`,
 Stable enough to use:
 
 - `Schema`, `Options`, `Issue`, `Compile`, `Validate`, and `ToCfgxIssues`.
-- Schema-backed validation in `cfgtool validate`, `cfgtool doctor`, and
+- Schema-backed validation in `toolx-config validate`, `toolx-config doctor`, and
   `toolx-sync` through `--schema`.
 
 Not yet promised:
@@ -105,7 +105,7 @@ The following are intentionally outside the 0.2.x stable surface:
 
 ## CLI Contracts
 
-`cfgtool` is a 0.2.x product contract. Stable subcommands currently include
+`toolx-config` is a 0.2.x product contract. Stable subcommands currently include
 `load`, `adapters`, `adapter-activate`, `doctor`, `snapshot-export`,
 `snapshot-restore`, `get`, `set`, `exists`, `merge`, `validate`, and
 `reload-dryrun`.
@@ -124,8 +124,8 @@ JSON envelope:
 
 ```json
 {
-  "schema": "cfgtool.result",
-  "schema_version": 2,
+  "schema": "toolx.config.result",
+  "schema_version": 1,
   "ok": true,
   "code": 0,
   "message": "ok",
@@ -134,13 +134,13 @@ JSON envelope:
 }
 ```
 
-`cfgtool validate` and `cfgtool doctor` accept `--schema FILE`. Schema
+`toolx-config validate` and `toolx-config doctor` accept `--schema FILE`. Schema
 validation failures return exit code `4` and add `schema_issues` in JSON mode
 without removing existing fields.
 
 `toolx-sync` is a scenario CLI. Its output contract starts at
 `schema=toolx.sync.result`, `schema_version=1` and may evolve more quickly than
-`cfgtool`. In `v0.2.0`, it also accepts `--schema FILE` and reports
+`toolx-config`. In `v0.2.0`, it also accepts `--schema FILE` and reports
 `schema_issues` additively in JSON mode.
 
 ## Versioning

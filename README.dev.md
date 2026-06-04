@@ -10,7 +10,7 @@ The `v0.2.0` release line keeps the `v0.1.0` CLI/install contract additive and
 widens the module surface deliberately:
 
 - ToolX C++ libraries with exported CMake package config.
-- `cfgtool` as the productized CLI entrypoint and primary compatibility contract.
+- `toolx-config` as the productized CLI entrypoint and primary compatibility contract.
 - `toolx-sync` as the scenario CLI that proves module composition.
 - `schemax` as an experimental schema MVP used by both shipped CLIs.
 - Focused additive API growth in `asyncx`, `fsx`, `httpx`, `logsys`, and `tuix`.
@@ -27,7 +27,7 @@ Use the `TOOLX_*` options in new scripts and documentation:
 | --- | --- | --- |
 | `TOOLX_BUILD_TESTS` | `ON` | Build unit, integration, and CLI contract tests |
 | `TOOLX_BUILD_EXAMPLES` | `ON` | Build example binaries |
-| `TOOLX_BUILD_TOOLS` | `ON` | Build installable tools: `cfgtool`, `toolx-sync` |
+| `TOOLX_BUILD_TOOLS` | `ON` | Build installable tools: `toolx-config`, `toolx-sync` |
 | `TOOLX_BUILD_BENCHMARKS` | `ON` in direct CMake, `OFF` in presets/CI | Build benchmark examples |
 | `TOOLX_ENABLE_CLANG_TIDY` | `OFF` | Enable clang-tidy at compile time |
 | `TOOLX_ENABLE_COVERAGE` | `OFF` | Enable GCC/Clang coverage instrumentation |
@@ -98,18 +98,18 @@ Release notes are loaded from `docs/releases/<tag>.md`, falling back to
 
 ## CLI Contracts
 
-`cfgtool` is a release artifact, not just an example binary.
+`toolx-config` is a release artifact, not just an example binary.
 
 Stable CLI commitments for `0.2.x`:
 
 - Exit codes: `0` success, `1` runtime error, `2` usage error, `3` not found, `4` validation failed.
-- JSON envelope: `schema=cfgtool.result`, `schema_version=2`, `ok`, `code`, `message`, `issues`, `data`.
+- JSON envelope: `schema=toolx.config.result`, `schema_version=1`, `ok`, `code`, `message`, `issues`, `data`.
 - Existing JSON fields are additive-only within `0.2.x`.
 - `doctor` and `validate` accept `--schema FILE`; schema failures use exit code
   `4` and add `data.schema_issues`.
 - Help text should remain recognizable enough for black-box tests to catch accidental command removal.
 
-The `cfgtool_cli_contracts` test covers `load`, `adapters`, `snapshot-export`,
+The `toolx_config_cli_contracts` test covers `load`, `adapters`, `snapshot-export`,
 `snapshot-restore`, `doctor`, `get`, `set`, `exists`, `merge`, `validate`, and
 `reload-dryrun` in plain and JSON modes.
 
@@ -123,8 +123,8 @@ Before tagging `v0.2.0`:
 
 - CI is green on Linux GCC, Linux Clang, Windows MSVC, and macOS Clang.
 - `format-check`, build, tests, install, exported package verification, install-tree smoke, packaging, and archive verification pass.
-- `cfgtool` and `toolx-sync` are present in installed `bin/` and packaged `bin/`.
-- `docs/stability.md`, [docs/cfgtool.md](docs/cfgtool.md), and [README.md](README.md) still match the shipped contracts.
+- `toolx-config` and `toolx-sync` are present in installed `bin/` and packaged `bin/`.
+- `docs/stability.md`, [docs/toolx-config.md](docs/toolx-config.md), and [README.md](README.md) still match the shipped contracts.
 - `docs/releases/v0.2.0.md` states the stable versus experimental boundary, the
   `0.2.x` source-compatibility goal, schema MVP scope, side-branch API
   additions, the lack of ABI guarantee, and the TLS backend note.
@@ -133,6 +133,8 @@ Before tagging `v0.2.0`:
 
 New tools should not enter the public release matrix until they satisfy the
 checklist in [docs/cli_productization.md](docs/cli_productization.md).
+The `0.3.x` CLI product chain candidates and boundaries are recorded in
+[docs/product_tools.md](docs/product_tools.md).
 
 The minimum bar is:
 
@@ -148,7 +150,7 @@ Keep module dependencies narrow:
 
 - Core libraries should not depend on tools.
 - Tools may compose multiple modules.
-- `cfgtool` should remain a thin CLI facade over `cfgx` and `argtool`.
+- `toolx-config` should remain a thin CLI facade over `cfgx` and `argtool`.
 - `schemax` may depend on `cfgx`; `cfgx` must not depend on `schemax`.
 - `toolx-sync` may compose `argtool`, `asyncx`, `cfgx`, `schemax`, `fsx`, `httpx`, and `logsys` because that composition is the point of the scenario.
 - `tuix` remains a terminal UI foundation until a separate framework decision is made after the CLI release is stable.

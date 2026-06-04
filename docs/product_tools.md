@@ -37,6 +37,17 @@ operator workflow needs a standalone command.
 | `0.3.x` | `toolx-log` | Runtime log inspection | Summarize text or JSON-lines logs by level, parse failures, and simple time/window filters for local diagnosis. |
 | `0.3.x` | `toolx-inspect` | Terminal inspection | Provide a bounded terminal inspection surface for config files and schema issues; keep `tuix` itself experimental unless a separate framework decision is made. |
 
+## Current Admission State
+
+`toolx-config`, `toolx-sync`, and `toolx-pack` satisfy the admission bar for the
+first three positions in the product chain. `toolx-pack` is documented in
+[toolx-pack.md](toolx-pack.md) and has its own installed target, black-box
+contract tests, install/archive smoke coverage, standalone reference, and
+workflow example.
+
+`toolx-http` is the next candidate and should remain documented as planned until
+it satisfies the same admission rules.
+
 ## Admission Rules
 
 A CLI enters the public product chain only when it has:

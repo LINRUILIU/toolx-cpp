@@ -10,8 +10,9 @@ endif()
 
 set(toolx_config_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-config${exe_suffix}")
 set(toolx_sync_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-sync${exe_suffix}")
+set(toolx_pack_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-pack${exe_suffix}")
 
-foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}")
+foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}")
     if(NOT EXISTS "${tool}")
         message(FATAL_ERROR "Installed tool is missing: ${tool}")
     endif()
@@ -77,4 +78,35 @@ assert_contains(TOOLX_SYNC "${TOOLX_SYNC_OUT}" "\"schema_issues\": []")
 
 if(NOT EXISTS "${resolved_json}")
     message(FATAL_ERROR "toolx-sync release smoke did not create ${resolved_json}")
+endif()
+
+run_smoke(TOOLX_PACK_HELP 0 "${toolx_pack_exe}" --help)
+assert_contains(TOOLX_PACK_HELP "${TOOLX_PACK_HELP_OUT}" "toolx-pack - stage release trees")
+
+set(pack_src "${smoke_root}/pack-src")
+set(pack_stage "${smoke_root}/pack-stage")
+set(pack_archive "${smoke_root}/pack.tar")
+file(MAKE_DIRECTORY "${pack_src}/bin" "${pack_src}/debug")
+file(WRITE "${pack_src}/bin/tool.txt" "tool\n")
+file(WRITE "${pack_src}/README.md" "demo\n")
+file(WRITE "${pack_src}/debug/tool.pdb" "debug\n")
+
+run_smoke(TOOLX_PACK_STAGE 0
+    "${toolx_pack_exe}"
+    stage
+    --src "${pack_src}"
+    --out "${pack_stage}"
+    --archive "${pack_archive}"
+    --include bin
+    --include README.md
+    --exclude "**/*.pdb"
+    --json)
+assert_contains(TOOLX_PACK_STAGE "${TOOLX_PACK_STAGE_OUT}" "\"schema\": \"toolx.pack.result\"")
+assert_contains(TOOLX_PACK_STAGE "${TOOLX_PACK_STAGE_OUT}" "\"message\": \"staged\"")
+
+if(NOT EXISTS "${pack_stage}/bin/tool.txt")
+    message(FATAL_ERROR "toolx-pack release smoke did not stage ${pack_stage}/bin/tool.txt")
+endif()
+if(NOT EXISTS "${pack_archive}")
+    message(FATAL_ERROR "toolx-pack release smoke did not create ${pack_archive}")
 endif()

@@ -128,6 +128,7 @@ set(TOOLX_LINT_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tuix.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_config.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_sync.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_pack.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/resultx_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_integration_tests.cpp"
 )
@@ -291,6 +292,10 @@ if(TOOLX_BUILD_TOOLS)
     add_executable(toolx_sync tools/toolx_sync.cpp)
     set_target_properties(toolx_sync PROPERTIES OUTPUT_NAME "toolx-sync")
     target_link_libraries(toolx_sync PRIVATE argtool asyncx cfgx fsx httpx logsys schemax)
+
+    add_executable(toolx_pack tools/toolx_pack.cpp)
+    set_target_properties(toolx_pack PROPERTIES OUTPUT_NAME "toolx-pack")
+    target_link_libraries(toolx_pack PRIVATE argtool cfgx fsx logsys schemax)
 endif()
 
 if(TOOLX_BUILD_EXAMPLES)
@@ -467,6 +472,14 @@ if(TOOLX_BUILD_TESTS)
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolx_sync_cli_scenario.cmake")
     endif()
 
+    if(TARGET toolx_pack)
+        add_test(
+            NAME toolx_pack_cli_contracts
+            COMMAND "${CMAKE_COMMAND}"
+                -DTOOLX_PACK_EXE=$<TARGET_FILE:toolx_pack>
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolx_pack_cli_contracts.cmake")
+    endif()
+
     if(TARGET tuix_config_inspector)
         add_test(NAME tuix_config_inspector_smoke COMMAND tuix_config_inspector)
     endif()
@@ -522,7 +535,7 @@ install(
 
 if(TOOLX_BUILD_TOOLS)
     install(
-        TARGETS toolx_config toolx_sync
+        TARGETS toolx_config toolx_sync toolx_pack
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()
@@ -583,7 +596,7 @@ endif()
 set(CPACK_PACKAGE_NAME "ToolX")
 set(CPACK_PACKAGE_VENDOR "ToolX")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ToolX C++20 toolkit libraries plus toolx-config and toolx-sync CLIs.")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ToolX C++20 toolkit libraries plus toolx-config, toolx-sync, and toolx-pack CLIs.")
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
 set(CPACK_PACKAGE_CONTACT "ToolX Maintainers")
 set(CPACK_MONOLITHIC_INSTALL ON)

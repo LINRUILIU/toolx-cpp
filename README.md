@@ -22,7 +22,9 @@ HTTP, and logging utilities.
 | `tuix` | Experimental foundation | Terminal UI building blocks, styled frames, layouts, and MVP widgets |
 
 Public stability commitments live in [docs/stability.md](docs/stability.md).
-`toolx-config` contract details live in [docs/toolx-config.md](docs/toolx-config.md).
+`toolx-config`, `toolx-sync`, and `toolx-pack` contract details live in
+[docs/toolx-config.md](docs/toolx-config.md), [docs/toolx-sync.md](docs/toolx-sync.md),
+and [docs/toolx-pack.md](docs/toolx-pack.md).
 
 ## Requirements
 
@@ -76,6 +78,7 @@ cmake -S examples/install_consumer -B build-release-v020-consumer \
 cmake --build build-release-v020-consumer --parallel
 build-release-v020-stage/bin/toolx-config --help
 build-release-v020-stage/bin/toolx-sync --help
+build-release-v020-stage/bin/toolx-pack --help
 ```
 
 The install tree is also the shape of the prebuilt release archives:
@@ -95,8 +98,9 @@ The `v0.2.0` release is distributed through GitHub Releases with:
 - `ToolX-v0.2.0-macos-universal.tar.gz` or `ToolX-v0.2.0-macos-x86_64.tar.gz`
 - `SHA256SUMS`
 
-Each binary archive is validated by unpacking it, running `toolx-config --help` and
-`toolx-sync --help`, and compiling the standalone
+Each binary archive is validated by unpacking it, running `toolx-config --help`,
+`toolx-sync --help`, and `toolx-pack --help`, running a small pack stage/archive
+smoke, and compiling the standalone
 [`examples/install_consumer`](examples/install_consumer) project via
 `find_package(ToolX)`.
 
@@ -139,18 +143,41 @@ build-release-v020/asyncx_cookbook
 
 ## `toolx-sync`
 
-`toolx-sync` demonstrates a real module composition path: config load, optional
-HTTP remote layer, async execution, validation, atomic write, snapshot, and
+`toolx-sync` is the bounded-stable product CLI for composing and publishing
+configuration: base config, local overlays, optional HTTP remote layer, async
+execution, validation, dry-run publish reports, atomic write, snapshot, and
 audit logging.
 
 ```bash
-toolx-sync --base app.json --out resolved.json --snapshot snapshot.json \
-  --schema schema.json --require svc.port --range svc.port=1:65535 --json
+toolx-sync --base app.base.json --overlay app.local.json --out resolved.json \
+  --schema schema.json --require svc.port --range svc.port=1:65535 \
+  --dry-run --json
+toolx-sync --base app.base.json --overlay app.local.json --out resolved.json \
+  --snapshot snapshot.json --journal resolved.journal --log-file audit.log --json
 ```
 
 `toolx-sync` uses its own envelope, `schema=toolx.sync.result` and
-`schema_version=1`. It is part of the shipped install set, but it remains the
-scenario CLI rather than the main long-term compatibility contract.
+`schema_version=1`. It is part of the shipped install set, but its compatibility
+promise is narrower than the main `toolx-config` contract. The full CLI reference
+is in [docs/toolx-sync.md](docs/toolx-sync.md).
+
+## `toolx-pack`
+
+`toolx-pack` is the bounded-stable product CLI for local staging and packaging.
+It stages built files into a release-shaped tree and can create deterministic
+tar archives from that tree.
+
+```bash
+toolx-pack plan --src build-release-v020-stage --out dist/toolx --archive dist/toolx.tar --json
+toolx-pack stage --src build-release-v020-stage --out dist/toolx \
+  --include bin --include include --include lib --archive dist/toolx.tar --json
+toolx-pack archive --src dist/toolx --archive dist/toolx.tar --json
+```
+
+`toolx-pack` uses `schema=toolx.pack.result` and `schema_version=1`. Its MVP
+supports deterministic tar only; zip, compression, signing, remote publish, and
+dependency discovery are intentionally out of scope. The full CLI reference is
+in [docs/toolx-pack.md](docs/toolx-pack.md).
 
 ## Quality Gates
 

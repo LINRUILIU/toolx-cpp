@@ -138,10 +138,39 @@ JSON envelope:
 validation failures return exit code `4` and add `schema_issues` in JSON mode
 without removing existing fields.
 
-`toolx-sync` is a scenario CLI. Its output contract starts at
+`toolx-sync` is a bounded-stable product CLI for config composition and publish.
+It supports base config, repeated `--overlay` local layers, optional
+`--remote-url`, validation, `--dry-run` publish reports, atomic output,
+snapshots, journals, and audit logs. Its output contract starts at
 `schema=toolx.sync.result`, `schema_version=1` and may evolve more quickly than
-`toolx-config`. In `v0.2.0`, it also accepts `--schema FILE` and reports
-`schema_issues` additively in JSON mode.
+`toolx-config`.
+
+`toolx-sync` exit codes are `0` for success/help/dry-run success, `1` for
+runtime errors, `2` for usage or parse errors, and `4` for validation failures.
+It accepts `--schema FILE` and reports `schema_issues` additively in JSON mode.
+
+`toolx-pack` is a bounded-stable product CLI for staging release trees and
+creating deterministic tar archives. Stable commands are:
+
+```bash
+toolx-pack stage --src DIR --out DIR [--archive FILE]
+toolx-pack archive --src DIR --archive FILE
+toolx-pack plan --src DIR --out DIR [--archive FILE]
+```
+
+Its output contract starts at `schema=toolx.pack.result`,
+`schema_version=1`. JSON `data` includes `command`, `source`, `stage`,
+`archive`, `manifest`, `dry_run`, `remove_extra`, `entries`, `bytes`,
+`planned_steps`, `completed_steps`, `archive_format`, `capabilities`, and
+`warnings`.
+
+`toolx-pack` exit codes are `0` for success/help/dry-run success, `1` for
+runtime errors, `2` for usage or parse errors, `3` for source/stage/manifest
+path not found, and `4` for manifest validation failures. Manifests accept
+`name`, `version`, `source`, `stage`, `archive`, `include`, `exclude`, and
+`remove_extra`; unknown top-level fields are rejected through `schemax`. The MVP
+supports deterministic tar only, not zip, compression, signing, remote publish,
+or dependency discovery.
 
 ## Versioning
 

@@ -11,14 +11,17 @@ file(REMOVE_RECURSE "${test_root}")
 file(MAKE_DIRECTORY "${test_root}")
 
 set(base_json "${test_root}/base.json")
+set(overlay_json "${test_root}/overlay.json")
 set(schema_json "${test_root}/schema.json")
 set(schema_fail_json "${test_root}/schema-fail.json")
 set(out_json "${test_root}/resolved.json")
+set(dry_run_json "${test_root}/dry-run-resolved.json")
 set(snapshot_json "${test_root}/snapshot.json")
 set(journal_path "${test_root}/resolved.journal")
 set(log_path "${test_root}/audit.log")
 
-file(WRITE "${base_json}" [=[{"svc":{"host":"127.0.0.1","port":8080},"feature":{"enabled":true}}]=])
+file(WRITE "${base_json}" [=[{"svc":{"host":"127.0.0.1","port":8080},"feature":{"enabled":true},"tags":["base"]}]=])
+file(WRITE "${overlay_json}" [=[{"svc":{"port":9090},"tags":["overlay"]}]=])
 file(WRITE "${schema_json}" [=[{"type":"object","required":["svc"],"properties":{"svc":{"type":"object","required":["port"],"properties":{"port":{"type":"integer","minimum":1,"maximum":65535}}}}}]=])
 file(WRITE "${schema_fail_json}" [=[{"svc":{"host":"127.0.0.1","port":70000}}]=])
 
@@ -54,6 +57,7 @@ assert_contains(HELP "${HELP_OUT}" "toolx-sync - validate and atomically publish
 
 run_toolx_sync(PUBLISH_JSON 0
     --base "${base_json}"
+    --overlay "${overlay_json}"
     --out "${out_json}"
     --snapshot "${snapshot_json}"
     --journal "${journal_path}"
@@ -61,10 +65,16 @@ run_toolx_sync(PUBLISH_JSON 0
     --schema "${schema_json}"
     --require svc.port
     --range svc.port=1:65535
+    --append-arrays
     --json)
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"schema\": \"toolx.sync.result\"")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"ok\": true")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"out\": \"${out_json}\"")
+assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"overlays\"")
+assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"append_arrays\": true")
+assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"dry_run\": false")
+assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"planned_steps\"")
+assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"source_trace\"")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"schema_issues\": []")
 
 if(NOT EXISTS "${out_json}")
@@ -78,7 +88,24 @@ if(NOT EXISTS "${log_path}")
 endif()
 
 file(READ "${out_json}" resolved_text)
-assert_contains(PUBLISH_JSON_FILE "${resolved_text}" "\"port\": 8080")
+assert_contains(PUBLISH_JSON_FILE "${resolved_text}" "\"port\": 9090")
+assert_contains(PUBLISH_JSON_FILE "${resolved_text}" "\"base\"")
+assert_contains(PUBLISH_JSON_FILE "${resolved_text}" "\"overlay\"")
+
+run_toolx_sync(DRY_RUN_JSON 0
+    --base "${base_json}"
+    --overlay "${overlay_json}"
+    --out "${dry_run_json}"
+    --schema "${schema_json}"
+    --require svc.port
+    --dry-run
+    --json)
+assert_contains(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" "\"message\": \"dry run passed\"")
+assert_contains(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" "\"dry_run\": true")
+assert_contains(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" "\"planned_steps\"")
+if(EXISTS "${dry_run_json}")
+    message(FATAL_ERROR "toolx-sync dry-run created ${dry_run_json}")
+endif()
 
 run_toolx_sync(VALIDATION_FAIL 4
     --base "${base_json}"

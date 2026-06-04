@@ -68,7 +68,8 @@ endforeach()
 
 set(toolx_config_exe "${package_root}/bin/toolx-config${exe_suffix}")
 set(toolx_sync_exe "${package_root}/bin/toolx-sync${exe_suffix}")
-foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}")
+set(toolx_pack_exe "${package_root}/bin/toolx-pack${exe_suffix}")
+foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}")
     if(NOT EXISTS "${tool}")
         message(FATAL_ERROR "Expected packaged tool is missing: ${tool}")
     endif()
@@ -125,6 +126,36 @@ run_checked(TOOLX_SYNC_SCHEMA 0
     --json)
 assert_contains(TOOLX_SYNC_SCHEMA "${TOOLX_SYNC_SCHEMA_OUT}" "\"schema\": \"toolx.sync.result\"")
 assert_contains(TOOLX_SYNC_SCHEMA "${TOOLX_SYNC_SCHEMA_OUT}" "\"schema_issues\": []")
+
+run_checked(TOOLX_PACK_HELP 0 "${toolx_pack_exe}" --help)
+assert_contains(TOOLX_PACK_HELP "${TOOLX_PACK_HELP_OUT}" "toolx-pack - stage release trees")
+
+set(pack_src "${extract_root}/pack-src")
+set(pack_stage "${extract_root}/pack-stage")
+set(pack_archive "${extract_root}/pack.tar")
+file(MAKE_DIRECTORY "${pack_src}/bin" "${pack_src}/debug")
+file(WRITE "${pack_src}/bin/tool.txt" "tool\n")
+file(WRITE "${pack_src}/README.md" "demo\n")
+file(WRITE "${pack_src}/debug/tool.pdb" "debug\n")
+run_checked(TOOLX_PACK_STAGE 0
+    "${toolx_pack_exe}"
+    stage
+    --src "${pack_src}"
+    --out "${pack_stage}"
+    --archive "${pack_archive}"
+    --include bin
+    --include README.md
+    --exclude "**/*.pdb"
+    --json)
+assert_contains(TOOLX_PACK_STAGE "${TOOLX_PACK_STAGE_OUT}" "\"schema\": \"toolx.pack.result\"")
+assert_contains(TOOLX_PACK_STAGE "${TOOLX_PACK_STAGE_OUT}" "\"message\": \"staged\"")
+
+if(NOT EXISTS "${pack_stage}/bin/tool.txt")
+    message(FATAL_ERROR "toolx-pack archive smoke did not stage ${pack_stage}/bin/tool.txt")
+endif()
+if(NOT EXISTS "${pack_archive}")
+    message(FATAL_ERROR "toolx-pack archive smoke did not create ${pack_archive}")
+endif()
 
 set(consumer_source_dir "${CMAKE_CURRENT_LIST_DIR}/../examples/install_consumer")
 set(consumer_build_dir "${extract_root}/consumer-build")

@@ -11,8 +11,9 @@ widens the module surface deliberately:
 
 - ToolX C++ libraries with exported CMake package config.
 - `toolx-config` as the productized CLI entrypoint and primary compatibility contract.
-- `toolx-sync` as the scenario CLI that proves module composition.
-- `schemax` as an experimental schema MVP used by both shipped CLIs.
+- `toolx-sync` as the bounded-stable composition and publish CLI.
+- `toolx-pack` as the bounded-stable local staging and deterministic tar CLI.
+- `schemax` as an experimental schema MVP used by shipped CLIs.
 - Focused additive API growth in `asyncx`, `fsx`, `httpx`, `logsys`, and `tuix`.
 - GitHub release artifacts built from `cmake --install` output plus archive-level verification.
 
@@ -27,7 +28,7 @@ Use the `TOOLX_*` options in new scripts and documentation:
 | --- | --- | --- |
 | `TOOLX_BUILD_TESTS` | `ON` | Build unit, integration, and CLI contract tests |
 | `TOOLX_BUILD_EXAMPLES` | `ON` | Build example binaries |
-| `TOOLX_BUILD_TOOLS` | `ON` | Build installable tools: `toolx-config`, `toolx-sync` |
+| `TOOLX_BUILD_TOOLS` | `ON` | Build installable tools: `toolx-config`, `toolx-sync`, `toolx-pack` |
 | `TOOLX_BUILD_BENCHMARKS` | `ON` in direct CMake, `OFF` in presets/CI | Build benchmark examples |
 | `TOOLX_ENABLE_CLANG_TIDY` | `OFF` | Enable clang-tidy at compile time |
 | `TOOLX_ENABLE_COVERAGE` | `OFF` | Enable GCC/Clang coverage instrumentation |
@@ -113,9 +114,22 @@ The `toolx_config_cli_contracts` test covers `load`, `adapters`, `snapshot-expor
 `snapshot-restore`, `doctor`, `get`, `set`, `exists`, `merge`, `validate`, and
 `reload-dryrun` in plain and JSON modes.
 
-`toolx-sync` is a shipped scenario tool. Its JSON envelope is intentionally
-separate: `schema=toolx.sync.result`, `schema_version=1`.
-It accepts `--schema FILE` in `v0.2.0` and reports `schema_issues` additively.
+`toolx-sync` is a bounded-stable product CLI for config composition and publish.
+Its JSON envelope is intentionally separate: `schema=toolx.sync.result`,
+`schema_version=1`. It accepts `--schema FILE`, repeated `--overlay`, optional
+`--remote-url`, and `--dry-run`, and reports `schema_issues` additively.
+The `toolx_sync_cli_scenario` test covers publish, overlay composition,
+snapshot/log/journal outputs, dry-run reports, validation failure, and schema
+failure.
+
+`toolx-pack` is a bounded-stable product CLI for staging release trees and
+creating deterministic tar archives. Its JSON envelope is
+`schema=toolx.pack.result`, `schema_version=1`; its exit codes are `0`
+success/help/dry-run success, `1` runtime error, `2` usage or parse error, `3`
+source/stage/manifest path not found, and `4` manifest validation failure.
+The `toolx_pack_cli_contracts` test covers help, required options, missing
+paths, manifest schema rejection, dry-run plans, include/exclude/remove-extra
+behavior, stage archive creation, and archive-only creation.
 
 ## Release Checklist
 
@@ -123,8 +137,8 @@ Before tagging `v0.2.0`:
 
 - CI is green on Linux GCC, Linux Clang, Windows MSVC, and macOS Clang.
 - `format-check`, build, tests, install, exported package verification, install-tree smoke, packaging, and archive verification pass.
-- `toolx-config` and `toolx-sync` are present in installed `bin/` and packaged `bin/`.
-- `docs/stability.md`, [docs/toolx-config.md](docs/toolx-config.md), and [README.md](README.md) still match the shipped contracts.
+- `toolx-config`, `toolx-sync`, and `toolx-pack` are present in installed `bin/` and packaged `bin/`.
+- `docs/stability.md`, [docs/toolx-config.md](docs/toolx-config.md), [docs/toolx-sync.md](docs/toolx-sync.md), [docs/toolx-pack.md](docs/toolx-pack.md), and [README.md](README.md) still match the shipped contracts.
 - `docs/releases/v0.2.0.md` states the stable versus experimental boundary, the
   `0.2.x` source-compatibility goal, schema MVP scope, side-branch API
   additions, the lack of ABI guarantee, and the TLS backend note.
@@ -153,6 +167,7 @@ Keep module dependencies narrow:
 - `toolx-config` should remain a thin CLI facade over `cfgx` and `argtool`.
 - `schemax` may depend on `cfgx`; `cfgx` must not depend on `schemax`.
 - `toolx-sync` may compose `argtool`, `asyncx`, `cfgx`, `schemax`, `fsx`, `httpx`, and `logsys` because that composition is the point of the scenario.
+- `toolx-pack` may compose `argtool`, `cfgx`, `schemax`, `fsx`, and `logsys`, but it should not introduce a public `packx` API until a reusable library contract is needed.
 - `tuix` remains a terminal UI foundation until a separate framework decision is made after the CLI release is stable.
 
 ## HTTP/TLS Matrix

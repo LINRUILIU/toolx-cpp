@@ -126,10 +126,13 @@ set(TOOLX_LINT_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/schemax.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/textcodec.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tuix.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/examples/cfgtool_example.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_config.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_sync.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_pack.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_http.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/resultx_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_integration_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_http_cli_contracts.cpp"
 )
 
 if(CLANG_FORMAT_BIN)
@@ -284,12 +287,21 @@ set(TOOLX_EXPORT_TARGETS
 )
 
 if(TOOLX_BUILD_TOOLS)
-    add_executable(cfgtool examples/cfgtool_example.cpp)
-    target_link_libraries(cfgtool PRIVATE argtool cfgx schemax)
+    add_executable(toolx_config tools/toolx_config.cpp)
+    set_target_properties(toolx_config PROPERTIES OUTPUT_NAME "toolx-config")
+    target_link_libraries(toolx_config PRIVATE argtool cfgx schemax)
 
     add_executable(toolx_sync tools/toolx_sync.cpp)
     set_target_properties(toolx_sync PROPERTIES OUTPUT_NAME "toolx-sync")
     target_link_libraries(toolx_sync PRIVATE argtool asyncx cfgx fsx httpx logsys schemax)
+
+    add_executable(toolx_pack tools/toolx_pack.cpp)
+    set_target_properties(toolx_pack PROPERTIES OUTPUT_NAME "toolx-pack")
+    target_link_libraries(toolx_pack PRIVATE argtool cfgx fsx logsys schemax)
+
+    add_executable(toolx_http tools/toolx_http.cpp)
+    set_target_properties(toolx_http PROPERTIES OUTPUT_NAME "toolx-http")
+    target_link_libraries(toolx_http PRIVATE argtool cfgx httpx logsys schemax)
 endif()
 
 if(TOOLX_BUILD_EXAMPLES)
@@ -380,6 +392,7 @@ endif()
 
 if(TOOLX_BUILD_TESTS)
     include(FetchContent)
+    find_package(Threads REQUIRED)
 
     set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
@@ -450,12 +463,12 @@ if(TOOLX_BUILD_TESTS)
     target_link_libraries(toolx_integration_tests PRIVATE argtool asyncx cfgx fsx httpx logsys resultx GTest::gtest_main)
     add_test(NAME toolx_integration_tests COMMAND toolx_integration_tests)
 
-    if(TARGET cfgtool)
+    if(TARGET toolx_config)
         add_test(
-            NAME cfgtool_cli_contracts
+            NAME toolx_config_cli_contracts
             COMMAND "${CMAKE_COMMAND}"
-                -DCFGTOOL_EXE=$<TARGET_FILE:cfgtool>
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cfgtool_cli_contracts.cmake")
+                -DTOOLX_CONFIG_EXE=$<TARGET_FILE:toolx_config>
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolx_config_cli_contracts.cmake")
     endif()
 
     if(TARGET toolx_sync)
@@ -464,6 +477,27 @@ if(TOOLX_BUILD_TESTS)
             COMMAND "${CMAKE_COMMAND}"
                 -DTOOLX_SYNC_EXE=$<TARGET_FILE:toolx_sync>
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolx_sync_cli_scenario.cmake")
+    endif()
+
+    if(TARGET toolx_pack)
+        add_test(
+            NAME toolx_pack_cli_contracts
+            COMMAND "${CMAKE_COMMAND}"
+                -DTOOLX_PACK_EXE=$<TARGET_FILE:toolx_pack>
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolx_pack_cli_contracts.cmake")
+    endif()
+
+    if(TARGET toolx_http)
+        add_executable(toolx_http_cli_contracts tests/toolx_http_cli_contracts.cpp)
+        target_link_libraries(toolx_http_cli_contracts PRIVATE Threads::Threads)
+        if(WIN32)
+            target_link_libraries(toolx_http_cli_contracts PRIVATE ws2_32)
+        endif()
+        add_test(
+            NAME toolx_http_cli_contracts
+            COMMAND toolx_http_cli_contracts
+                $<TARGET_FILE:toolx_http>
+                "${CMAKE_CURRENT_BINARY_DIR}/toolx_http_cli_contracts_tmp")
     endif()
 
     if(TARGET tuix_config_inspector)
@@ -490,6 +524,46 @@ if(TOOLX_BUILD_TESTS)
     endforeach()
 
     if(TOOLX_ENABLE_COVERAGE AND GCOVR_BIN)
+        set(toolx_coverage_dependencies
+            argtool_tests
+            asyncx_tests
+            cfgx_tests
+            fsx_tests
+            hashx_tests
+            httpx_tests
+            logsys_tests
+            schemax_tests
+            resultx_tests
+            sysx_tests
+            textcodec_tests
+            tuix_tests
+            utils_tests
+            toolx_integration_tests)
+        foreach(toolx_coverage_target IN ITEMS
+            toolx_config
+            toolx_sync
+            toolx_pack
+            toolx_http
+            toolx_http_cli_contracts
+            tuix_config_inspector
+            argtool_cookbook
+            asyncx_cookbook
+            cfgx_cookbook
+            fsx_cookbook
+            hashx_cookbook
+            httpx_cookbook
+            logsys_cookbook
+            resultx_cookbook
+            schemax_cookbook
+            sysx_cookbook
+            textcodec_cookbook
+            tuix_cookbook
+            utils_cookbook)
+            if(TARGET ${toolx_coverage_target})
+                list(APPEND toolx_coverage_dependencies ${toolx_coverage_target})
+            endif()
+        endforeach()
+
         add_custom_target(coverage
             COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
             COMMAND "${GCOVR_BIN}"
@@ -505,6 +579,7 @@ if(TOOLX_BUILD_TESTS)
                 --html-title "ToolX Coverage"
                 --output "${CMAKE_BINARY_DIR}/coverage.html"
             WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+            DEPENDS ${toolx_coverage_dependencies}
             COMMENT "Running tests and generating gcovr coverage reports"
             VERBATIM)
     endif()
@@ -521,7 +596,7 @@ install(
 
 if(TOOLX_BUILD_TOOLS)
     install(
-        TARGETS cfgtool toolx_sync
+        TARGETS toolx_config toolx_sync toolx_pack toolx_http
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()
@@ -582,7 +657,7 @@ endif()
 set(CPACK_PACKAGE_NAME "ToolX")
 set(CPACK_PACKAGE_VENDOR "ToolX")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ToolX C++20 toolkit libraries plus cfgtool and toolx-sync CLIs.")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ToolX C++20 toolkit libraries plus toolx-config, toolx-sync, toolx-pack, and toolx-http CLIs.")
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
 set(CPACK_PACKAGE_CONTACT "ToolX Maintainers")
 set(CPACK_MONOLITHIC_INSTALL ON)

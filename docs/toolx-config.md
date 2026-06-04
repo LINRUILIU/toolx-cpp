@@ -1,6 +1,6 @@
-# cfgtool CLI Reference
+# toolx-config CLI Reference
 
-`cfgtool` is the first productized ToolX CLI. It is the primary `0.2.x`
+`toolx-config` is the first productized ToolX CLI. It is the primary `0.2.x`
 command-line compatibility contract in this repository.
 
 ## Stable Contract
@@ -15,8 +15,8 @@ command-line compatibility contract in this repository.
 
 ```json
 {
-  "schema": "cfgtool.result",
-  "schema_version": 2,
+  "schema": "toolx.config.result",
+  "schema_version": 1,
   "ok": true,
   "code": 0,
   "message": "ok",
@@ -86,35 +86,35 @@ For `set`, `--type` accepts `string`, `int`, `double`, `bool`, `null`, and
 Inspect and edit:
 
 ```bash
-cfgtool load --file app.json
-cfgtool doctor --file app.json --schema schema.json --require svc.host --expect svc.port=int --json
-cfgtool get --file app.json --path svc.port
-cfgtool set --file app.json --path svc.port --value 8080 --type int
-cfgtool exists --file app.json --path svc.host
+toolx-config load --file app.json
+toolx-config doctor --file app.json --schema schema.json --require svc.host --expect svc.port=int --json
+toolx-config get --file app.json --path svc.port
+toolx-config set --file app.json --path svc.port --value 8080 --type int
+toolx-config exists --file app.json --path svc.host
 ```
 
-`doctor` returns the normal `cfgtool.result` envelope in `--json` mode and adds
+`doctor` returns the normal `toolx.config.result` envelope in `--json` mode and adds
 diagnostic `data` fields such as `checks`, `recommendations`, `rules_count`,
 and `issues_count`. These fields are additive-only inside `0.2.x`.
 
 Snapshot flow:
 
 ```bash
-cfgtool snapshot-export --file app.json --out snapshot.json --json
-cfgtool snapshot-restore --file app.json --snapshot snapshot.json --out restored.json --json
+toolx-config snapshot-export --file app.json --out snapshot.json --json
+toolx-config snapshot-restore --file app.json --snapshot snapshot.json --out restored.json --json
 ```
 
 Merge and validate:
 
 ```bash
-cfgtool merge --base base.json --overlay overlay.json --out merged.json --json
-cfgtool validate --file merged.json --schema schema.json --require svc.host --range svc.port=1:65535 --json
+toolx-config merge --base base.json --overlay overlay.json --out merged.json --json
+toolx-config validate --file merged.json --schema schema.json --require svc.host --range svc.port=1:65535 --json
 ```
 
 Reload dry-run:
 
 ```bash
-cfgtool reload-dryrun --current current.json --candidate candidate.json --range svc.port=1:65535 --json
+toolx-config reload-dryrun --current current.json --candidate candidate.json --range svc.port=1:65535 --json
 ```
 
 ## Cookbook
@@ -122,31 +122,31 @@ cfgtool reload-dryrun --current current.json --candidate candidate.json --range 
 Layered config review:
 
 ```bash
-cfgtool merge --base examples/cfgtool_layered_template/app.base.json \
-  --overlay examples/cfgtool_layered_template/app.local.json \
+toolx-config merge --base examples/toolx_config_layered_template/app.base.json \
+  --overlay examples/toolx_config_layered_template/app.local.json \
   --out merged.json --json
-cfgtool doctor --file merged.json --require svc.host --expect svc.port=int --range svc.port=1:65535
+toolx-config doctor --file merged.json --require svc.host --expect svc.port=int --range svc.port=1:65535
 ```
 
 Snapshot before experimenting:
 
 ```bash
-cfgtool snapshot-export --file app.json --out snapshot.json --json
-cfgtool set --file app.json --path svc.port --value 9000 --type int
-cfgtool snapshot-restore --file app.json --snapshot snapshot.json --out restored.json --json
+toolx-config snapshot-export --file app.json --out snapshot.json --json
+toolx-config set --file app.json --path svc.port --value 9000 --type int
+toolx-config snapshot-restore --file app.json --snapshot snapshot.json --out restored.json --json
 ```
 
 Machine-readable preflight:
 
 ```bash
-cfgtool doctor --file app.json --schema schema.json --require svc.host --expect svc.port=int --json
+toolx-config doctor --file app.json --schema schema.json --require svc.host --expect svc.port=int --json
 ```
 
-See [`examples/cfgtool_layered_template`](../examples/cfgtool_layered_template)
+See [`examples/toolx_config_layered_template`](../examples/toolx_config_layered_template)
 for a realistic starter layout you can copy into a new project.
 
 ## Notes For Maintainers
 
 - Keep help text recognizable enough for black-box tests to catch accidental command removal.
 - If a new field is added to the JSON envelope, update contract tests without changing existing field semantics.
-- If a new subcommand is ever promoted into the stable contract, update this document, `README.md`, and the `cfgtool_cli_contracts` test together.
+- If a new subcommand is ever promoted into the stable contract, update this document, `README.md`, and the `toolx_config_cli_contracts` test together.

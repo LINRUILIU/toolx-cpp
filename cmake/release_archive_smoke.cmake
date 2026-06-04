@@ -66,9 +66,11 @@ foreach(required_path IN ITEMS
     endif()
 endforeach()
 
-set(cfgtool_exe "${package_root}/bin/cfgtool${exe_suffix}")
+set(toolx_config_exe "${package_root}/bin/toolx-config${exe_suffix}")
 set(toolx_sync_exe "${package_root}/bin/toolx-sync${exe_suffix}")
-foreach(tool IN ITEMS "${cfgtool_exe}" "${toolx_sync_exe}")
+set(toolx_pack_exe "${package_root}/bin/toolx-pack${exe_suffix}")
+set(toolx_http_exe "${package_root}/bin/toolx-http${exe_suffix}")
+foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}" "${toolx_http_exe}")
     if(NOT EXISTS "${tool}")
         message(FATAL_ERROR "Expected packaged tool is missing: ${tool}")
     endif()
@@ -100,16 +102,16 @@ function(assert_contains case_name text needle)
     endif()
 endfunction()
 
-run_checked(CFGTOOL_HELP 0 "${cfgtool_exe}" --help)
-assert_contains(CFGTOOL_HELP "${CFGTOOL_HELP_OUT}" "cfgtool - thin CLI over cfgx")
+run_checked(TOOLX_CONFIG_HELP 0 "${toolx_config_exe}" --help)
+assert_contains(TOOLX_CONFIG_HELP "${TOOLX_CONFIG_HELP_OUT}" "toolx-config - thin CLI over cfgx")
 
 set(doctor_json "${extract_root}/doctor-app.json")
 set(schema_json "${extract_root}/doctor-schema.json")
 file(WRITE "${doctor_json}" [=[{"svc":{"host":"127.0.0.1","port":8080}}]=])
 file(WRITE "${schema_json}" [=[{"type":"object","required":["svc"],"properties":{"svc":{"type":"object","required":["host","port"],"properties":{"host":{"type":"string","minLength":1},"port":{"type":"integer","minimum":1,"maximum":65535}}}}}]=])
-run_checked(CFGTOOL_DOCTOR 0 "${cfgtool_exe}" doctor --file "${doctor_json}" --schema "${schema_json}" --require svc.host --expect svc.port=int --json)
-assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"message\": \"doctor passed\"")
-assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"schema_issues\": []")
+run_checked(TOOLX_CONFIG_DOCTOR 0 "${toolx_config_exe}" doctor --file "${doctor_json}" --schema "${schema_json}" --require svc.host --expect svc.port=int --json)
+assert_contains(TOOLX_CONFIG_DOCTOR "${TOOLX_CONFIG_DOCTOR_OUT}" "\"message\": \"doctor passed\"")
+assert_contains(TOOLX_CONFIG_DOCTOR "${TOOLX_CONFIG_DOCTOR_OUT}" "\"schema_issues\": []")
 
 run_checked(TOOLX_SYNC_HELP 0 "${toolx_sync_exe}" --help)
 assert_contains(TOOLX_SYNC_HELP "${TOOLX_SYNC_HELP_OUT}" "toolx-sync - validate and atomically publish composed config")
@@ -125,6 +127,39 @@ run_checked(TOOLX_SYNC_SCHEMA 0
     --json)
 assert_contains(TOOLX_SYNC_SCHEMA "${TOOLX_SYNC_SCHEMA_OUT}" "\"schema\": \"toolx.sync.result\"")
 assert_contains(TOOLX_SYNC_SCHEMA "${TOOLX_SYNC_SCHEMA_OUT}" "\"schema_issues\": []")
+
+run_checked(TOOLX_PACK_HELP 0 "${toolx_pack_exe}" --help)
+assert_contains(TOOLX_PACK_HELP "${TOOLX_PACK_HELP_OUT}" "toolx-pack - stage release trees")
+
+run_checked(TOOLX_HTTP_HELP 0 "${toolx_http_exe}" --help)
+assert_contains(TOOLX_HTTP_HELP "${TOOLX_HTTP_HELP_OUT}" "toolx-http - preflight runtime HTTP endpoints")
+
+set(pack_src "${extract_root}/pack-src")
+set(pack_stage "${extract_root}/pack-stage")
+set(pack_archive "${extract_root}/pack.tar")
+file(MAKE_DIRECTORY "${pack_src}/bin" "${pack_src}/debug")
+file(WRITE "${pack_src}/bin/tool.txt" "tool\n")
+file(WRITE "${pack_src}/README.md" "demo\n")
+file(WRITE "${pack_src}/debug/tool.pdb" "debug\n")
+run_checked(TOOLX_PACK_STAGE 0
+    "${toolx_pack_exe}"
+    stage
+    --src "${pack_src}"
+    --out "${pack_stage}"
+    --archive "${pack_archive}"
+    --include bin
+    --include README.md
+    --exclude "**/*.pdb"
+    --json)
+assert_contains(TOOLX_PACK_STAGE "${TOOLX_PACK_STAGE_OUT}" "\"schema\": \"toolx.pack.result\"")
+assert_contains(TOOLX_PACK_STAGE "${TOOLX_PACK_STAGE_OUT}" "\"message\": \"staged\"")
+
+if(NOT EXISTS "${pack_stage}/bin/tool.txt")
+    message(FATAL_ERROR "toolx-pack archive smoke did not stage ${pack_stage}/bin/tool.txt")
+endif()
+if(NOT EXISTS "${pack_archive}")
+    message(FATAL_ERROR "toolx-pack archive smoke did not create ${pack_archive}")
+endif()
 
 set(consumer_source_dir "${CMAKE_CURRENT_LIST_DIR}/../examples/install_consumer")
 set(consumer_build_dir "${extract_root}/consumer-build")

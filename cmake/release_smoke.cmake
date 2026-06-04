@@ -8,10 +8,12 @@ else()
     set(exe_suffix "")
 endif()
 
-set(cfgtool_exe "${TOOLX_STAGE_PREFIX}/bin/cfgtool${exe_suffix}")
+set(toolx_config_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-config${exe_suffix}")
 set(toolx_sync_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-sync${exe_suffix}")
+set(toolx_pack_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-pack${exe_suffix}")
+set(toolx_http_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-http${exe_suffix}")
 
-foreach(tool IN ITEMS "${cfgtool_exe}" "${toolx_sync_exe}")
+foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}" "${toolx_http_exe}")
     if(NOT EXISTS "${tool}")
         message(FATAL_ERROR "Installed tool is missing: ${tool}")
     endif()
@@ -53,16 +55,16 @@ function(assert_contains case_name text needle)
     endif()
 endfunction()
 
-run_smoke(CFGTOOL_HELP 0 "${cfgtool_exe}" --help)
-assert_contains(CFGTOOL_HELP "${CFGTOOL_HELP_OUT}" "cfgtool - thin CLI over cfgx")
+run_smoke(TOOLX_CONFIG_HELP 0 "${toolx_config_exe}" --help)
+assert_contains(TOOLX_CONFIG_HELP "${TOOLX_CONFIG_HELP_OUT}" "toolx-config - thin CLI over cfgx")
 
-run_smoke(CFGTOOL_DOCTOR 0 "${cfgtool_exe}" doctor --file "${app_json}" --schema "${schema_json}" --require svc.host --expect svc.port=int --json)
-assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"message\": \"doctor passed\"")
-assert_contains(CFGTOOL_DOCTOR "${CFGTOOL_DOCTOR_OUT}" "\"schema_issues\": []")
+run_smoke(TOOLX_CONFIG_DOCTOR 0 "${toolx_config_exe}" doctor --file "${app_json}" --schema "${schema_json}" --require svc.host --expect svc.port=int --json)
+assert_contains(TOOLX_CONFIG_DOCTOR "${TOOLX_CONFIG_DOCTOR_OUT}" "\"message\": \"doctor passed\"")
+assert_contains(TOOLX_CONFIG_DOCTOR "${TOOLX_CONFIG_DOCTOR_OUT}" "\"schema_issues\": []")
 
-run_smoke(CFGTOOL_SET 0 "${cfgtool_exe}" set --file "${app_json}" --path svc.port --value 9090 --type int)
-run_smoke(CFGTOOL_GET 0 "${cfgtool_exe}" get --file "${app_json}" --path svc.port)
-assert_contains(CFGTOOL_GET "${CFGTOOL_GET_OUT}" "9090")
+run_smoke(TOOLX_CONFIG_SET 0 "${toolx_config_exe}" set --file "${app_json}" --path svc.port --value 9090 --type int)
+run_smoke(TOOLX_CONFIG_GET 0 "${toolx_config_exe}" get --file "${app_json}" --path svc.port)
+assert_contains(TOOLX_CONFIG_GET "${TOOLX_CONFIG_GET_OUT}" "9090")
 
 run_smoke(TOOLX_SYNC 0
     "${toolx_sync_exe}"
@@ -77,4 +79,38 @@ assert_contains(TOOLX_SYNC "${TOOLX_SYNC_OUT}" "\"schema_issues\": []")
 
 if(NOT EXISTS "${resolved_json}")
     message(FATAL_ERROR "toolx-sync release smoke did not create ${resolved_json}")
+endif()
+
+run_smoke(TOOLX_PACK_HELP 0 "${toolx_pack_exe}" --help)
+assert_contains(TOOLX_PACK_HELP "${TOOLX_PACK_HELP_OUT}" "toolx-pack - stage release trees")
+
+run_smoke(TOOLX_HTTP_HELP 0 "${toolx_http_exe}" --help)
+assert_contains(TOOLX_HTTP_HELP "${TOOLX_HTTP_HELP_OUT}" "toolx-http - preflight runtime HTTP endpoints")
+
+set(pack_src "${smoke_root}/pack-src")
+set(pack_stage "${smoke_root}/pack-stage")
+set(pack_archive "${smoke_root}/pack.tar")
+file(MAKE_DIRECTORY "${pack_src}/bin" "${pack_src}/debug")
+file(WRITE "${pack_src}/bin/tool.txt" "tool\n")
+file(WRITE "${pack_src}/README.md" "demo\n")
+file(WRITE "${pack_src}/debug/tool.pdb" "debug\n")
+
+run_smoke(TOOLX_PACK_STAGE 0
+    "${toolx_pack_exe}"
+    stage
+    --src "${pack_src}"
+    --out "${pack_stage}"
+    --archive "${pack_archive}"
+    --include bin
+    --include README.md
+    --exclude "**/*.pdb"
+    --json)
+assert_contains(TOOLX_PACK_STAGE "${TOOLX_PACK_STAGE_OUT}" "\"schema\": \"toolx.pack.result\"")
+assert_contains(TOOLX_PACK_STAGE "${TOOLX_PACK_STAGE_OUT}" "\"message\": \"staged\"")
+
+if(NOT EXISTS "${pack_stage}/bin/tool.txt")
+    message(FATAL_ERROR "toolx-pack release smoke did not stage ${pack_stage}/bin/tool.txt")
+endif()
+if(NOT EXISTS "${pack_archive}")
+    message(FATAL_ERROR "toolx-pack release smoke did not create ${pack_archive}")
 endif()

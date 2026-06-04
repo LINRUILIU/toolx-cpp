@@ -95,6 +95,69 @@ cfgx::Node BuildSchemaIssueArray(const std::vector<schemax::Issue>& issues)
     return cfgx::Node(std::move(arr));
 }
 
+cfgx::Node BuildStringArray(const std::vector<std::string>& items)
+{
+    cfgx::Node::Array arr;
+    arr.reserve(items.size());
+    for (const auto& item : items)
+    {
+        arr.emplace_back(cfgx::Node(item));
+    }
+    return cfgx::Node(std::move(arr));
+}
+
+cfgx::Node BuildSourceTraceArray(const std::vector<cfgx::SourceAttribution>& trace)
+{
+    cfgx::Node::Array arr;
+    arr.reserve(trace.size());
+    for (const auto& entry : trace)
+    {
+        arr.emplace_back(BuildDataObject({
+            {"path", cfgx::Node(entry.path)},
+            {"layer", cfgx::Node(cfgx::ToString(entry.layer))},
+        }));
+    }
+    return cfgx::Node(std::move(arr));
+}
+
+const char* ToActionString(fsx::BatchPlan::ActionKind kind) noexcept
+{
+    switch (kind)
+    {
+    case fsx::BatchPlan::ActionKind::AtomicWrite:
+        return "atomic_write";
+    case fsx::BatchPlan::ActionKind::SafeReplace:
+        return "safe_replace";
+    case fsx::BatchPlan::ActionKind::Rename:
+        return "rename";
+    case fsx::BatchPlan::ActionKind::CopyFile:
+        return "copy_file";
+    case fsx::BatchPlan::ActionKind::RemovePath:
+        return "remove_path";
+    case fsx::BatchPlan::ActionKind::CopyTree:
+        return "copy_tree";
+    }
+    return "unknown";
+}
+
+cfgx::Node BuildPlanActionsArray(const fsx::BatchPlan& plan)
+{
+    cfgx::Node::Array arr;
+    const auto& actions = plan.Actions();
+    arr.reserve(actions.size());
+    for (std::size_t i = 0; i < actions.size(); ++i)
+    {
+        const auto& action = actions[i];
+        arr.emplace_back(BuildDataObject({
+            {"step", cfgx::Node(static_cast<std::int64_t>(i))},
+            {"op", cfgx::Node(ToActionString(action.kind))},
+            {"src", cfgx::Node(action.src)},
+            {"dst", cfgx::Node(action.dst)},
+        }));
+    }
+    return cfgx::Node(std::move(arr));
+}
+
 void PrintJsonEnvelope(bool ok, int code, std::string_view message, const cfgx::Node& data,
                        const std::vector<cfgx::ValidationIssue>& issues = {})
 {
@@ -215,6 +278,42 @@ bool BuildValidationRules(const argtool::ParseResult& result, std::vector<cfgx::
     return true;
 }
 
+cfgx::Result<std::optional<cfgx::Node>> LoadOverlayLayer(const std::vector<std::string>& overlay_paths,
+                                                         bool append_arrays)
+{
+    if (overlay_paths.empty())
+    {
+        return cfgx::Result<std::optional<cfgx::Node>>{true, std::nullopt, ""};
+    }
+
+    auto first = cfgx::LoadFromFile(overlay_paths.front());
+    if (!first.ok)
+    {
+        return cfgx::Result<std::optional<cfgx::Node>>{false, std::nullopt,
+                                                       "failed to load overlay config: " + first.error};
+    }
+
+    cfgx::Node local_layer = std::move(first.value);
+    for (std::size_t i = 1; i < overlay_paths.size(); ++i)
+    {
+        auto next = cfgx::LoadFromFile(overlay_paths[i]);
+        if (!next.ok)
+        {
+            return cfgx::Result<std::optional<cfgx::Node>>{false, std::nullopt,
+                                                           "failed to load overlay config: " + next.error};
+        }
+
+        const auto merged = cfgx::Merge(local_layer, next.value, append_arrays);
+        if (!merged.ok)
+        {
+            return cfgx::Result<std::optional<cfgx::Node>>{false, std::nullopt,
+                                                           "failed to merge overlay config: " + merged.error};
+        }
+    }
+
+    return cfgx::Result<std::optional<cfgx::Node>>{true, std::move(local_layer), ""};
+}
+
 void ConfigureLogging(bool json_mode, const std::string& log_file)
 {
     logsys::DefaultLoggerOptions options;
@@ -297,6 +396,12 @@ int main(int argc, const char* const argv[])
 
     parser.Option("base", 'b').String().ValueName("FILE").Description("Base config file.").Done();
     parser.Option("out", 'o').String().ValueName("FILE").Description("Resolved output file.").Done();
+    parser.Option("overlay")
+        .String()
+        .ListValue()
+        .ValueName("FILE")
+        .Description("Local overlay config file. Repeatable.")
+        .Done();
     parser.Option("snapshot", 's').String().ValueName("FILE").Description("Optional snapshot file.").Done();
     parser.Option("journal", 'j').String().ValueName("FILE").Description("Optional fsx journal file.").Done();
     parser.Option("schema").String().ValueName("FILE").Description("Optional schemax schema file.").Done();
@@ -321,6 +426,8 @@ int main(int argc, const char* const argv[])
         .Done();
     parser.Option("log-file").String().ValueName("FILE").Description("Optional audit log file.").Done();
     parser.Option("indent", 'i').Int().Default("2").Description("JSON indent width.").Done();
+    parser.Flag("append-arrays").Description("Append arrays while composing layers instead of replacing them.").Done();
+    parser.Flag("dry-run").Description("Validate and print the publish plan without writing files.").Done();
     parser.Flag("json").Description("Emit machine-readable JSON envelope.").Done();
 
     const auto parsed = parser.Parse(argc, argv);
@@ -370,6 +477,10 @@ int main(int argc, const char* const argv[])
 
     ConfigureLogging(json_mode, parsed.GetString("log-file", ""));
 
+    const bool append_arrays = parsed.GetBool("append-arrays", false);
+    const bool dry_run = parsed.GetBool("dry-run", false);
+    const std::vector<std::string> overlay_paths = parsed.GetAll("overlay");
+
     asyncx::ThreadPool pool;
     const std::string base_path = parsed.GetString("base");
     auto base_task = pool.Submit([base_path]() { return cfgx::LoadFromFile(base_path); });
@@ -413,8 +524,17 @@ int main(int argc, const char* const argv[])
         remote_layer = std::move(remote.value);
     }
 
-    const auto composed = cfgx::ComposeLayers(base.value, std::nullopt, std::nullopt, nullptr, cfgx::ComposeOptions{},
-                                              nullptr, remote_layer);
+    const auto overlay_layer = LoadOverlayLayer(overlay_paths, append_arrays);
+    if (!overlay_layer.ok)
+    {
+        return ExitError(json_mode, kExitRuntimeError, overlay_layer.error);
+    }
+
+    cfgx::ComposeOptions compose_options;
+    compose_options.append_arrays = append_arrays;
+    std::vector<cfgx::SourceAttribution> source_trace;
+    const auto composed = cfgx::ComposeLayers(base.value, std::nullopt, overlay_layer.value, nullptr, compose_options,
+                                              &source_trace, remote_layer);
     if (!composed.ok)
     {
         return ExitError(json_mode, kExitRuntimeError, composed.error);
@@ -451,6 +571,43 @@ int main(int argc, const char* const argv[])
         plan.AddAtomicWrite(snapshot_path, serialized);
     }
 
+    const cfgx::Node publish_data = BuildDataObject({
+        {"base", cfgx::Node(base_path)},
+        {"overlays", BuildStringArray(overlay_paths)},
+        {"remote_url", cfgx::Node(remote_url)},
+        {"out", cfgx::Node(out_path)},
+        {"snapshot", cfgx::Node(snapshot_path)},
+        {"journal", cfgx::Node(journal_path)},
+        {"log_file", cfgx::Node(parsed.GetString("log-file", ""))},
+        {"schema", cfgx::Node(parsed.GetString("schema", ""))},
+        {"schema_issues", BuildSchemaIssueArray(schema_validation.value)},
+        {"append_arrays", cfgx::Node(append_arrays)},
+        {"dry_run", cfgx::Node(dry_run)},
+        {"steps", cfgx::Node(static_cast<std::int64_t>(plan.Actions().size()))},
+        {"planned_steps", BuildPlanActionsArray(plan)},
+        {"source_trace", BuildSourceTraceArray(source_trace)},
+    });
+
+    if (dry_run)
+    {
+        pool.StopAndJoin(asyncx::StopMode::Drain);
+        if (json_mode)
+        {
+            PrintJsonEnvelope(true, kExitSuccess, "dry run passed", publish_data);
+        }
+        else
+        {
+            std::cout << "dry_run=true\n";
+            std::cout << "out=" << out_path << "\n";
+            if (!snapshot_path.empty())
+            {
+                std::cout << "snapshot=" << snapshot_path << "\n";
+            }
+            std::cout << "steps=" << plan.Actions().size() << "\n";
+        }
+        return kExitSuccess;
+    }
+
     fsx::RunOptions run_options;
     run_options.conflict_policy = fsx::ConflictPolicy::Overwrite;
     run_options.rollback_mode = fsx::RollbackMode::BestEffort;
@@ -467,20 +624,9 @@ int main(int argc, const char* const argv[])
     LOGI("toolx-sync published %s steps=%zu", out_path.c_str(), run.steps.size());
     logsys::Logger::Instance().Flush();
 
-    const cfgx::Node data = BuildDataObject({
-        {"base", cfgx::Node(base_path)},
-        {"remote_url", cfgx::Node(remote_url)},
-        {"out", cfgx::Node(out_path)},
-        {"snapshot", cfgx::Node(snapshot_path)},
-        {"journal", cfgx::Node(journal_path)},
-        {"schema", cfgx::Node(parsed.GetString("schema", ""))},
-        {"schema_issues", BuildSchemaIssueArray(schema_validation.value)},
-        {"steps", cfgx::Node(static_cast<std::int64_t>(run.steps.size()))},
-    });
-
     if (json_mode)
     {
-        PrintJsonEnvelope(true, kExitSuccess, "published", data);
+        PrintJsonEnvelope(true, kExitSuccess, "published", publish_data);
     }
     else
     {

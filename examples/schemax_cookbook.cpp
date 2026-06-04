@@ -61,7 +61,7 @@ int main()
     options.fail_fast = true;
     std::cout << "fail-fast=" << schemax::Validate(Obj({}), schema.value, options).size() << "\n";
 
-    // Scenario 5: cfgtool/toolx-sync can reuse cfgx-style validation issues.
+    // Scenario 5: toolx-config/toolx-sync can reuse cfgx-style validation issues.
     std::cout << "cfgx-issues=" << schemax::ToCfgxIssues(invalid).size() << "\n";
     return 0;
 }

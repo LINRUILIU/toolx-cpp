@@ -37,7 +37,7 @@ supports a practical schema subset first: `type`, `required`, `properties`,
 Stable enough to use:
 
 - `Schema`, `Options`, `Issue`, `Compile`, `Validate`, and `ToCfgxIssues`.
-- Schema-backed validation in `cfgtool validate`, `cfgtool doctor`, and
+- Schema-backed validation in `toolx-config validate`, `toolx-config doctor`, and
   `toolx-sync` through `--schema`.
 
 Not yet promised:
@@ -105,7 +105,7 @@ The following are intentionally outside the 0.2.x stable surface:
 
 ## CLI Contracts
 
-`cfgtool` is a 0.2.x product contract. Stable subcommands currently include
+`toolx-config` is a 0.2.x product contract. Stable subcommands currently include
 `load`, `adapters`, `adapter-activate`, `doctor`, `snapshot-export`,
 `snapshot-restore`, `get`, `set`, `exists`, `merge`, `validate`, and
 `reload-dryrun`.
@@ -124,8 +124,8 @@ JSON envelope:
 
 ```json
 {
-  "schema": "cfgtool.result",
-  "schema_version": 2,
+  "schema": "toolx.config.result",
+  "schema_version": 1,
   "ok": true,
   "code": 0,
   "message": "ok",
@@ -134,14 +134,64 @@ JSON envelope:
 }
 ```
 
-`cfgtool validate` and `cfgtool doctor` accept `--schema FILE`. Schema
+`toolx-config validate` and `toolx-config doctor` accept `--schema FILE`. Schema
 validation failures return exit code `4` and add `schema_issues` in JSON mode
 without removing existing fields.
 
-`toolx-sync` is a scenario CLI. Its output contract starts at
+`toolx-sync` is a bounded-stable product CLI for config composition and publish.
+It supports base config, repeated `--overlay` local layers, optional
+`--remote-url`, validation, `--dry-run` publish reports, atomic output,
+snapshots, journals, and audit logs. Its output contract starts at
 `schema=toolx.sync.result`, `schema_version=1` and may evolve more quickly than
-`cfgtool`. In `v0.2.0`, it also accepts `--schema FILE` and reports
-`schema_issues` additively in JSON mode.
+`toolx-config`.
+
+`toolx-sync` exit codes are `0` for success/help/dry-run success, `1` for
+runtime errors, `2` for usage or parse errors, and `4` for validation failures.
+It accepts `--schema FILE` and reports `schema_issues` additively in JSON mode.
+
+`toolx-pack` is a bounded-stable product CLI for staging release trees and
+creating deterministic tar archives. Stable commands are:
+
+```bash
+toolx-pack stage --src DIR --out DIR [--archive FILE]
+toolx-pack archive --src DIR --archive FILE
+toolx-pack plan --src DIR --out DIR [--archive FILE]
+```
+
+Its output contract starts at `schema=toolx.pack.result`,
+`schema_version=1`. JSON `data` includes `command`, `source`, `stage`,
+`archive`, `manifest`, `dry_run`, `remove_extra`, `entries`, `bytes`,
+`planned_steps`, `completed_steps`, `archive_format`, `capabilities`, and
+`warnings`.
+
+`toolx-pack` exit codes are `0` for success/help/dry-run success, `1` for
+runtime errors, `2` for usage or parse errors, `3` for source/stage/manifest
+path not found, and `4` for manifest validation failures. Manifests accept
+`name`, `version`, `source`, `stage`, `archive`, `include`, `exclude`, and
+`remove_extra`; unknown top-level fields are rejected through `schemax`. The MVP
+supports deterministic tar only, not zip, compression, signing, remote publish,
+or dependency discovery.
+
+`toolx-http` is a bounded-stable product CLI for runtime endpoint preflight.
+Stable commands are:
+
+```bash
+toolx-http check --url URL [options]
+toolx-http check --manifest FILE [options]
+```
+
+Its output contract starts at `schema=toolx.http.result`,
+`schema_version=1`. JSON `data` includes `command`, `manifest`, `checked`,
+`passed`, `failed`, `duration_ms`, `checks`, and `warnings`; each check reports
+`name`, `url`, `method`, `ok`, `status`, `duration_ms`, `error_kind`,
+`message`, `expect_status`, and `body_matched`.
+
+`toolx-http` exit codes are `0` for success/help, `1` for transport or runtime
+errors, `2` for usage or parse errors, `3` for manifest/body-file not found,
+and `4` for status/body expectation failures. Manifests accept `checks`,
+runtime defaults, and header defaults; unknown top-level and check fields are
+rejected through `schemax`. The MVP is endpoint preflight only, not a general
+curl replacement, load tester, credential flow, or body assertion DSL.
 
 ## Versioning
 

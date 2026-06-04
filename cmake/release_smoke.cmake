@@ -11,8 +11,9 @@ endif()
 set(toolx_config_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-config${exe_suffix}")
 set(toolx_sync_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-sync${exe_suffix}")
 set(toolx_pack_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-pack${exe_suffix}")
+set(toolx_http_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-http${exe_suffix}")
 
-foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}")
+foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}" "${toolx_http_exe}")
     if(NOT EXISTS "${tool}")
         message(FATAL_ERROR "Installed tool is missing: ${tool}")
     endif()
@@ -82,6 +83,9 @@ endif()
 
 run_smoke(TOOLX_PACK_HELP 0 "${toolx_pack_exe}" --help)
 assert_contains(TOOLX_PACK_HELP "${TOOLX_PACK_HELP_OUT}" "toolx-pack - stage release trees")
+
+run_smoke(TOOLX_HTTP_HELP 0 "${toolx_http_exe}" --help)
+assert_contains(TOOLX_HTTP_HELP "${TOOLX_HTTP_HELP_OUT}" "toolx-http - preflight runtime HTTP endpoints")
 
 set(pack_src "${smoke_root}/pack-src")
 set(pack_stage "${smoke_root}/pack-stage")

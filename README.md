@@ -22,9 +22,9 @@ HTTP, and logging utilities.
 | `tuix` | Experimental foundation | Terminal UI building blocks, styled frames, layouts, and MVP widgets |
 
 Public stability commitments live in [docs/stability.md](docs/stability.md).
-`toolx-config`, `toolx-sync`, and `toolx-pack` contract details live in
+`toolx-config`, `toolx-sync`, `toolx-pack`, and `toolx-http` contract details live in
 [docs/toolx-config.md](docs/toolx-config.md), [docs/toolx-sync.md](docs/toolx-sync.md),
-and [docs/toolx-pack.md](docs/toolx-pack.md).
+[docs/toolx-pack.md](docs/toolx-pack.md), and [docs/toolx-http.md](docs/toolx-http.md).
 
 ## Requirements
 
@@ -79,6 +79,7 @@ cmake --build build-release-v020-consumer --parallel
 build-release-v020-stage/bin/toolx-config --help
 build-release-v020-stage/bin/toolx-sync --help
 build-release-v020-stage/bin/toolx-pack --help
+build-release-v020-stage/bin/toolx-http --help
 ```
 
 The install tree is also the shape of the prebuilt release archives:
@@ -99,8 +100,8 @@ The `v0.2.0` release is distributed through GitHub Releases with:
 - `SHA256SUMS`
 
 Each binary archive is validated by unpacking it, running `toolx-config --help`,
-`toolx-sync --help`, and `toolx-pack --help`, running a small pack stage/archive
-smoke, and compiling the standalone
+`toolx-sync --help`, `toolx-pack --help`, and `toolx-http --help`, running a
+small pack stage/archive smoke, and compiling the standalone
 [`examples/install_consumer`](examples/install_consumer) project via
 `find_package(ToolX)`.
 
@@ -178,6 +179,23 @@ toolx-pack archive --src dist/toolx --archive dist/toolx.tar --json
 supports deterministic tar only; zip, compression, signing, remote publish, and
 dependency discovery are intentionally out of scope. The full CLI reference is
 in [docs/toolx-pack.md](docs/toolx-pack.md).
+
+## `toolx-http`
+
+`toolx-http` is the bounded-stable product CLI for runtime endpoint preflight.
+It checks HTTP endpoints against status/body expectations and emits stable JSON
+for release smoke and deployment gates.
+
+```bash
+toolx-http check --url http://127.0.0.1:8080/health \
+  --expect-status 200 --expect-body-contains ready --timeout-ms 1000 --json
+toolx-http check --manifest http-preflight.json --json
+```
+
+`toolx-http` uses `schema=toolx.http.result` and `schema_version=1`. It is not a
+general `curl` replacement; load testing, OAuth, download/upload workflows, and
+complex body assertion DSLs are intentionally out of scope. The full CLI
+reference is in [docs/toolx-http.md](docs/toolx-http.md).
 
 ## Quality Gates
 

@@ -69,7 +69,8 @@ endforeach()
 set(toolx_config_exe "${package_root}/bin/toolx-config${exe_suffix}")
 set(toolx_sync_exe "${package_root}/bin/toolx-sync${exe_suffix}")
 set(toolx_pack_exe "${package_root}/bin/toolx-pack${exe_suffix}")
-foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}")
+set(toolx_http_exe "${package_root}/bin/toolx-http${exe_suffix}")
+foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}" "${toolx_http_exe}")
     if(NOT EXISTS "${tool}")
         message(FATAL_ERROR "Expected packaged tool is missing: ${tool}")
     endif()
@@ -129,6 +130,9 @@ assert_contains(TOOLX_SYNC_SCHEMA "${TOOLX_SYNC_SCHEMA_OUT}" "\"schema_issues\":
 
 run_checked(TOOLX_PACK_HELP 0 "${toolx_pack_exe}" --help)
 assert_contains(TOOLX_PACK_HELP "${TOOLX_PACK_HELP_OUT}" "toolx-pack - stage release trees")
+
+run_checked(TOOLX_HTTP_HELP 0 "${toolx_http_exe}" --help)
+assert_contains(TOOLX_HTTP_HELP "${TOOLX_HTTP_HELP_OUT}" "toolx-http - preflight runtime HTTP endpoints")
 
 set(pack_src "${extract_root}/pack-src")
 set(pack_stage "${extract_root}/pack-stage")

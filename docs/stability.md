@@ -172,6 +172,27 @@ path not found, and `4` for manifest validation failures. Manifests accept
 supports deterministic tar only, not zip, compression, signing, remote publish,
 or dependency discovery.
 
+`toolx-http` is a bounded-stable product CLI for runtime endpoint preflight.
+Stable commands are:
+
+```bash
+toolx-http check --url URL [options]
+toolx-http check --manifest FILE [options]
+```
+
+Its output contract starts at `schema=toolx.http.result`,
+`schema_version=1`. JSON `data` includes `command`, `manifest`, `checked`,
+`passed`, `failed`, `duration_ms`, `checks`, and `warnings`; each check reports
+`name`, `url`, `method`, `ok`, `status`, `duration_ms`, `error_kind`,
+`message`, `expect_status`, and `body_matched`.
+
+`toolx-http` exit codes are `0` for success/help, `1` for transport or runtime
+errors, `2` for usage or parse errors, `3` for manifest/body-file not found,
+and `4` for status/body expectation failures. Manifests accept `checks`,
+runtime defaults, and header defaults; unknown top-level and check fields are
+rejected through `schemax`. The MVP is endpoint preflight only, not a general
+curl replacement, load tester, credential flow, or body assertion DSL.
+
 ## Versioning
 
 Recommended current public tag: `v0.2.0`.

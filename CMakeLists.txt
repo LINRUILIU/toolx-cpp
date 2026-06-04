@@ -129,8 +129,10 @@ set(TOOLX_LINT_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_config.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_sync.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_pack.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_http.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/resultx_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_integration_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_http_cli_contracts.cpp"
 )
 
 if(CLANG_FORMAT_BIN)
@@ -296,6 +298,10 @@ if(TOOLX_BUILD_TOOLS)
     add_executable(toolx_pack tools/toolx_pack.cpp)
     set_target_properties(toolx_pack PROPERTIES OUTPUT_NAME "toolx-pack")
     target_link_libraries(toolx_pack PRIVATE argtool cfgx fsx logsys schemax)
+
+    add_executable(toolx_http tools/toolx_http.cpp)
+    set_target_properties(toolx_http PROPERTIES OUTPUT_NAME "toolx-http")
+    target_link_libraries(toolx_http PRIVATE argtool cfgx httpx logsys schemax)
 endif()
 
 if(TOOLX_BUILD_EXAMPLES)
@@ -480,6 +486,18 @@ if(TOOLX_BUILD_TESTS)
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolx_pack_cli_contracts.cmake")
     endif()
 
+    if(TARGET toolx_http)
+        add_executable(toolx_http_cli_contracts tests/toolx_http_cli_contracts.cpp)
+        if(WIN32)
+            target_link_libraries(toolx_http_cli_contracts PRIVATE ws2_32)
+        endif()
+        add_test(
+            NAME toolx_http_cli_contracts
+            COMMAND toolx_http_cli_contracts
+                $<TARGET_FILE:toolx_http>
+                "${CMAKE_CURRENT_BINARY_DIR}/toolx_http_cli_contracts")
+    endif()
+
     if(TARGET tuix_config_inspector)
         add_test(NAME tuix_config_inspector_smoke COMMAND tuix_config_inspector)
     endif()
@@ -535,7 +553,7 @@ install(
 
 if(TOOLX_BUILD_TOOLS)
     install(
-        TARGETS toolx_config toolx_sync toolx_pack
+        TARGETS toolx_config toolx_sync toolx_pack toolx_http
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()
@@ -596,7 +614,7 @@ endif()
 set(CPACK_PACKAGE_NAME "ToolX")
 set(CPACK_PACKAGE_VENDOR "ToolX")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ToolX C++20 toolkit libraries plus toolx-config, toolx-sync, and toolx-pack CLIs.")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ToolX C++20 toolkit libraries plus toolx-config, toolx-sync, toolx-pack, and toolx-http CLIs.")
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
 set(CPACK_PACKAGE_CONTACT "ToolX Maintainers")
 set(CPACK_MONOLITHIC_INSTALL ON)

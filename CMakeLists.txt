@@ -392,6 +392,7 @@ endif()
 
 if(TOOLX_BUILD_TESTS)
     include(FetchContent)
+    find_package(Threads REQUIRED)
 
     set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
@@ -488,6 +489,7 @@ if(TOOLX_BUILD_TESTS)
 
     if(TARGET toolx_http)
         add_executable(toolx_http_cli_contracts tests/toolx_http_cli_contracts.cpp)
+        target_link_libraries(toolx_http_cli_contracts PRIVATE Threads::Threads)
         if(WIN32)
             target_link_libraries(toolx_http_cli_contracts PRIVATE ws2_32)
         endif()
@@ -522,6 +524,46 @@ if(TOOLX_BUILD_TESTS)
     endforeach()
 
     if(TOOLX_ENABLE_COVERAGE AND GCOVR_BIN)
+        set(toolx_coverage_dependencies
+            argtool_tests
+            asyncx_tests
+            cfgx_tests
+            fsx_tests
+            hashx_tests
+            httpx_tests
+            logsys_tests
+            schemax_tests
+            resultx_tests
+            sysx_tests
+            textcodec_tests
+            tuix_tests
+            utils_tests
+            toolx_integration_tests)
+        foreach(toolx_coverage_target IN ITEMS
+            toolx_config
+            toolx_sync
+            toolx_pack
+            toolx_http
+            toolx_http_cli_contracts
+            tuix_config_inspector
+            argtool_cookbook
+            asyncx_cookbook
+            cfgx_cookbook
+            fsx_cookbook
+            hashx_cookbook
+            httpx_cookbook
+            logsys_cookbook
+            resultx_cookbook
+            schemax_cookbook
+            sysx_cookbook
+            textcodec_cookbook
+            tuix_cookbook
+            utils_cookbook)
+            if(TARGET ${toolx_coverage_target})
+                list(APPEND toolx_coverage_dependencies ${toolx_coverage_target})
+            endif()
+        endforeach()
+
         add_custom_target(coverage
             COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
             COMMAND "${GCOVR_BIN}"
@@ -537,6 +579,7 @@ if(TOOLX_BUILD_TESTS)
                 --html-title "ToolX Coverage"
                 --output "${CMAKE_BINARY_DIR}/coverage.html"
             WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+            DEPENDS ${toolx_coverage_dependencies}
             COMMENT "Running tests and generating gcovr coverage reports"
             VERBATIM)
     endif()

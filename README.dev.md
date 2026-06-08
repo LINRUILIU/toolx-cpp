@@ -15,6 +15,7 @@ widens the module surface deliberately:
 - `toolx-pack` as the bounded-stable local staging and deterministic tar CLI.
 - `toolx-http` as the bounded-stable runtime endpoint preflight CLI.
 - `toolx-log` as the bounded-stable offline runtime log diagnosis CLI.
+- `toolx-inspect` as the bounded-stable config/schema terminal inspection CLI.
 - `schemax` as an experimental schema MVP used by shipped CLIs.
 - Focused additive API growth in `asyncx`, `fsx`, `httpx`, `logsys`, and `tuix`.
 - GitHub release artifacts built from `cmake --install` output plus archive-level verification.
@@ -30,7 +31,7 @@ Use the `TOOLX_*` options in new scripts and documentation:
 | --- | --- | --- |
 | `TOOLX_BUILD_TESTS` | `ON` | Build unit, integration, and CLI contract tests |
 | `TOOLX_BUILD_EXAMPLES` | `ON` | Build example binaries |
-| `TOOLX_BUILD_TOOLS` | `ON` | Build installable tools: `toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, `toolx-log` |
+| `TOOLX_BUILD_TOOLS` | `ON` | Build installable tools: `toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, `toolx-log`, `toolx-inspect` |
 | `TOOLX_BUILD_BENCHMARKS` | `ON` in direct CMake, `OFF` in presets/CI | Build benchmark examples |
 | `TOOLX_ENABLE_CLANG_TIDY` | `OFF` | Enable clang-tidy at compile time |
 | `TOOLX_ENABLE_COVERAGE` | `OFF` | Enable GCC/Clang coverage instrumentation |
@@ -149,14 +150,23 @@ failure. The `toolx_log_cli_contracts` test covers help, required inputs,
 manifest rejection, logsys text and JSON-lines parsing, filters, and gate
 failures.
 
+`toolx-inspect` is a bounded-stable product CLI for config/schema terminal
+inspection. Its JSON envelope is `schema=toolx.inspect.result`,
+`schema_version=1`; its exit codes are `0` success/help, `1` runtime/load/render
+error, `2` usage or parse error, `3` config/schema/manifest not found, and `4`
+manifest validation, schema compile, or schema issue failure. The
+`toolx_inspect_cli_contracts` test covers help, required inputs, manifest
+rejection, report JSON/plain output, schema pass/fail, `--allow-issues`, path
+selection, path filtering, deterministic render, scripted run, and CLI overrides.
+
 ## Release Checklist
 
 Before tagging `v0.2.0`:
 
 - CI is green on Linux GCC, Linux Clang, Windows MSVC, and macOS Clang.
 - `format-check`, build, tests, install, exported package verification, install-tree smoke, packaging, and archive verification pass.
-- `toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, and `toolx-log` are present in installed `bin/` and packaged `bin/`.
-- `docs/stability.md`, [docs/toolx-config.md](docs/toolx-config.md), [docs/toolx-sync.md](docs/toolx-sync.md), [docs/toolx-pack.md](docs/toolx-pack.md), [docs/toolx-http.md](docs/toolx-http.md), [docs/toolx-log.md](docs/toolx-log.md), and [README.md](README.md) still match the shipped contracts.
+- `toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, `toolx-log`, and `toolx-inspect` are present in installed `bin/` and packaged `bin/`.
+- `docs/stability.md`, [docs/toolx-config.md](docs/toolx-config.md), [docs/toolx-sync.md](docs/toolx-sync.md), [docs/toolx-pack.md](docs/toolx-pack.md), [docs/toolx-http.md](docs/toolx-http.md), [docs/toolx-log.md](docs/toolx-log.md), [docs/toolx-inspect.md](docs/toolx-inspect.md), and [README.md](README.md) still match the shipped contracts.
 - `docs/releases/v0.2.0.md` states the stable versus experimental boundary, the
   `0.2.x` source-compatibility goal, schema MVP scope, side-branch API
   additions, the lack of ABI guarantee, and the TLS backend note.
@@ -188,6 +198,7 @@ Keep module dependencies narrow:
 - `toolx-pack` may compose `argtool`, `cfgx`, `schemax`, `fsx`, and `logsys`, but it should not introduce a public `packx` API until a reusable library contract is needed.
 - `toolx-http` may compose `argtool`, `cfgx`, `schemax`, `httpx`, and `logsys`, but it should remain a preflight CLI rather than a general curl replacement.
 - `toolx-log` may compose `argtool`, `cfgx`, `schemax`, and `logsys`, but it should remain an offline analyzer until a concrete live-tail workflow is needed.
+- `toolx-inspect` may compose `argtool`, `cfgx`, `schemax`, `tuix`, and `logsys`, but it should remain a bounded config/schema inspector rather than a general TUI framework.
 - `tuix` remains a terminal UI foundation until a separate framework decision is made after the CLI release is stable.
 
 ## HTTP/TLS Matrix

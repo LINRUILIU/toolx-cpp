@@ -216,6 +216,32 @@ are rejected through `schemax`. The MVP supports offline logsys text and
 logsys JSON-lines analysis only, not live tailing, alerting, monitoring, or
 generic arbitrary-log parsing.
 
+`toolx-inspect` is a bounded-stable product CLI for config/schema terminal
+inspection. Stable commands are:
+
+```bash
+toolx-inspect report --file FILE [--schema FILE]
+toolx-inspect render --file FILE [--schema FILE]
+toolx-inspect run --file FILE [--schema FILE]
+```
+
+Its output contract starts at `schema=toolx.inspect.result`,
+`schema_version=1`. JSON `data` includes `command`, `file`, `schema_file`,
+`manifest`, `format`, `root_kind`, `path_count`, `matched_path_count`,
+`scalar_count`, `object_count`, `array_count`, `selected_path`,
+`selected_kind`, `selected_value`, `schema_issue_count`, `schema_issues`,
+`paths`, `frame`, `capabilities`, and `warnings`.
+
+`toolx-inspect` exit codes are `0` for success/help, `1` for runtime, load, or
+render errors, `2` for usage or parse errors, `3` for config/schema/manifest
+path not found, and `4` for manifest validation failures, schema compile
+failures, or schema validation issues unless `--allow-issues` is set.
+Manifests accept `file`, `schema`, `format`, `path`, `contains`, `max_paths`,
+`max_issues`, `focus`, `width`, `height`, and `allow_issues`; unknown top-level
+fields are rejected through `schemax`. The MVP is config/schema inspection
+only, not config editing, live watching, diffing, schema authoring, or a
+general TUI framework.
+
 ## Versioning
 
 Recommended current public tag: `v0.2.0`.

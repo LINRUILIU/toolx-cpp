@@ -22,10 +22,12 @@ HTTP, and logging utilities.
 | `tuix` | Experimental foundation | Terminal UI building blocks, styled frames, layouts, and MVP widgets |
 
 Public stability commitments live in [docs/stability.md](docs/stability.md).
-`toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, and `toolx-log` contract details live in
+`toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, `toolx-log`, and
+`toolx-inspect` contract details live in
 [docs/toolx-config.md](docs/toolx-config.md), [docs/toolx-sync.md](docs/toolx-sync.md),
 [docs/toolx-pack.md](docs/toolx-pack.md), [docs/toolx-http.md](docs/toolx-http.md),
-and [docs/toolx-log.md](docs/toolx-log.md).
+[docs/toolx-log.md](docs/toolx-log.md), and
+[docs/toolx-inspect.md](docs/toolx-inspect.md).
 
 ## Requirements
 
@@ -82,6 +84,7 @@ build-release-v020-stage/bin/toolx-sync --help
 build-release-v020-stage/bin/toolx-pack --help
 build-release-v020-stage/bin/toolx-http --help
 build-release-v020-stage/bin/toolx-log --help
+build-release-v020-stage/bin/toolx-inspect --help
 ```
 
 The install tree is also the shape of the prebuilt release archives:
@@ -103,7 +106,8 @@ The `v0.2.0` release is distributed through GitHub Releases with:
 
 Each binary archive is validated by unpacking it, running `toolx-config --help`,
 `toolx-sync --help`, `toolx-pack --help`, `toolx-http --help`, and
-`toolx-log --help`, running small pack/log smoke checks, and compiling the standalone
+`toolx-log --help`, `toolx-inspect --help`, running small pack/log/inspect smoke checks,
+and compiling the standalone
 [`examples/install_consumer`](examples/install_consumer) project via
 `find_package(ToolX)`.
 
@@ -216,6 +220,25 @@ toolx-log summarize --manifest log-summary.json --json
 offline analyzer, not a real-time tailer, monitoring daemon, alerting system, or
 generic arbitrary-log parser. The full CLI reference is in
 [docs/toolx-log.md](docs/toolx-log.md).
+
+## `toolx-inspect`
+
+`toolx-inspect` is the bounded-stable product CLI for config/schema terminal
+inspection. It can emit a stable report, render a deterministic terminal frame,
+or run the same view interactively.
+
+```bash
+toolx-inspect report --file app.json --schema schema.json --json
+toolx-inspect report --file app.json --path svc.port
+toolx-inspect render --file app.json --schema schema.json --width 100 --height 20
+toolx-inspect run --file app.json --schema schema.json
+```
+
+`toolx-inspect` uses `schema=toolx.inspect.result` and `schema_version=1`.
+Schema issues fail by default unless `--allow-issues` is set. It is a bounded
+config/schema inspector, not a config editor, live watcher, diff tool, or
+general TUI framework. The full CLI reference is in
+[docs/toolx-inspect.md](docs/toolx-inspect.md).
 
 ## Quality Gates
 

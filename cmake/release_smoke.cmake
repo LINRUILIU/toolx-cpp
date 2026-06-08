@@ -13,8 +13,9 @@ set(toolx_sync_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-sync${exe_suffix}")
 set(toolx_pack_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-pack${exe_suffix}")
 set(toolx_http_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-http${exe_suffix}")
 set(toolx_log_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-log${exe_suffix}")
+set(toolx_inspect_exe "${TOOLX_STAGE_PREFIX}/bin/toolx-inspect${exe_suffix}")
 
-foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}" "${toolx_http_exe}" "${toolx_log_exe}")
+foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}" "${toolx_http_exe}" "${toolx_log_exe}" "${toolx_inspect_exe}")
     if(NOT EXISTS "${tool}")
         message(FATAL_ERROR "Installed tool is missing: ${tool}")
     endif()
@@ -96,6 +97,13 @@ file(WRITE "${log_file}" "2026-06-04 10:00:00.000 INFO ready\n2026-06-04 10:01:0
 run_smoke(TOOLX_LOG_SUMMARY 0 "${toolx_log_exe}" summarize --file "${log_file}" --min-level error --json)
 assert_contains(TOOLX_LOG_SUMMARY "${TOOLX_LOG_SUMMARY_OUT}" "\"schema\": \"toolx.log.result\"")
 assert_contains(TOOLX_LOG_SUMMARY "${TOOLX_LOG_SUMMARY_OUT}" "\"matched\": 1")
+
+run_smoke(TOOLX_INSPECT_HELP 0 "${toolx_inspect_exe}" --help)
+assert_contains(TOOLX_INSPECT_HELP "${TOOLX_INSPECT_HELP_OUT}" "toolx-inspect - inspect config files")
+
+run_smoke(TOOLX_INSPECT_REPORT 0 "${toolx_inspect_exe}" report --file "${app_json}" --schema "${schema_json}" --json)
+assert_contains(TOOLX_INSPECT_REPORT "${TOOLX_INSPECT_REPORT_OUT}" "\"schema\": \"toolx.inspect.result\"")
+assert_contains(TOOLX_INSPECT_REPORT "${TOOLX_INSPECT_REPORT_OUT}" "\"schema_issue_count\": 0")
 
 set(pack_src "${smoke_root}/pack-src")
 set(pack_stage "${smoke_root}/pack-stage")

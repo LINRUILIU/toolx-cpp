@@ -39,14 +39,14 @@ operator workflow needs a standalone command.
 
 ## Current Admission State
 
-`toolx-config`, `toolx-sync`, `toolx-pack`, and `toolx-http` satisfy the
-admission bar for the first four positions in the product chain. `toolx-http`
-is documented in [toolx-http.md](toolx-http.md) and has its own installed
-target, black-box loopback contract tests, install/archive smoke coverage,
+`toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, and `toolx-log`
+satisfy the admission bar for the first five positions in the product chain.
+`toolx-log` is documented in [toolx-log.md](toolx-log.md) and has its own
+installed target, black-box contract tests, install/archive smoke coverage,
 standalone reference, and workflow example.
 
-`toolx-log` is the next candidate and should remain documented as planned until
-it satisfies the same admission rules.
+`toolx-inspect` is the next candidate and should remain documented as planned
+until it satisfies the same admission rules.
 
 ## Admission Rules
 

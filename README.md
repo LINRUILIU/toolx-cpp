@@ -22,9 +22,10 @@ HTTP, and logging utilities.
 | `tuix` | Experimental foundation | Terminal UI building blocks, styled frames, layouts, and MVP widgets |
 
 Public stability commitments live in [docs/stability.md](docs/stability.md).
-`toolx-config`, `toolx-sync`, `toolx-pack`, and `toolx-http` contract details live in
+`toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, and `toolx-log` contract details live in
 [docs/toolx-config.md](docs/toolx-config.md), [docs/toolx-sync.md](docs/toolx-sync.md),
-[docs/toolx-pack.md](docs/toolx-pack.md), and [docs/toolx-http.md](docs/toolx-http.md).
+[docs/toolx-pack.md](docs/toolx-pack.md), [docs/toolx-http.md](docs/toolx-http.md),
+and [docs/toolx-log.md](docs/toolx-log.md).
 
 ## Requirements
 
@@ -80,6 +81,7 @@ build-release-v020-stage/bin/toolx-config --help
 build-release-v020-stage/bin/toolx-sync --help
 build-release-v020-stage/bin/toolx-pack --help
 build-release-v020-stage/bin/toolx-http --help
+build-release-v020-stage/bin/toolx-log --help
 ```
 
 The install tree is also the shape of the prebuilt release archives:
@@ -100,8 +102,8 @@ The `v0.2.0` release is distributed through GitHub Releases with:
 - `SHA256SUMS`
 
 Each binary archive is validated by unpacking it, running `toolx-config --help`,
-`toolx-sync --help`, `toolx-pack --help`, and `toolx-http --help`, running a
-small pack stage/archive smoke, and compiling the standalone
+`toolx-sync --help`, `toolx-pack --help`, `toolx-http --help`, and
+`toolx-log --help`, running small pack/log smoke checks, and compiling the standalone
 [`examples/install_consumer`](examples/install_consumer) project via
 `find_package(ToolX)`.
 
@@ -196,6 +198,24 @@ toolx-http check --manifest http-preflight.json --json
 general `curl` replacement; load testing, OAuth, download/upload workflows, and
 complex body assertion DSLs are intentionally out of scope. The full CLI
 reference is in [docs/toolx-http.md](docs/toolx-http.md).
+
+## `toolx-log`
+
+`toolx-log` is the bounded-stable product CLI for offline runtime log diagnosis.
+It summarizes logsys text and JSON-lines logs by level, reports parse failures,
+filters by simple time/text criteria, and can fail lightweight gates.
+
+```bash
+toolx-log summarize --file app.log --min-level warning --json
+toolx-log summarize --file app.jsonl --format jsonl \
+  --since "2026-06-04 10:00:00.000" --fail-on-level error --json
+toolx-log summarize --manifest log-summary.json --json
+```
+
+`toolx-log` uses `schema=toolx.log.result` and `schema_version=1`. It is an
+offline analyzer, not a real-time tailer, monitoring daemon, alerting system, or
+generic arbitrary-log parser. The full CLI reference is in
+[docs/toolx-log.md](docs/toolx-log.md).
 
 ## Quality Gates
 

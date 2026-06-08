@@ -70,7 +70,8 @@ set(toolx_config_exe "${package_root}/bin/toolx-config${exe_suffix}")
 set(toolx_sync_exe "${package_root}/bin/toolx-sync${exe_suffix}")
 set(toolx_pack_exe "${package_root}/bin/toolx-pack${exe_suffix}")
 set(toolx_http_exe "${package_root}/bin/toolx-http${exe_suffix}")
-foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}" "${toolx_http_exe}")
+set(toolx_log_exe "${package_root}/bin/toolx-log${exe_suffix}")
+foreach(tool IN ITEMS "${toolx_config_exe}" "${toolx_sync_exe}" "${toolx_pack_exe}" "${toolx_http_exe}" "${toolx_log_exe}")
     if(NOT EXISTS "${tool}")
         message(FATAL_ERROR "Expected packaged tool is missing: ${tool}")
     endif()
@@ -133,6 +134,15 @@ assert_contains(TOOLX_PACK_HELP "${TOOLX_PACK_HELP_OUT}" "toolx-pack - stage rel
 
 run_checked(TOOLX_HTTP_HELP 0 "${toolx_http_exe}" --help)
 assert_contains(TOOLX_HTTP_HELP "${TOOLX_HTTP_HELP_OUT}" "toolx-http - preflight runtime HTTP endpoints")
+
+run_checked(TOOLX_LOG_HELP 0 "${toolx_log_exe}" --help)
+assert_contains(TOOLX_LOG_HELP "${TOOLX_LOG_HELP_OUT}" "toolx-log - summarize runtime logs")
+
+set(log_file "${extract_root}/app.log")
+file(WRITE "${log_file}" "2026-06-04 10:00:00.000 INFO ready\n2026-06-04 10:01:00.000 ERROR failed\n")
+run_checked(TOOLX_LOG_SUMMARY 0 "${toolx_log_exe}" summarize --file "${log_file}" --min-level error --json)
+assert_contains(TOOLX_LOG_SUMMARY "${TOOLX_LOG_SUMMARY_OUT}" "\"schema\": \"toolx.log.result\"")
+assert_contains(TOOLX_LOG_SUMMARY "${TOOLX_LOG_SUMMARY_OUT}" "\"matched\": 1")
 
 set(pack_src "${extract_root}/pack-src")
 set(pack_stage "${extract_root}/pack-stage")

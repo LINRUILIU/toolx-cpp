@@ -193,6 +193,29 @@ runtime defaults, and header defaults; unknown top-level and check fields are
 rejected through `schemax`. The MVP is endpoint preflight only, not a general
 curl replacement, load tester, credential flow, or body assertion DSL.
 
+`toolx-log` is a bounded-stable product CLI for offline runtime log diagnosis.
+Stable commands are:
+
+```bash
+toolx-log summarize --file FILE [--file FILE...] [options]
+toolx-log summarize --manifest FILE [options]
+```
+
+Its output contract starts at `schema=toolx.log.result`,
+`schema_version=1`. JSON `data` includes `command`, `manifest`, `files`,
+`file_count`, `format`, `filters`, `lines_read`, `blank_lines`, `parsed`,
+`matched`, `parse_failures`, `time_missing`, `by_level`, `first_time`,
+`last_time`, `samples`, `capabilities`, and `warnings`.
+
+`toolx-log` exit codes are `0` for success/help, `1` for runtime or read errors,
+`2` for usage or parse errors, `3` for file/manifest not found, and `4` for
+manifest validation failures or configured log gate failures. Manifests accept
+`files`, `format`, `level`, `min_level`, `contains`, `since`, `until`,
+`max_samples`, `fail_on_level`, and `max_parse_errors`; unknown top-level fields
+are rejected through `schemax`. The MVP supports offline logsys text and
+logsys JSON-lines analysis only, not live tailing, alerting, monitoring, or
+generic arbitrary-log parsing.
+
 ## Versioning
 
 Recommended current public tag: `v0.2.0`.

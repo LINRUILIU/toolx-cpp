@@ -1,7 +1,7 @@
 # toolx-config CLI Reference
 
-`toolx-config` is the first productized ToolX CLI. It is the primary `0.2.x`
-command-line compatibility contract in this repository.
+`toolx-config` is the first productized ToolX CLI. It remains the primary
+`0.3.x` command-line compatibility contract in this repository.
 
 ## Stable Contract
 
@@ -26,9 +26,9 @@ command-line compatibility contract in this repository.
 ```
 
 - `schema`, `schema_version`, `ok`, `code`, `message`, `issues`, and `data`
-  are additive-only for `0.2.x`.
+  are additive-only for `0.3.x`.
 - Existing fields may gain new siblings, but they should not be removed or
-  redefined within the `0.2.x` line.
+  redefined within the `0.3.x` line.
 
 ## Common Options
 
@@ -72,7 +72,7 @@ Schema-backed validation is available for `doctor` and `validate`:
 - `--schema <FILE>`: load and compile a `schemax` schema file, then validate the
   target config after the normal `cfgx` validation rules
 
-The `v0.2.0` schema MVP supports `type`, `required`, `properties`, `items`,
+The schema MVP supports `type`, `required`, `properties`, `items`,
 `minimum`, `maximum`, `enum`, `minLength`, `maxLength`, and
 `additionalProperties`. Schema failures return exit code `4`, the same as other
 validation failures. In `--json` mode, schema issues are reported additively in
@@ -95,7 +95,7 @@ toolx-config exists --file app.json --path svc.host
 
 `doctor` returns the normal `toolx.config.result` envelope in `--json` mode and adds
 diagnostic `data` fields such as `checks`, `recommendations`, `rules_count`,
-and `issues_count`. These fields are additive-only inside `0.2.x`.
+and `issues_count`. These fields are additive-only inside `0.3.x`.
 
 Snapshot flow:
 

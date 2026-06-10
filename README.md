@@ -1,10 +1,11 @@
 # ToolX C++ Toolkit
 
 ToolX is a practical C++20 toolkit for small tools and small-to-medium projects.
-The `v0.2.0` release line keeps the `v0.1.0` installable library and CLI
-contracts source-compatible while expanding the toolkit with schema validation,
-a more usable terminal UI foundation, and focused API growth in async, file,
-HTTP, and logging utilities.
+The `v0.3.0` release finalizes the first ToolX CLI product chain: config
+authoring, config publishing, local packaging, HTTP preflight, log diagnosis,
+and terminal inspection. `v0.2.0` established the single-tool product baseline
+with `toolx-config`; the `0.2.x` development line admitted the remaining
+bounded-stable CLI products that are now finalized in `v0.3.0`.
 
 ## Stability
 
@@ -48,9 +49,9 @@ ctest --preset dev
 Equivalent explicit configure:
 
 ```bash
-cmake -S . -B build-release-v020 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
-cmake --build build-release-v020 --parallel
-ctest --test-dir build-release-v020 --output-on-failure
+cmake -S . -B build-release-v030 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
+cmake --build build-release-v030 --parallel
+ctest --test-dir build-release-v030 --output-on-failure
 ```
 
 Deprecated `COPILOT_*` CMake options still exist for one compatibility cycle,
@@ -61,7 +62,7 @@ but new integrations should use `TOOLX_*`.
 Install a local stage tree:
 
 ```bash
-cmake --install build-release-v020 --prefix build-release-v020-stage
+cmake --install build-release-v030 --prefix build-release-v030-stage
 ```
 
 Consumer project:
@@ -76,15 +77,15 @@ target_link_libraries(my_app PRIVATE toolx::cfgx toolx::logsys toolx::schemax)
 Installed tools:
 
 ```bash
-cmake -S examples/install_consumer -B build-release-v020-consumer \
-  -DCMAKE_PREFIX_PATH="$PWD/build-release-v020-stage"
-cmake --build build-release-v020-consumer --parallel
-build-release-v020-stage/bin/toolx-config --help
-build-release-v020-stage/bin/toolx-sync --help
-build-release-v020-stage/bin/toolx-pack --help
-build-release-v020-stage/bin/toolx-http --help
-build-release-v020-stage/bin/toolx-log --help
-build-release-v020-stage/bin/toolx-inspect --help
+cmake -S examples/install_consumer -B build-release-v030-consumer \
+  -DCMAKE_PREFIX_PATH="$PWD/build-release-v030-stage"
+cmake --build build-release-v030-consumer --parallel
+build-release-v030-stage/bin/toolx-config --help
+build-release-v030-stage/bin/toolx-sync --help
+build-release-v030-stage/bin/toolx-pack --help
+build-release-v030-stage/bin/toolx-http --help
+build-release-v030-stage/bin/toolx-log --help
+build-release-v030-stage/bin/toolx-inspect --help
 ```
 
 The install tree is also the shape of the prebuilt release archives:
@@ -96,12 +97,12 @@ The install tree is also the shape of the prebuilt release archives:
 
 ## Release Artifacts
 
-The `v0.2.0` release is distributed through GitHub Releases with:
+The `v0.3.0` release is distributed through GitHub Releases with:
 
-- `ToolX-v0.2.0-source.tar.gz`
-- `ToolX-v0.2.0-windows-x86_64.zip`
-- `ToolX-v0.2.0-linux-x86_64.tar.gz`
-- `ToolX-v0.2.0-macos-universal.tar.gz` or `ToolX-v0.2.0-macos-x86_64.tar.gz`
+- `ToolX-v0.3.0-source.tar.gz`
+- `ToolX-v0.3.0-windows-x86_64.zip`
+- `ToolX-v0.3.0-linux-x86_64.tar.gz`
+- `ToolX-v0.3.0-macos-universal.tar.gz` or `ToolX-v0.3.0-macos-x86_64.tar.gz`
 - `SHA256SUMS`
 
 Each binary archive is validated by unpacking it, running `toolx-config --help`,
@@ -126,7 +127,7 @@ toolx-config doctor --file app.json --schema schema.json --require svc.host --ex
 ```
 
 `--json` output uses `schema=toolx.config.result` and `schema_version=1`. Fields may
-be added, but existing fields are additive-only within the `0.2.x` line. The
+be added, but existing fields are additive-only within the `0.3.x` line. The
 full CLI reference is in [docs/toolx-config.md](docs/toolx-config.md).
 
 ## `toolx-config` Cookbook
@@ -140,12 +141,12 @@ export/restore. A realistic starter lives in
 
 Every public module has a focused `examples/*_cookbook.cpp` executable. Each
 cookbook contains 3-5 commented scenarios covering normal use, boundary behavior,
-and the 0.2.0 API additions without requiring network access or external
+and the current API additions without requiring network access or external
 services.
 
 ```bash
-cmake --build build-release-v020 --target asyncx_cookbook
-build-release-v020/asyncx_cookbook
+cmake --build build-release-v030 --target asyncx_cookbook
+build-release-v030/asyncx_cookbook
 ```
 
 ## `toolx-sync`
@@ -175,8 +176,8 @@ It stages built files into a release-shaped tree and can create deterministic
 tar archives from that tree.
 
 ```bash
-toolx-pack plan --src build-release-v020-stage --out dist/toolx --archive dist/toolx.tar --json
-toolx-pack stage --src build-release-v020-stage --out dist/toolx \
+toolx-pack plan --src build-release-v030-stage --out dist/toolx --archive dist/toolx.tar --json
+toolx-pack stage --src build-release-v030-stage --out dist/toolx \
   --include bin --include include --include lib --archive dist/toolx.tar --json
 toolx-pack archive --src dist/toolx --archive dist/toolx.tar --json
 ```
@@ -245,17 +246,17 @@ general TUI framework. The full CLI reference is in
 Release candidates should pass:
 
 ```bash
-cmake -S . -B build-release-v020 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
-cmake --build build-release-v020 --target format-check
-cmake --build build-release-v020 --parallel
-ctest --test-dir build-release-v020 --output-on-failure
-cmake --install build-release-v020 --prefix build-release-v020-stage
-cmake -S examples/install_consumer -B build-release-v020-consumer -DCMAKE_PREFIX_PATH="$PWD/build-release-v020-stage"
-cmake --build build-release-v020-consumer --parallel
-cmake -DTOOLX_STAGE_PREFIX=build-release-v020-stage -P cmake/release_smoke.cmake
-cpack --config build-release-v020/CPackConfig.cmake
-cmake -DPACKAGE_DIR=build-release-v020/packages -P cmake/release_archive_smoke.cmake
-cpack --config build-release-v020/CPackSourceConfig.cmake
+cmake -S . -B build-release-v030 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
+cmake --build build-release-v030 --target format-check
+cmake --build build-release-v030 --parallel
+ctest --test-dir build-release-v030 --output-on-failure
+cmake --install build-release-v030 --prefix build-release-v030-stage
+cmake -S examples/install_consumer -B build-release-v030-consumer -DCMAKE_PREFIX_PATH="$PWD/build-release-v030-stage"
+cmake --build build-release-v030-consumer --parallel
+cmake -DTOOLX_STAGE_PREFIX=build-release-v030-stage -P cmake/release_smoke.cmake
+cpack --config build-release-v030/CPackConfig.cmake
+cmake -DPACKAGE_DIR=build-release-v030/packages -P cmake/release_archive_smoke.cmake
+cpack --config build-release-v030/CPackSourceConfig.cmake
 ```
 
 Maintainer workflow details are in [README.dev.md](README.dev.md).

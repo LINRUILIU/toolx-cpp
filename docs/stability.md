@@ -1,7 +1,7 @@
 # ToolX Stability Boundary
 
-This document defines the 0.2.x public stability boundary. ToolX does not
-promise ABI stability in 0.2.x. It does aim to preserve source compatibility for
+This document defines the 0.3.x public stability boundary. ToolX does not
+promise ABI stability in 0.3.x. It does aim to preserve source compatibility for
 the stable core APIs unless a safety or correctness bug requires a breaking
 change.
 
@@ -22,8 +22,8 @@ tools and small-to-medium C++20 projects:
 
 Stable means:
 
-- Existing public names should remain callable through 0.2.x.
-- Existing JSON/CLI fields should remain additive-only through 0.2.x.
+- Existing public names should remain callable through 0.3.x.
+- Existing JSON/CLI fields should remain additive-only through 0.3.x.
 - Behavior documented in README and covered by tests should not regress without
   release notes and migration guidance.
 
@@ -90,7 +90,7 @@ exclusive consume depending on platform/input source.
 
 ## Future Work
 
-The following are intentionally outside the 0.2.x stable surface:
+The following are intentionally outside the 0.3.x stable surface:
 
 - `fsx` zip archive creation. `QueryCapabilities()` reports `tar_archive=true`
   for the deterministic tar MVP and `zip_archive=false`.
@@ -105,7 +105,8 @@ The following are intentionally outside the 0.2.x stable surface:
 
 ## CLI Contracts
 
-`toolx-config` is a 0.2.x product contract. Stable subcommands currently include
+`toolx-config` was introduced as the first product CLI and remains the primary
+0.3.x command-line contract. Stable subcommands currently include
 `load`, `adapters`, `adapter-activate`, `doctor`, `snapshot-export`,
 `snapshot-restore`, `get`, `set`, `exists`, `merge`, `validate`, and
 `reload-dryrun`.
@@ -244,9 +245,9 @@ general TUI framework.
 
 ## Versioning
 
-Recommended current public tag: `v0.2.0`.
+Recommended current public tag: `v0.3.0`.
 
-For 0.2.x:
+For 0.3.x:
 
 - Patch releases should be source-compatible for stable modules.
 - Minor version increments may add APIs or promote experimental APIs.

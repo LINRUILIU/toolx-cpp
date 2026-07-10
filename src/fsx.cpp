@@ -6,19 +6,39 @@
 #include <atomic>
 #include <array>
 #include <chrono>
+#include <cerrno>
 #include <cstdio>
 #include <cctype>
 #include <cstring>
 #include <deque>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <sstream>
+#include <system_error>
 #include <thread>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#ifdef CopyFile
+#undef CopyFile
+#endif
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace fsx
 {
@@ -42,7 +62,9 @@ struct UndoAction
 
 struct ExecuteState
 {
+    const RunOptions* options{nullptr};
     std::vector<UndoAction> undo_stack;
+    std::vector<Path> cleanup_after_commit;
 };
 
 struct ExecOutcome
@@ -233,6 +255,7 @@ std::vector<std::string> split_pipe(std::string_view line)
 
 constexpr std::string_view kJournalHeaderV1{"FSXJ1"};
 constexpr std::string_view kJournalHeaderV2{"FSXJ2"};
+constexpr std::string_view kJournalHeaderV3{"FSXJ3"};
 constexpr std::string_view kJournalCommit{"COMMIT"};
 
 bool journal_can_start(const RunOptions& options, std::string* error)
@@ -273,7 +296,7 @@ bool journal_can_start(const RunOptions& options, std::string* error)
     {
         return true;
     }
-    if (header == kJournalHeaderV2)
+    if (header == kJournalHeaderV2 || header == kJournalHeaderV3)
     {
         std::string line;
         while (std::getline(in, line))
@@ -293,6 +316,121 @@ bool journal_can_start(const RunOptions& options, std::string* error)
     return false;
 }
 
+bool write_journal_bytes_sync(const Path& journal_path, std::string_view bytes, bool truncate,
+                              std::string_view operation, std::string* error)
+{
+    auto fail = [error, operation](std::string detail)
+    {
+        if (error != nullptr)
+        {
+            *error = utils::err::join_context("fsx", "journal",
+                                              "failed to " + std::string(operation) + ": " + std::move(detail));
+        }
+        return false;
+    };
+
+#if defined(_WIN32)
+    const DWORD disposition = truncate ? CREATE_ALWAYS : OPEN_ALWAYS;
+    HANDLE handle = CreateFileW(journal_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                disposition, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+    {
+        return fail(std::system_category().message(static_cast<int>(GetLastError())));
+    }
+
+    auto close_handle = [&handle]()
+    {
+        if (handle != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(handle);
+            handle = INVALID_HANDLE_VALUE;
+        }
+    };
+
+    if (!truncate)
+    {
+        LARGE_INTEGER zero{};
+        if (!SetFilePointerEx(handle, zero, nullptr, FILE_END))
+        {
+            const DWORD code = GetLastError();
+            close_handle();
+            return fail(std::system_category().message(static_cast<int>(code)));
+        }
+    }
+
+    std::size_t offset = 0;
+    while (offset < bytes.size())
+    {
+        const std::size_t remaining = bytes.size() - offset;
+        const DWORD chunk = static_cast<DWORD>(
+            std::min<std::size_t>(remaining, static_cast<std::size_t>(std::numeric_limits<DWORD>::max())));
+        DWORD written = 0;
+        if (!WriteFile(handle, bytes.data() + offset, chunk, &written, nullptr) || written == 0)
+        {
+            const DWORD code = GetLastError();
+            close_handle();
+            return fail(std::system_category().message(static_cast<int>(code)));
+        }
+        offset += written;
+    }
+
+    if (!FlushFileBuffers(handle))
+    {
+        const DWORD code = GetLastError();
+        close_handle();
+        return fail(std::system_category().message(static_cast<int>(code)));
+    }
+    if (!CloseHandle(handle))
+    {
+        handle = INVALID_HANDLE_VALUE;
+        return fail(std::system_category().message(static_cast<int>(GetLastError())));
+    }
+    handle = INVALID_HANDLE_VALUE;
+    return true;
+#else
+    const int flags = O_WRONLY | O_CREAT | (truncate ? O_TRUNC : O_APPEND);
+    const int fd = ::open(journal_path.c_str(), flags, 0600);
+    if (fd < 0)
+    {
+        return fail(std::strerror(errno));
+    }
+
+    std::size_t offset = 0;
+    while (offset < bytes.size())
+    {
+        const ssize_t written = ::write(fd, bytes.data() + offset, bytes.size() - offset);
+        if (written < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            const int code = errno;
+            (void)::close(fd);
+            return fail(std::strerror(code));
+        }
+        if (written == 0)
+        {
+            (void)::close(fd);
+            return fail("short write");
+        }
+        offset += static_cast<std::size_t>(written);
+    }
+
+    if (::fsync(fd) != 0)
+    {
+        const int code = errno;
+        (void)::close(fd);
+        return fail(std::strerror(code));
+    }
+    if (::close(fd) != 0)
+    {
+        return fail(std::strerror(errno));
+    }
+    return true;
+#endif
+}
+
 bool journal_append_line(const RunOptions& options, std::string_view line, std::string_view operation,
                          std::string* error)
 {
@@ -300,28 +438,7 @@ bool journal_append_line(const RunOptions& options, std::string_view line, std::
     {
         return true;
     }
-
-    std::ofstream journal(options.journal_path, std::ios::binary | std::ios::app);
-    if (!journal.is_open())
-    {
-        if (error != nullptr)
-        {
-            *error = utils::err::join_context("fsx", "journal", "failed to open journal for " + std::string(operation));
-        }
-        return false;
-    }
-
-    journal << line;
-    journal.flush();
-    if (!journal.good())
-    {
-        if (error != nullptr)
-        {
-            *error = utils::err::join_context("fsx", "journal", "failed to " + std::string(operation));
-        }
-        return false;
-    }
-    return true;
+    return write_journal_bytes_sync(Path(options.journal_path), line, false, operation, error);
 }
 
 bool journal_write_header(const RunOptions& options, std::string* error)
@@ -335,27 +452,8 @@ bool journal_write_header(const RunOptions& options, std::string* error)
         return true;
     }
 
-    std::ofstream journal(options.journal_path, std::ios::binary | std::ios::trunc);
-    if (!journal.is_open())
-    {
-        if (error != nullptr)
-        {
-            *error = utils::err::join_context("fsx", "journal", "failed to open journal for writing");
-        }
-        return false;
-    }
-
-    journal << kJournalHeaderV2 << '\n';
-    journal.flush();
-    if (!journal.good())
-    {
-        if (error != nullptr)
-        {
-            *error = utils::err::join_context("fsx", "journal", "failed to write journal header");
-        }
-        return false;
-    }
-    return true;
+    return write_journal_bytes_sync(Path(options.journal_path), std::string(kJournalHeaderV3) + "\n", true,
+                                    "write journal header", error);
 }
 
 bool journal_write_undo(const RunOptions& options, const UndoAction& undo, std::string* error)
@@ -375,59 +473,118 @@ bool journal_write_commit(const RunOptions& options, std::string* error)
     return journal_append_line(options, std::string(kJournalCommit) + "\n", "commit journal", error);
 }
 
-bool move_file_force(const Path& from, const Path& to, ConflictPolicy conflict_policy, bool* skipped,
-                     std::string* error)
+void trigger_journal_failpoint_after_sync(const ExecuteState& state)
 {
-    std::error_code ec;
-    if (skipped != nullptr)
+#if defined(FSX_ENABLE_TEST_FAILPOINTS)
+    if (state.options == nullptr || state.options->journal_path.empty())
     {
-        *skipped = false;
+        return;
     }
-
-    if (!path_exists(from))
+    const char* value = std::getenv("TOOLX_FSX_TEST_FAILPOINT");
+    if (value != nullptr && std::strcmp(value, "after-journal-sync-before-mutation") == 0)
     {
-        *error = utils::err::join_context("fsx", "move_file", "source file not found");
+        std::_Exit(86);
+    }
+#else
+    (void)state;
+#endif
+}
+
+bool record_undo(ExecuteState* state, const UndoAction& undo, std::string* error, bool trigger_failpoint)
+{
+    if (state == nullptr || state->options == nullptr)
+    {
+        if (error != nullptr)
+        {
+            *error = utils::err::join_context("fsx", "journal", "missing execution state");
+        }
         return false;
     }
+    if (!journal_write_undo(*state->options, undo, error))
+    {
+        return false;
+    }
+    state->undo_stack.push_back(undo);
+    if (trigger_failpoint)
+    {
+        trigger_journal_failpoint_after_sync(*state);
+    }
+    return true;
+}
 
+void track_cleanup_after_commit(ExecuteState* state, const Path& path)
+{
+    if (state != nullptr)
+    {
+        state->cleanup_after_commit.push_back(path);
+    }
+}
+
+bool move_path_without_overwrite(const Path& from, const Path& to, std::string_view operation, std::string* error)
+{
+    if (!path_exists(from))
+    {
+        *error = utils::err::join_context("fsx", std::string(operation), "source path not found");
+        return false;
+    }
     if (!ensure_parent(to, error))
     {
         return false;
     }
-
     if (path_exists(to))
     {
-        if (conflict_policy == ConflictPolicy::Skip)
-        {
-            if (skipped != nullptr)
-            {
-                *skipped = true;
-            }
-            return true;
-        }
-
-        if (conflict_policy == ConflictPolicy::Fail)
-        {
-            *error = utils::err::join_context("fsx", "move_file", "destination already exists");
-            return false;
-        }
-
-        std::filesystem::remove(to, ec);
-        if (ec)
-        {
-            *error = utils::err::join_context("fsx", "move_file", ec.message());
-            return false;
-        }
-    }
-
-    std::filesystem::rename(from, to, ec);
-    if (ec)
-    {
-        *error = utils::err::join_context("fsx", "move_file", ec.message());
+        *error = utils::err::join_context("fsx", std::string(operation), "destination already exists");
         return false;
     }
 
+    std::error_code ec;
+    std::filesystem::rename(from, to, ec);
+    if (ec)
+    {
+        *error = utils::err::join_context("fsx", std::string(operation), ec.message());
+        return false;
+    }
     return true;
+}
+
+bool write_temporary_file(const Path& temp, std::string_view data, std::string* error)
+{
+    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+    if (!out.is_open())
+    {
+        *error = utils::err::join_context("fsx", "atomic_write", "failed to create temporary file");
+        return false;
+    }
+    out.write(data.data(), static_cast<std::streamsize>(data.size()));
+    out.flush();
+    if (!out.good())
+    {
+        out.close();
+        std::error_code ec;
+        std::filesystem::remove(temp, ec);
+        *error = utils::err::join_context("fsx", "atomic_write", "failed to write temporary file");
+        return false;
+    }
+    return true;
+}
+
+bool copy_to_temporary_file(const Path& src, const Path& temp, std::string* error)
+{
+    std::error_code ec;
+    std::filesystem::copy_file(src, temp, std::filesystem::copy_options::none, ec);
+    if (ec)
+    {
+        const std::string detail = ec.message();
+        std::filesystem::remove(temp, ec);
+        *error = utils::err::join_context("fsx", "copy_file", detail);
+        return false;
+    }
+    return true;
+}
+
+bool record_temporary_cleanup(ExecuteState* state, const Path& temp, std::string* error)
+{
+    return record_undo(state, {UndoAction::Kind::RemovePath, temp, {}}, error, false);
 }
 
 bool write_file_atomic(const Path& target, std::string_view data, ConflictPolicy conflict_policy, ExecuteState* state,
@@ -437,95 +594,78 @@ bool write_file_atomic(const Path& target, std::string_view data, ConflictPolicy
     {
         *skipped = false;
     }
-
     if (!ensure_parent(target, error))
     {
         return false;
     }
-
-    Path previous_backup;
     const bool had_existing = path_exists(target);
-    if (had_existing)
+    if (had_existing && conflict_policy == ConflictPolicy::Skip)
     {
-        if (conflict_policy == ConflictPolicy::Skip)
+        if (skipped != nullptr)
         {
-            if (skipped != nullptr)
-            {
-                *skipped = true;
-            }
-            return true;
+            *skipped = true;
         }
-
-        if (conflict_policy == ConflictPolicy::Fail)
-        {
-            *error = utils::err::join_context("fsx", "atomic_write", "target exists and overwrite is disabled");
-            return false;
-        }
-
-        previous_backup = make_temp_path(target, "old");
-        bool ignored = false;
-        if (!move_file_force(target, previous_backup, ConflictPolicy::Fail, &ignored, error))
-        {
-            return false;
-        }
+        return true;
+    }
+    if (had_existing && conflict_policy == ConflictPolicy::Fail)
+    {
+        *error = utils::err::join_context("fsx", "atomic_write", "target exists and overwrite is disabled");
+        return false;
     }
 
     const Path temp = make_temp_path(target, "new");
+    if (!write_temporary_file(temp, data, error))
     {
-        std::ofstream out(temp.string(), std::ios::binary);
-        if (!out.is_open())
-        {
-            if (had_existing)
-            {
-                std::string restore_error;
-                bool ignored = false;
-                (void)move_file_force(previous_backup, target, ConflictPolicy::Overwrite, &ignored, &restore_error);
-            }
-            *error = utils::err::join_context("fsx", "atomic_write", "failed to create temporary file");
-            return false;
-        }
-
-        out.write(data.data(), static_cast<std::streamsize>(data.size()));
-        if (!out.good())
-        {
-            out.close();
-            std::error_code ec;
-            std::filesystem::remove(temp, ec);
-            if (had_existing)
-            {
-                std::string restore_error;
-                bool ignored = false;
-                (void)move_file_force(previous_backup, target, ConflictPolicy::Overwrite, &ignored, &restore_error);
-            }
-            *error = utils::err::join_context("fsx", "atomic_write", "failed to write temporary file");
-            return false;
-        }
+        return false;
     }
-
-    bool skipped_apply = false;
-    if (!move_file_force(temp, target, ConflictPolicy::Overwrite, &skipped_apply, error))
+    if (!record_temporary_cleanup(state, temp, error))
     {
         std::error_code ec;
         std::filesystem::remove(temp, ec);
-        if (had_existing)
-        {
-            std::string restore_error;
-            bool ignored = false;
-            (void)move_file_force(previous_backup, target, ConflictPolicy::Overwrite, &ignored, &restore_error);
-        }
         return false;
     }
 
     if (had_existing)
     {
-        state->undo_stack.push_back({UndoAction::Kind::MovePath, previous_backup, target});
-        state->undo_stack.push_back({UndoAction::Kind::RemovePath, target, {}});
-    }
-    else
-    {
-        state->undo_stack.push_back({UndoAction::Kind::RemovePath, target, {}});
+        const Path previous_backup = make_temp_path(target, "old");
+        if (!record_undo(state, {UndoAction::Kind::MovePath, previous_backup, target}, error, true) ||
+            !move_path_without_overwrite(target, previous_backup, "atomic_write", error))
+        {
+            return false;
+        }
+        track_cleanup_after_commit(state, previous_backup);
     }
 
+    if (!record_undo(state, {UndoAction::Kind::MovePath, target, temp}, error, true))
+    {
+        return false;
+    }
+    return move_path_without_overwrite(temp, target, "atomic_write", error);
+}
+
+bool move_existing_destination_to_backup(const Path& dst, const Path& destination_backup, bool keep_backup,
+                                         ExecuteState* state, std::string_view operation, std::string* error)
+{
+    if (path_exists(destination_backup))
+    {
+        const Path prior_backup = make_temp_path(destination_backup, "prior");
+        if (!record_undo(state, {UndoAction::Kind::MovePath, prior_backup, destination_backup}, error, true) ||
+            !move_path_without_overwrite(destination_backup, prior_backup, operation, error))
+        {
+            return false;
+        }
+        track_cleanup_after_commit(state, prior_backup);
+    }
+
+    if (!record_undo(state, {UndoAction::Kind::MovePath, destination_backup, dst}, error, true) ||
+        !move_path_without_overwrite(dst, destination_backup, operation, error))
+    {
+        return false;
+    }
+    if (!keep_backup)
+    {
+        track_cleanup_after_commit(state, destination_backup);
+    }
     return true;
 }
 
@@ -542,14 +682,13 @@ bool safe_replace_file(const Path& src, const Path& dst, bool backup, const RunO
         *error = utils::err::join_context("fsx", "safe_replace", "source file not found");
         return false;
     }
+
     if (!ensure_parent(dst, error))
     {
         return false;
     }
 
     const bool destination_exists = path_exists(dst);
-    Path destination_backup;
-
     if (destination_exists)
     {
         if (options.conflict_policy == ConflictPolicy::Skip)
@@ -567,54 +706,20 @@ bool safe_replace_file(const Path& src, const Path& dst, bool backup, const RunO
             return false;
         }
 
-        if (backup || options.default_backup)
+        const bool keep_backup = backup || options.default_backup;
+        const Path destination_backup =
+            keep_backup ? Path(dst.string() + options.backup_suffix) : make_temp_path(dst, "old");
+        if (!move_existing_destination_to_backup(dst, destination_backup, keep_backup, state, "safe_replace", error))
         {
-            destination_backup = Path(dst.string() + options.backup_suffix);
-            bool ignored = false;
-            if (!move_file_force(dst, destination_backup, ConflictPolicy::Overwrite, &ignored, error))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            destination_backup = make_temp_path(dst, "old");
-            bool ignored = false;
-            if (!move_file_force(dst, destination_backup, ConflictPolicy::Fail, &ignored, error))
-            {
-                return false;
-            }
+            return false;
         }
     }
 
-    bool skipped_move = false;
-    if (!move_file_force(src, dst, options.conflict_policy, &skipped_move, error))
+    if (!record_undo(state, {UndoAction::Kind::MovePath, dst, src}, error, true))
     {
-        if (destination_exists)
-        {
-            std::string restore_error;
-            bool ignored = false;
-            (void)move_file_force(destination_backup, dst, ConflictPolicy::Overwrite, &ignored, &restore_error);
-        }
         return false;
     }
-
-    if (skipped_move)
-    {
-        if (skipped != nullptr)
-        {
-            *skipped = true;
-        }
-        return true;
-    }
-
-    if (destination_exists)
-    {
-        state->undo_stack.push_back({UndoAction::Kind::MovePath, destination_backup, dst});
-    }
-    state->undo_stack.push_back({UndoAction::Kind::MovePath, dst, src});
-
-    return true;
+    return move_path_without_overwrite(src, dst, "safe_replace", error);
 }
 
 bool rename_file(const Path& src, const Path& dst, const RunOptions& options, ExecuteState* state, std::string* error,
@@ -624,19 +729,16 @@ bool rename_file(const Path& src, const Path& dst, const RunOptions& options, Ex
     {
         *skipped = false;
     }
-
     if (!path_exists(src))
     {
         *error = utils::err::join_context("fsx", "rename", "source file not found");
         return false;
     }
-
     if (!ensure_parent(dst, error))
     {
         return false;
     }
 
-    Path destination_backup;
     const bool destination_exists = path_exists(dst);
     if (destination_exists)
     {
@@ -648,49 +750,23 @@ bool rename_file(const Path& src, const Path& dst, const RunOptions& options, Ex
             }
             return true;
         }
-
         if (options.conflict_policy == ConflictPolicy::Fail)
         {
             *error = utils::err::join_context("fsx", "rename", "destination exists and overwrite is disabled");
             return false;
         }
-
-        destination_backup = make_temp_path(dst, "old");
-        bool ignored = false;
-        if (!move_file_force(dst, destination_backup, ConflictPolicy::Fail, &ignored, error))
+        const Path destination_backup = make_temp_path(dst, "old");
+        if (!move_existing_destination_to_backup(dst, destination_backup, false, state, "rename", error))
         {
             return false;
         }
     }
 
-    bool skipped_move = false;
-    if (!move_file_force(src, dst, options.conflict_policy, &skipped_move, error))
+    if (!record_undo(state, {UndoAction::Kind::MovePath, dst, src}, error, true))
     {
-        if (destination_exists)
-        {
-            std::string restore_error;
-            bool ignored = false;
-            (void)move_file_force(destination_backup, dst, ConflictPolicy::Overwrite, &ignored, &restore_error);
-        }
         return false;
     }
-
-    if (skipped_move)
-    {
-        if (skipped != nullptr)
-        {
-            *skipped = true;
-        }
-        return true;
-    }
-
-    if (destination_exists)
-    {
-        state->undo_stack.push_back({UndoAction::Kind::MovePath, destination_backup, dst});
-    }
-    state->undo_stack.push_back({UndoAction::Kind::MovePath, dst, src});
-
-    return true;
+    return move_path_without_overwrite(src, dst, "rename", error);
 }
 
 bool copy_file_tracked(const Path& src, const Path& dst, const RunOptions& options, ExecuteState* state,
@@ -711,54 +787,47 @@ bool copy_file_tracked(const Path& src, const Path& dst, const RunOptions& optio
     }
 
     const bool destination_exists = path_exists(dst);
-    Path destination_backup;
-    if (destination_exists)
+    if (destination_exists && options.conflict_policy == ConflictPolicy::Skip)
     {
-        if (options.conflict_policy == ConflictPolicy::Skip)
+        if (skipped != nullptr)
         {
-            if (skipped != nullptr)
-            {
-                *skipped = true;
-            }
-            return true;
+            *skipped = true;
         }
-        if (options.conflict_policy == ConflictPolicy::Fail)
-        {
-            *error = utils::err::join_context("fsx", "copy_file", "destination exists");
-            return false;
-        }
-        destination_backup = make_temp_path(dst, "old");
-        bool ignored = false;
-        if (!move_file_force(dst, destination_backup, ConflictPolicy::Fail, &ignored, error))
-        {
-            return false;
-        }
+        return true;
     }
 
-    std::error_code ec;
-    std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec)
+    if (destination_exists && options.conflict_policy == ConflictPolicy::Fail)
     {
-        if (destination_exists)
-        {
-            std::string restore_error;
-            bool ignored = false;
-            (void)move_file_force(destination_backup, dst, ConflictPolicy::Overwrite, &ignored, &restore_error);
-        }
-        *error = utils::err::join_context("fsx", "copy_file", ec.message());
+        *error = utils::err::join_context("fsx", "copy_file", "destination exists");
+        return false;
+    }
+
+    const Path temp = make_temp_path(dst, "copy");
+    if (!copy_to_temporary_file(src, temp, error))
+    {
+        return false;
+    }
+    if (!record_temporary_cleanup(state, temp, error))
+    {
+        std::error_code ec;
+        std::filesystem::remove(temp, ec);
         return false;
     }
 
     if (destination_exists)
     {
-        state->undo_stack.push_back({UndoAction::Kind::MovePath, destination_backup, dst});
-        state->undo_stack.push_back({UndoAction::Kind::RemovePath, dst, {}});
+        const Path destination_backup = make_temp_path(dst, "old");
+        if (!move_existing_destination_to_backup(dst, destination_backup, false, state, "copy_file", error))
+        {
+            return false;
+        }
     }
-    else
+
+    if (!record_undo(state, {UndoAction::Kind::MovePath, dst, temp}, error, true))
     {
-        state->undo_stack.push_back({UndoAction::Kind::RemovePath, dst, {}});
+        return false;
     }
-    return true;
+    return move_path_without_overwrite(temp, dst, "copy_file", error);
 }
 
 bool remove_path_tracked(const Path& target, const RunOptions& options, ExecuteState* state, std::string* error,
@@ -768,16 +837,7 @@ bool remove_path_tracked(const Path& target, const RunOptions& options, ExecuteS
     {
         *skipped = false;
     }
-    if (!path_exists(target))
-    {
-        if (skipped != nullptr)
-        {
-            *skipped = true;
-        }
-        return true;
-    }
-
-    if (options.conflict_policy == ConflictPolicy::Skip)
+    if (!path_exists(target) || options.conflict_policy == ConflictPolicy::Skip)
     {
         if (skipped != nullptr)
         {
@@ -787,12 +847,12 @@ bool remove_path_tracked(const Path& target, const RunOptions& options, ExecuteS
     }
 
     const Path backup = make_temp_path(target, "removed");
-    bool ignored = false;
-    if (!move_file_force(target, backup, ConflictPolicy::Fail, &ignored, error))
+    if (!record_undo(state, {UndoAction::Kind::MovePath, backup, target}, error, true) ||
+        !move_path_without_overwrite(target, backup, "remove_path", error))
     {
         return false;
     }
-    state->undo_stack.push_back({UndoAction::Kind::MovePath, backup, target});
+    track_cleanup_after_commit(state, backup);
     return true;
 }
 
@@ -868,6 +928,11 @@ bool rollback(ExecuteState* state, RunResult* result, RollbackMode mode)
         {
             if (std::filesystem::exists(it->from, ec))
             {
+                if (std::filesystem::exists(it->to, ec))
+                {
+                    all_ok = false;
+                    continue;
+                }
                 std::filesystem::rename(it->from, it->to, ec);
                 if (!ec)
                 {
@@ -882,6 +947,19 @@ bool rollback(ExecuteState* state, RunResult* result, RollbackMode mode)
     }
 
     return all_ok;
+}
+
+void cleanup_after_success(ExecuteState* state)
+{
+    if (state == nullptr)
+    {
+        return;
+    }
+    for (const auto& path : state->cleanup_after_commit)
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
 }
 
 ConflictPolicy effective_policy(const RunOptions& options)
@@ -1244,6 +1322,7 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
     }
 
     ExecuteState state;
+    state.options = &options;
     std::string journal_error;
     if (!journal_write_header(options, &journal_error))
     {
@@ -1301,7 +1380,6 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
 
         ExecOutcome outcome;
         const ConflictPolicy policy = effective_policy(options);
-        const std::size_t undo_start = state.undo_stack.size();
 
         if (action.kind == BatchPlan::ActionKind::AtomicWrite)
         {
@@ -1348,21 +1426,6 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
         report.skipped = outcome.skipped;
         result.steps.push_back(report);
 
-        for (std::size_t undo_index = undo_start; undo_index < state.undo_stack.size(); ++undo_index)
-        {
-            journal_error.clear();
-            if (!journal_write_undo(options, state.undo_stack[undo_index], &journal_error))
-            {
-                result.error = journal_error;
-                if (rollback_and_mark())
-                {
-                    cleanup_rolled_back_journal();
-                }
-                result.ok = false;
-                return result;
-            }
-        }
-
         if (!outcome.ok)
         {
             result.error = outcome.error;
@@ -1397,17 +1460,12 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
     journal_error.clear();
     if (!journal_write_commit(options, &journal_error))
     {
-        std::error_code cleanup_ec;
-        const bool removed =
-            options.journal_path.empty() || std::filesystem::remove(Path(options.journal_path), cleanup_ec);
-        if (cleanup_ec || !removed)
-        {
-            result.error = journal_error;
-            return result;
-        }
+        result.error = journal_error;
+        return result;
     }
 
     result.ok = true;
+    cleanup_after_success(&state);
     if (!options.journal_path.empty() && !options.keep_journal_on_success)
     {
         std::error_code ec;
@@ -1435,13 +1493,15 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
     }
 
     std::string header;
-    if (!std::getline(in, header) || (header != kJournalHeaderV1 && header != kJournalHeaderV2))
+    if (!std::getline(in, header) ||
+        (header != kJournalHeaderV1 && header != kJournalHeaderV2 && header != kJournalHeaderV3))
     {
         result.error = utils::err::join_context("fsx", "recover", "invalid journal header");
         return result;
     }
 
-    const bool version_two = header == kJournalHeaderV2;
+    const bool version_two_or_three = header == kJournalHeaderV2 || header == kJournalHeaderV3;
+    const bool version_three = header == kJournalHeaderV3;
     bool committed = false;
     std::vector<UndoAction> undo_list;
     std::string line;
@@ -1452,7 +1512,7 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
             continue;
         }
 
-        if (version_two && line == kJournalCommit)
+        if (version_two_or_three && line == kJournalCommit)
         {
             committed = true;
             continue;
@@ -1500,7 +1560,19 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
         {
             step.op = OpType::AtomicWrite;
             step.src = undo.from.string();
-            if (std::filesystem::exists(undo.from, ec))
+            const bool exists = std::filesystem::exists(undo.from, ec);
+            if (ec)
+            {
+                step.ok = false;
+                step.error = utils::err::join_context("fsx", "recover", ec.message());
+            }
+            else if (version_three && undo.from.generic_string().find(".tmp.") == std::string::npos)
+            {
+                step.ok = false;
+                step.error = utils::err::join_context("fsx", "recover",
+                                                      "FSXJ3 refuses to remove a non-staging path while recovering");
+            }
+            else if (exists)
             {
                 std::filesystem::remove(undo.from, ec);
                 if (ec)
@@ -1526,23 +1598,44 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
             step.src = undo.from.string();
             step.dst = undo.to.string();
 
-            if (!std::filesystem::exists(undo.from, ec))
+            const bool source_exists = std::filesystem::exists(undo.from, ec);
+            if (ec)
+            {
+                step.ok = false;
+                step.error = utils::err::join_context("fsx", "recover", ec.message());
+            }
+            else if (!source_exists)
             {
                 step.skipped = true;
                 ++result.skipped_steps;
             }
             else
             {
-                std::filesystem::rename(undo.from, undo.to, ec);
+                const bool destination_exists = std::filesystem::exists(undo.to, ec);
                 if (ec)
                 {
                     step.ok = false;
                     step.error = utils::err::join_context("fsx", "recover", ec.message());
                 }
+                else if (version_three && destination_exists)
+                {
+                    step.ok = false;
+                    step.error = utils::err::join_context(
+                        "fsx", "recover", "FSXJ3 recovery conflict: destination appeared after the journal entry");
+                }
                 else
                 {
-                    step.rolled_back = true;
-                    ++result.rolled_back_steps;
+                    std::filesystem::rename(undo.from, undo.to, ec);
+                    if (ec)
+                    {
+                        step.ok = false;
+                        step.error = utils::err::join_context("fsx", "recover", ec.message());
+                    }
+                    else
+                    {
+                        step.rolled_back = true;
+                        ++result.rolled_back_steps;
+                    }
                 }
             }
         }
@@ -1551,7 +1644,7 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
         {
             result.steps.push_back(step);
             result.error = step.error;
-            if (options.rollback_mode == RollbackMode::Strict)
+            if (version_three || options.rollback_mode == RollbackMode::Strict)
             {
                 result.ok = false;
                 return result;

@@ -453,6 +453,9 @@ int main(int argc, const char* const argv[])
     parser.Option("journal", 'j').String().ValueName("FILE").Description("Optional fsx journal file.").Done();
     parser.Option("schema").String().ValueName("FILE").Description("Optional schemax schema file.").Done();
     parser.Option("remote-url").String().ValueName("URL").Description("Optional remote config URL.").Done();
+    parser.Flag("no-proxy-from-env")
+        .Description("Disable HTTP(S)_PROXY and NO_PROXY for --remote-url requests.")
+        .Done();
     parser.Option("remote-format")
         .String()
         .Default("auto")
@@ -526,9 +529,12 @@ int main(int argc, const char* const argv[])
 
     const bool append_arrays = parsed.GetBool("append-arrays", false);
     const bool dry_run = parsed.GetBool("dry-run", false);
+    const bool use_proxy_from_environment = !parsed.GetBool("no-proxy-from-env", false);
     const std::vector<std::string> overlay_paths = parsed.GetAll("overlay");
 
-    httpx::Client client;
+    httpx::ClientOptions client_options;
+    client_options.use_proxy_from_environment = use_proxy_from_environment;
+    httpx::Client client(client_options);
     std::optional<ScopedRemoteFetcher> remote_fetcher;
     asyncx::ThreadPool pool;
     const std::string base_path = parsed.GetString("base");
@@ -621,6 +627,7 @@ int main(int argc, const char* const argv[])
         {"base", cfgx::Node(base_path)},
         {"overlays", BuildStringArray(overlay_paths)},
         {"remote_url", cfgx::Node(remote_url)},
+        {"proxy_from_environment", cfgx::Node(use_proxy_from_environment)},
         {"out", cfgx::Node(out_path)},
         {"snapshot", cfgx::Node(snapshot_path)},
         {"journal", cfgx::Node(journal_path)},

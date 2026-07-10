@@ -31,10 +31,21 @@
 #include <unistd.h>
 #endif
 
+#if defined(HTTPX_ENABLE_OPENSSL)
+#include <openssl/buffer.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
+#endif
+
 #include "httpx.h"
 
 namespace
 {
+
+namespace fs = std::filesystem;
 
 #if defined(_WIN32)
 using TestSocket = SOCKET;
@@ -819,6 +830,211 @@ std::optional<LocalSocks5Proxy> StartSocks5NoAuthProxy(std::string response,
     return std::optional<LocalSocks5Proxy>(std::move(server));
 }
 
+#if defined(HTTPX_ENABLE_OPENSSL)
+struct TlsTestIdentity
+{
+    EVP_PKEY* private_key{nullptr};
+    X509* certificate{nullptr};
+
+    ~TlsTestIdentity()
+    {
+        if (certificate != nullptr)
+        {
+            X509_free(certificate);
+        }
+        if (private_key != nullptr)
+        {
+            EVP_PKEY_free(private_key);
+        }
+    }
+};
+
+bool AddCertificateExtension(X509* certificate, int nid, const char* value)
+{
+    X509_EXTENSION* extension = X509V3_EXT_conf_nid(nullptr, nullptr, nid, const_cast<char*>(value));
+    if (extension == nullptr)
+    {
+        return false;
+    }
+    const bool ok = X509_add_ext(certificate, extension, -1) == 1;
+    X509_EXTENSION_free(extension);
+    return ok;
+}
+
+std::shared_ptr<TlsTestIdentity> MakeTlsTestIdentity()
+{
+    auto identity = std::make_shared<TlsTestIdentity>();
+    EVP_PKEY_CTX* key_context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
+    if (key_context == nullptr)
+    {
+        return nullptr;
+    }
+    const bool key_ok = EVP_PKEY_keygen_init(key_context) == 1 &&
+                        EVP_PKEY_CTX_set_rsa_keygen_bits(key_context, 2048) == 1 &&
+                        EVP_PKEY_keygen(key_context, &identity->private_key) == 1;
+    EVP_PKEY_CTX_free(key_context);
+    if (!key_ok)
+    {
+        return nullptr;
+    }
+
+    identity->certificate = X509_new();
+    if (identity->certificate == nullptr || X509_set_version(identity->certificate, 2) != 1 ||
+        ASN1_INTEGER_set(X509_get_serialNumber(identity->certificate), 1) != 1 ||
+        X509_gmtime_adj(X509_get_notBefore(identity->certificate), -60) == nullptr ||
+        X509_gmtime_adj(X509_get_notAfter(identity->certificate), 24 * 60 * 60) == nullptr ||
+        X509_set_pubkey(identity->certificate, identity->private_key) != 1)
+    {
+        return nullptr;
+    }
+
+    X509_NAME* subject = X509_get_subject_name(identity->certificate);
+    const unsigned char localhost[] = "localhost";
+    if (subject == nullptr || X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC, localhost, -1, -1, 0) != 1 ||
+        X509_set_issuer_name(identity->certificate, subject) != 1 ||
+        !AddCertificateExtension(identity->certificate, NID_basic_constraints, "critical,CA:TRUE") ||
+        !AddCertificateExtension(identity->certificate, NID_key_usage,
+                                 "critical,keyCertSign,digitalSignature,keyEncipherment") ||
+        !AddCertificateExtension(identity->certificate, NID_subject_alt_name, "DNS:localhost") ||
+        X509_sign(identity->certificate, identity->private_key, EVP_sha256()) <= 0)
+    {
+        return nullptr;
+    }
+    return identity;
+}
+
+bool WritePublicCertificate(const fs::path& path, X509* certificate)
+{
+    BIO* output = BIO_new(BIO_s_mem());
+    if (output == nullptr)
+    {
+        return false;
+    }
+    if (PEM_write_bio_X509(output, certificate) != 1)
+    {
+        BIO_free(output);
+        return false;
+    }
+
+    BUF_MEM* contents = nullptr;
+    BIO_get_mem_ptr(output, &contents);
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    const bool ok = contents != nullptr && file.is_open() &&
+                    (contents->length == 0 ||
+                     (file.write(contents->data, static_cast<std::streamsize>(contents->length)), file.good()));
+    BIO_free(output);
+    return ok;
+}
+
+struct LocalTlsServer
+{
+    std::uint16_t port{0};
+    std::thread worker;
+
+    LocalTlsServer() = default;
+    LocalTlsServer(const LocalTlsServer&) = delete;
+    LocalTlsServer& operator=(const LocalTlsServer&) = delete;
+    LocalTlsServer(LocalTlsServer&&) noexcept = default;
+    LocalTlsServer& operator=(LocalTlsServer&&) noexcept = default;
+
+    ~LocalTlsServer()
+    {
+        if (worker.joinable())
+        {
+            worker.join();
+        }
+    }
+};
+
+std::optional<LocalTlsServer> StartSingleResponseTlsServer(std::shared_ptr<TlsTestIdentity> identity,
+                                                           std::string response)
+{
+    if (!EnsureTestNetworkReady() || identity == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    TestSocket listen_socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_socket == kInvalidTestSocket)
+    {
+        return std::nullopt;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (::bind(listen_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || ::listen(listen_socket, 1) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    sockaddr_in bound{};
+    socklen_t bound_len = static_cast<socklen_t>(sizeof(bound));
+    if (::getsockname(listen_socket, reinterpret_cast<sockaddr*>(&bound), &bound_len) != 0)
+    {
+        CloseTestSocket(listen_socket);
+        return std::nullopt;
+    }
+
+    LocalTlsServer server;
+    server.port = ntohs(bound.sin_port);
+    server.worker = std::thread(
+        [listen_socket, identity = std::move(identity), response = std::move(response)]()
+        {
+            SSL_CTX* context = SSL_CTX_new(TLS_server_method());
+            if (context == nullptr || SSL_CTX_use_certificate(context, identity->certificate) != 1 ||
+                SSL_CTX_use_PrivateKey(context, identity->private_key) != 1)
+            {
+                if (context != nullptr)
+                {
+                    SSL_CTX_free(context);
+                }
+                CloseTestSocket(listen_socket);
+                return;
+            }
+
+            sockaddr_in client_addr{};
+            socklen_t client_len = static_cast<socklen_t>(sizeof(client_addr));
+            TestSocket client = ::accept(listen_socket, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+            if (client != kInvalidTestSocket)
+            {
+                SSL* ssl = SSL_new(context);
+                if (ssl != nullptr)
+                {
+                    if (SSL_set_fd(ssl, static_cast<int>(client)) == 1 && SSL_accept(ssl) == 1)
+                    {
+                        SetRecvTimeoutMs(client, 1000);
+                        char request_buffer[1024] = {0};
+                        const int received = SSL_read(ssl, request_buffer, static_cast<int>(sizeof(request_buffer)));
+                        if (received > 0)
+                        {
+                            std::size_t sent = 0;
+                            while (sent < response.size())
+                            {
+                                const int written =
+                                    SSL_write(ssl, response.data() + sent, static_cast<int>(response.size() - sent));
+                                if (written <= 0)
+                                {
+                                    break;
+                                }
+                                sent += static_cast<std::size_t>(written);
+                            }
+                        }
+                    }
+                    SSL_free(ssl);
+                }
+                CloseTestSocket(client);
+            }
+            SSL_CTX_free(context);
+            CloseTestSocket(listen_socket);
+        });
+
+    return server;
+}
+#endif
+
 } // namespace
 
 TEST(HttpxBasicsTests, ToStringMappingsAreStable)
@@ -1137,6 +1353,53 @@ TEST(HttpxClientTests, HttpsRejectsMissingCustomCaFile)
     EXPECT_EQ(result.error.kind, httpx::ErrorKind::Tls);
     EXPECT_NE(result.error.message.find("tls.ca_file cannot be opened"), std::string::npos);
 }
+
+#if defined(HTTPX_ENABLE_OPENSSL)
+TEST(HttpxClientTests, OpenSslLoopbackTlsVerifiesLocalhostAndRejectsHostnameMismatch)
+{
+    const auto identity = MakeTlsTestIdentity();
+    ASSERT_NE(identity, nullptr) << "failed to generate OpenSSL test identity";
+
+    const fs::path root = fs::current_path() / "toolx_test_tmp" / "httpx_openssl_tls";
+    const fs::path ca_file = root / "localhost-ca.pem";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    ASSERT_TRUE(WritePublicCertificate(ca_file, identity->certificate));
+
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.timeout.connect_ms = 1000;
+    options.timeout.read_write_ms = 1000;
+    options.timeout.total_ms = 3000;
+    options.tls.ca_file = ca_file.string();
+
+    {
+        const auto server = StartSingleResponseTlsServer(
+            identity, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        ASSERT_TRUE(server.has_value()) << "failed to start TLS loopback server";
+
+        httpx::Client client(options);
+        const auto trusted = client.Get("https://localhost:" + std::to_string(server->port) + "/tls");
+        ASSERT_TRUE(trusted.ok) << trusted.error.message;
+        EXPECT_EQ(trusted.value.status_code, 200);
+        EXPECT_EQ(trusted.value.body, "ok");
+    }
+
+    {
+        const auto server = StartSingleResponseTlsServer(
+            identity, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        ASSERT_TRUE(server.has_value()) << "failed to start TLS loopback server";
+
+        httpx::Client client(options);
+        const auto mismatched = client.Get("https://127.0.0.1:" + std::to_string(server->port) + "/tls");
+        ASSERT_FALSE(mismatched.ok);
+        EXPECT_EQ(mismatched.error.kind, httpx::ErrorKind::Tls);
+    }
+
+    fs::remove_all(root, ec);
+}
+#endif
 
 TEST(HttpxClientTests, DefaultTransportCanRoundTripLocalHttp)
 {
@@ -1546,6 +1809,31 @@ TEST(HttpxClientTests, ProxyCanBeLoadedFromEnvironment)
     ASSERT_TRUE(result.ok) << result.error.message;
 
     EXPECT_NE(captured->find("GET http://nonexistent.invalid/proxy/env HTTP/1.1"), std::string::npos);
+}
+
+TEST(HttpxClientTests, ExplicitlyDisabledEnvironmentProxyIsIgnored)
+{
+    ScopedEnvVar http_proxy("HTTP_PROXY", "http://127.0.0.1:9");
+    ScopedEnvVar no_proxy("NO_PROXY", "not-used.invalid");
+
+    bool saw_transport = false;
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.transport = [&saw_transport](const httpx::Request&,
+                                         const httpx::ClientOptions& effective) -> httpx::Result<httpx::Response>
+    {
+        saw_transport = true;
+        EXPECT_FALSE(effective.proxy.enabled);
+        httpx::Result<httpx::Response> out;
+        out.ok = true;
+        out.value.status_code = 200;
+        return out;
+    };
+
+    httpx::Client client(options);
+    const auto result = client.Get("http://disabled-proxy.invalid/path");
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_TRUE(saw_transport);
 }
 
 TEST(HttpxClientTests, NoProxyBypassesEnvironmentProxyRules)

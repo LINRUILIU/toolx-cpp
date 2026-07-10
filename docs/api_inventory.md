@@ -143,6 +143,7 @@
 - `RunOptions::rollback_mode` 默认 `BestEffort`，失败回滚不保证完全恢复。
 - `RunOptions::keep_journal_on_success=false`，成功后会清理 journal。
 - `RecoverOptions::cleanup_journal_on_success=true`，恢复成功后会清理 journal。
+- 配置 `journal_path` 时，FSXJ3 会在每个破坏性底层变更前同步 undo；这保证可恢复顺序，不承诺所有文件系统上的断电级原子性。
 - `BuildSyncPlan` 默认 `remove_extra=true`，会为目标侧多余路径生成删除动作。
 - tar archive 是 deterministic MVP；`QueryCapabilities().zip_archive=false`。
 
@@ -156,7 +157,7 @@
 
 **后续测试或修复候选**
 
-- 补 `Run` 在 journal 写失败时的可观察性测试。
+- 维持 journal 写失败、FSXJ3 冲突恢复和子进程 failpoint 覆盖。
 - 补 `BuildSyncPlan(remove_extra=true)` 对目录树删除的保护测试，例如拒绝空 root 或同路径 root。
 - 补 mtime 精度/快速连续写入的 watcher 测试或文档限制。
 - 补 Strict rollback 失败路径和 nested directory rollback 场景。
@@ -410,7 +411,7 @@
 
 **后续测试或修复候选**
 
-- 补 no-proxy/环境变量优先级和大小写变量名测试。
+- 维持环境代理默认、显式关闭和 `NO_PROXY` 规则测试；产品 CLI 还需保持 JSON proxy state 合同。
 - 补 TLS backend capability reporting 或 runtime introspection 文档。
 - 补 retry legacy/new 字段冲突时的优先级测试。
 - 补 `DownloadFile` 失败路径 temp 文件清理和 overwrite=false 测试。
@@ -552,8 +553,8 @@
 | `resultx` | 细节丢失 | `include/resultx.h` module error mapping | 源模块错误被压扁 | 增加映射表测试，考虑 source tag |
 | `utils/sysx/hashx/textcodec` | helper 有副作用 | `ensure_parent_dir`、`sysx::thread::Thread` | 调用 helper 实际改 FS 或启动线程 | header/doc 标注 side effect |
 | `utils/sysx/hashx/textcodec` | 安全误用 | non-cryptographic hash | 被误用于安全场景 | README/header 增加非加密声明 |
-| `httpx` | backend 差异 | `HTTPX_ENABLE_OPENSSL` / `HTTPX_ENABLE_MBEDTLS` | HTTPS 行为构建相关 | 增加 runtime capability 文档/测试 |
-| `httpx` | 环境代理 | `use_proxy_from_environment=true` | 测试/生产受 proxy env 影响 | 补 no_proxy 和 env priority 测试 |
+| `httpx` | backend 差异 | `HTTPX_ENABLE_OPENSSL` / `HTTPX_ENABLE_MBEDTLS` | HTTPS 行为构建相关 | Linux/OpenSSL loopback CI 覆盖 trust 和 hostname mismatch；默认包保持无 TLS backend |
+| `httpx` | 环境代理 | `use_proxy_from_environment=true` | 测试/生产受 proxy env 影响 | 覆盖 no_proxy、显式关闭和产品层 `--no-proxy-from-env` 合同 |
 | `httpx` | retry 字段混用 | `retry_policy.max_attempts` vs `max_retry_attempts` | 配置含义误解 | 补冲突优先级测试 |
 | `schemax` | 标准兼容误解 | MVP keyword whitelist | 标准 JSON Schema 文档 compile fail | 文档强调 subset；补 unknown keyword 示例 |
 | `schemax` | issue code 早期化 | MVP codes only | 下游过早依赖完整 taxonomy | 标注仅 MVP code 稳定 |

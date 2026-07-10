@@ -27,6 +27,19 @@ Stable means:
 - Behavior documented in README and covered by tests should not regress without
   release notes and migration guidance.
 
+`fsx` journals configured through `RunOptions::journal_path` use the `FSXJ3`
+write-ahead format in this release. Before each destructive filesystem mutation,
+the corresponding idempotent undo entry is written and synchronized to the OS;
+successful transactions synchronize `COMMIT` before the normal journal cleanup.
+`RecoverFromJournal` remains compatible with `FSXJ1` and `FSXJ2`. FSXJ3
+recovery refuses to overwrite a destination that appeared after the journal
+entry and preserves the journal and conflicting files for operator review.
+
+This is a recoverable ordering guarantee, not a blanket power-loss atomicity
+claim for every filesystem, drive cache, or cross-device rename scenario. Runs
+without `journal_path` retain their existing behavior and do not gain a
+durability promise.
+
 ## Experimental MVP
 
 `schemax` is an experimental MVP layered on top of `cfgx`. It intentionally
@@ -64,6 +77,17 @@ Backend-dependent:
 - Only one TLS backend can be enabled at a time.
 - Custom CA and verification behavior depends on the selected backend.
 - mbedTLS peer verification currently requires a configured CA file.
+
+For maintainers, the default package remains TLS-free: do not enable a TLS
+backend merely to build a release archive. CI separately configures
+`HTTPX_ENABLE_OPENSSL=ON` on Linux and runs only `httpx_tests`; that job creates
+its loopback certificate and private key at runtime and writes only the public
+certificate used as a temporary CA file.
+
+`httpx` keeps `use_proxy_from_environment=true` by default. `toolx-http` and
+the `toolx-sync --remote-url` client expose additive `--no-proxy-from-env`
+controls for deterministic callers; absent that explicit opt-out they continue
+to honor `HTTP(S)_PROXY` and `NO_PROXY`.
 
 ## Experimental Foundation
 
@@ -249,7 +273,7 @@ general TUI framework.
 
 ## Versioning
 
-Recommended current public tag: `v0.3.1`.
+Recommended current public tag: `v0.3.2`.
 
 For 0.3.x:
 

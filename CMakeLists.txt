@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/toolx_msvc_env.cmake")
 
-project(ToolX VERSION 0.3.1 LANGUAGES CXX)
+project(ToolX VERSION 0.3.2 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -454,6 +454,24 @@ if(TOOLX_BUILD_TESTS)
     target_link_libraries(fsx_tests PRIVATE fsx GTest::gtest_main)
     add_test(NAME fsx_tests COMMAND fsx_tests)
 
+    add_library(fsx_failpoint_test_support STATIC src/fsx.cpp)
+    target_include_directories(fsx_failpoint_test_support PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    target_compile_definitions(fsx_failpoint_test_support PRIVATE FSX_ENABLE_TEST_FAILPOINTS=1)
+    target_link_libraries(fsx_failpoint_test_support PRIVATE utils)
+
+    add_executable(fsx_journal_failpoint_child tests/fsx_journal_failpoint_child.cpp)
+    target_include_directories(fsx_journal_failpoint_child PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    target_link_libraries(fsx_journal_failpoint_child PRIVATE fsx_failpoint_test_support)
+
+    add_executable(fsx_journal_failpoint_tests tests/fsx_journal_failpoint_tests.cpp)
+    target_link_libraries(fsx_journal_failpoint_tests PRIVATE fsx)
+    add_dependencies(fsx_journal_failpoint_tests fsx_journal_failpoint_child)
+    add_test(
+        NAME fsx_journal_failpoint_tests
+        COMMAND fsx_journal_failpoint_tests
+            $<TARGET_FILE:fsx_journal_failpoint_child>
+            "${CMAKE_CURRENT_BINARY_DIR}/fsx_journal_failpoint_tmp")
+
     add_executable(hashx_tests tests/hashx_tests.cpp)
     target_link_libraries(hashx_tests PRIVATE hashx GTest::gtest_main)
     add_test(NAME hashx_tests COMMAND hashx_tests)
@@ -506,6 +524,17 @@ if(TOOLX_BUILD_TESTS)
     endif()
 
     if(TARGET toolx_sync)
+        add_executable(toolx_sync_proxy_contracts tests/toolx_sync_proxy_contracts.cpp)
+        target_link_libraries(toolx_sync_proxy_contracts PRIVATE Threads::Threads)
+        if(WIN32)
+            target_link_libraries(toolx_sync_proxy_contracts PRIVATE ws2_32)
+        endif()
+        add_test(
+            NAME toolx_sync_proxy_contracts
+            COMMAND toolx_sync_proxy_contracts
+                $<TARGET_FILE:toolx_sync>
+                "${CMAKE_CURRENT_BINARY_DIR}/toolx_sync_proxy_contracts_tmp")
+
         add_test(
             NAME toolx_sync_cli_scenario
             COMMAND "${CMAKE_COMMAND}"

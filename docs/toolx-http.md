@@ -34,6 +34,7 @@ other, not both.
 | `--retry N` | Retry attempts for retryable transport errors. |
 | `--retry-delay-ms N` | Delay between retry attempts. |
 | `--follow-redirects` | Follow redirects through `httpx`. |
+| `--no-proxy-from-env` | Disable `HTTP_PROXY`/`HTTPS_PROXY` and `NO_PROXY` handling for this invocation. |
 | `--manifest FILE` | Batch preflight manifest. |
 | `--log-file FILE` | Optional audit log. |
 | `--json` | Emit the stable JSON envelope. |
@@ -54,6 +55,7 @@ Supported top-level fields:
   "retry": 1,
   "retry_delay_ms": 50,
   "follow_redirects": true,
+  "use_proxy_from_environment": false,
   "headers": ["User-Agent: toolx-http"],
   "checks": [
     {
@@ -73,6 +75,13 @@ are rejected through `schemax` and return exit code `4`.
 
 Manifest headers use the same `KEY:VALUE` format as CLI `--header`.
 
+`use_proxy_from_environment` is an optional root boolean and defaults to
+`true`, preserving the existing `httpx` behavior of reading `HTTP_PROXY`,
+`HTTPS_PROXY`, and `NO_PROXY` (including their lowercase forms). The additive
+`--no-proxy-from-env` flag has highest priority and can only force this setting
+to `false`; it is useful for deterministic loopback, CI, or isolated-network
+checks.
+
 ## JSON Output
 
 `--json` always uses this envelope:
@@ -91,7 +100,7 @@ Manifest headers use the same `KEY:VALUE` format as CLI `--header`.
 
 `data` contains at least:
 
-- `command`, `manifest`
+- `command`, `manifest`, `proxy_from_environment`
 - `checked`, `passed`, `failed`, `duration_ms`
 - `checks`
 - `warnings`

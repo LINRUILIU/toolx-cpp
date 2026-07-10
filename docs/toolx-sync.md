@@ -61,6 +61,7 @@ Current `data` fields include:
 - `base`
 - `overlays`
 - `remote_url`
+- `proxy_from_environment`
 - `out`
 - `snapshot`
 - `journal`
@@ -81,6 +82,7 @@ Current `data` fields include:
 | `--out FILE`, `-o FILE` | Required resolved output file |
 | `--overlay FILE` | Local overlay config file; repeatable |
 | `--remote-url URL` | Optional remote config layer |
+| `--no-proxy-from-env` | Disable `HTTP_PROXY`/`HTTPS_PROXY` and `NO_PROXY` only for `--remote-url` fetches |
 | `--remote-format FORMAT` | Remote format: `auto`, `json`, `ini`, `yaml`, or `toml` |
 | `--schema FILE` | Optional `schemax` schema |
 | `--require PATH` | Validation rule: path must exist; repeatable |
@@ -118,10 +120,17 @@ toolx-sync --base app.base.json --remote-url https://config.example/app.json \
   --overlay app.local.json --out resolved.json --json
 ```
 
+Remote fetches read the standard proxy environment by default, matching the
+existing `httpx` behavior. Add `--no-proxy-from-env` to bypass that environment
+for the remote client. The flag is accepted without `--remote-url`, reports
+`data.proxy_from_environment=false`, and causes no network activity by itself.
+
 ## Maintainer Notes
 
 - Keep `toolx-sync` install and archive smoke coverage aligned with
   `cmake/release_smoke.cmake` and `cmake/release_archive_smoke.cmake`.
 - Extend `cmake/toolx_sync_cli_scenario.cmake` whenever adding a public option
   or JSON field that operators are expected to consume.
+- Keep the loopback remote-proxy contract aligned with the default-on behavior
+  and the `--no-proxy-from-env` bypass.
 - Prefer additive `data` fields over envelope changes.

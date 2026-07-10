@@ -1,8 +1,9 @@
 # ToolX C++ Toolkit
 
 ToolX is a practical C++20 toolkit for small tools and small-to-medium projects.
-`v0.3.1` is a maintenance release that hardens filesystem recovery, archive
-extraction, download retries, logging, and Windows/MSVC configuration. The
+`v0.3.2` is a compatible reliability patch: it makes CLI proxy behavior
+explicit, upgrades configured `fsx` journals to synchronous write-ahead
+recovery records, and adds real OpenSSL loopback TLS CI coverage. The
 `v0.3.0` release finalized the first ToolX CLI product chain: config authoring,
 config publishing, local packaging, HTTP preflight, log diagnosis, and terminal
 inspection.
@@ -97,12 +98,12 @@ The install tree is also the shape of the prebuilt release archives:
 
 ## Release Artifacts
 
-The `v0.3.1` release is distributed through GitHub Releases with:
+The `v0.3.2` release is distributed through GitHub Releases with:
 
-- `ToolX-v0.3.1-source.tar.gz`
-- `ToolX-v0.3.1-windows-x86_64.zip`
-- `ToolX-v0.3.1-linux-x86_64.tar.gz`
-- `ToolX-v0.3.1-macos-universal.tar.gz` or `ToolX-v0.3.1-macos-x86_64.tar.gz`
+- `ToolX-v0.3.2-source.tar.gz`
+- `ToolX-v0.3.2-windows-x86_64.zip`
+- `ToolX-v0.3.2-linux-x86_64.tar.gz`
+- `ToolX-v0.3.2-macos-universal.tar.gz` or `ToolX-v0.3.2-macos-x86_64.tar.gz`
 - `SHA256SUMS`
 
 Each binary archive is validated by unpacking it, running `toolx-config --help`,

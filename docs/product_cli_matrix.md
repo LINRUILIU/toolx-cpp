@@ -81,9 +81,9 @@
 | CLI | Exit code | JSON `schema` | 关键 `data` 字段 | Additive-only 规则 |
 | --- | --- | --- | --- | --- |
 | `toolx-config` | `0` success/help；`1` runtime；`2` usage/parse；`3` not found；`4` validation failed | `toolx.config.result` | command-specific fields；doctor `checks/recommendations/rules_count/issues_count`；schema issues add to `data.schema_issues` | envelope 字段和既有 tested data fields 不删除、不重定义 |
-| `toolx-sync` | `0` success/help/dry-run；`1` runtime；`2` usage/parse；`4` validation failed | `toolx.sync.result` | `base`、`overlays`、`remote_url`、`out`、`snapshot`、`journal`、`log_file`、`schema`、`schema_issues`、`append_arrays`、`dry_run`、`steps`、`planned_steps`、`source_trace` | data 可增长；schema issues additively reported |
+| `toolx-sync` | `0` success/help/dry-run；`1` runtime；`2` usage/parse；`4` validation failed | `toolx.sync.result` | `base`、`overlays`、`remote_url`、`proxy_from_environment`、`out`、`snapshot`、`journal`、`log_file`、`schema`、`schema_issues`、`append_arrays`、`dry_run`、`steps`、`planned_steps`、`source_trace` | data 可增长；schema issues additively reported |
 | `toolx-pack` | `0` success/help/dry-run；`1` runtime；`2` usage/parse；`3` source/stage/manifest/selected path not found；`4` manifest validation failed | `toolx.pack.result` | `command`、`source`、`stage`、`archive`、`manifest`、`dry_run`、`remove_extra`、`entries`、`bytes`、`planned_steps`、`completed_steps`、`archive_format`、`capabilities`、`warnings` | bounded-stable tested fields additive-only |
-| `toolx-http` | `0` success/help；`1` transport/runtime；`2` usage/parse；`3` manifest/body-file not found；`4` expectation failure | `toolx.http.result` | `command`、`manifest`、`checked`、`passed`、`failed`、`duration_ms`、`checks`、`warnings`；per-check `name/url/method/ok/status/duration_ms/error_kind/message/expect_status/body_matched` | existing envelope/check fields additive-only |
+| `toolx-http` | `0` success/help；`1` transport/runtime；`2` usage/parse；`3` manifest/body-file not found；`4` expectation failure | `toolx.http.result` | `command`、`manifest`、`proxy_from_environment`、`checked`、`passed`、`failed`、`duration_ms`、`checks`、`warnings`；per-check `name/url/method/ok/status/duration_ms/error_kind/message/expect_status/body_matched` | existing envelope/check fields additive-only |
 | `toolx-log` | `0` success/help；`1` runtime/read；`2` usage/parse；`3` file/manifest not found；`4` manifest validation or log gate failure | `toolx.log.result` | `command`、`manifest`、`files`、`file_count`、`format`、`filters`、`lines_read`、`blank_lines`、`parsed`、`matched`、`parse_failures`、`time_missing`、`by_level`、`first_time`、`last_time`、`samples`、`capabilities`、`warnings` | bounded CLI fields additive-only |
 | `toolx-inspect` | `0` success/help；`1` runtime/load/render；`2` usage/parse；`3` config/schema/manifest not found；`4` manifest/schema/issue failure | `toolx.inspect.result` | `command`、`file`、`schema_file`、`manifest`、`format`、`root_kind`、`path_count`、`matched_path_count`、`scalar_count`、`object_count`、`array_count`、`selected_path`、`selected_kind`、`selected_value`、`schema_issue_count`、`schema_issues`、`paths`、`frame`、`capabilities`、`warnings` | report/render/run tested fields additive-only |
 
@@ -92,9 +92,9 @@
 | CLI | 隐式行为 |
 | --- | --- |
 | `toolx-config` | `cfgx` format auto-detect 基于路径扩展名；`set --type` 默认按 value/type 构造 node；`merge` 数组默认覆盖，`--append-arrays` 才追加；`doctor/validate --schema` 的 schema issue 默认 exit `4`；`snapshot-restore` 未提供 `--out` 时覆盖 `--file`。 |
-| `toolx-sync` | layer 顺序固定为 base -> remote -> overlays；后层覆盖前层；数组默认覆盖，`--append-arrays` 追加；`--remote-format auto` 基于 remote URL 检测；`--remote-url` 显式触发 HTTP fetch；remote fetch 继承 `httpx` 默认 timeout 和 proxy-from-env；publish 使用 `fsx::ConflictPolicy::Overwrite` + `BestEffort` rollback。 |
+| `toolx-sync` | layer 顺序固定为 base -> remote -> overlays；后层覆盖前层；数组默认覆盖，`--append-arrays` 追加；`--remote-format auto` 基于 remote URL 检测；`--remote-url` 显式触发 HTTP fetch；remote fetch 默认继承 `httpx` proxy-from-env，`--no-proxy-from-env` 仅关闭这个远程客户端；无 remote URL 时该 flag 无网络副作用；publish 使用 `fsx::ConflictPolicy::Overwrite` + `BestEffort` rollback。 |
 | `toolx-pack` | CLI options override manifest；重复 `--include`/`--exclude` 替换 manifest array；无 include 时包含所有 regular files；exclude 在 include 后应用；`plan` 强制 dry-run；archive format 固定 tar；`--remove-extra` 会删除 stage 中不在计划内的路径。 |
-| `toolx-http` | 默认 method `GET`；默认 expected status `200:299`；`--url` 与 `--manifest` 互斥；runtime options override manifest defaults；CLI request/expectation options override manifest checks；重复 CLI `--header` 替换 manifest top-level headers；HTTP transport 继承 `httpx` timeout/retry/proxy-from-env 默认；reported URL 默认 redacts sensitive query values。 |
+| `toolx-http` | 默认 method `GET`；默认 expected status `200:299`；`--url` 与 `--manifest` 互斥；runtime options override manifest defaults；CLI request/expectation options override manifest checks；重复 CLI `--header` 替换 manifest top-level headers；根 manifest `use_proxy_from_environment` 默认 true，`--no-proxy-from-env` 以最高优先级将其关闭；reported URL 默认 redacts sensitive query values。 |
 | `toolx-log` | `format=auto` 用首个非空行是否以 `{` 判断 JSONL，否则 logsys text；CLI options override manifest；`--level` 和 `--min-level` override 后互斥；`fail_on_level` 和 `max_parse_errors` 可把成功读取变成 exit `4`。 |
 | `toolx-inspect` | `format=auto` 使用 `cfgx` 扩展名检测；manifest 提供默认值，CLI 覆盖；schema issues 默认 exit `4`，`--allow-issues` 放行；`render` 使用 width/height 生成 deterministic frame；`run --script/--ticks` 是 bounded TUI 自动运行。 |
 
@@ -103,9 +103,9 @@
 | CLI | 隐藏网络访问 | 隐藏写文件 | 隐藏全局状态 | 输出字段和实际文件不一致 | dry-run 写产物 | 审计说明 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `toolx-config` | 否 | 中 | 中 | 低 | 否 | 写文件只在 `set/merge/snapshot-*`；`adapter-activate` 是进程内 parser adapter 状态；无 manifest/dry-run 混淆。 |
-| `toolx-sync` | 低 | 中 | 中 | 中 | 中 | 网络只在显式 `--remote-url`，但 remote fetch 会继承 `httpx` proxy 环境；`cfgx::SetRemoteFetcher` 是全局回调，产品实现用 scoped guard 清理；dry-run 不写 publish plan，但当前 `--log-file` 会初始化 `FileSink`，可能创建文件。 |
+| `toolx-sync` | 低 | 中 | 中 | 中 | 中 | 网络只在显式 `--remote-url`；默认读取 proxy 环境，可用 `--no-proxy-from-env` 关闭；`cfgx::SetRemoteFetcher` 是全局回调，产品实现用 scoped guard 清理；dry-run 不写 publish plan，但当前 `--log-file` 会初始化 `FileSink`，可能创建文件。 |
 | `toolx-pack` | 否 | 高 | 低 | 中 | 低 | `stage`/`archive` 明确写文件；`--remove-extra` 明确删除；`plan`/`--dry-run` 在源码中先返回，不写 stage/archive/journal/log。 |
-| `toolx-http` | 低 | 低 | 低 | 低 | 不适用 | endpoint 访问是显式目标，但 `httpx` 默认会读取 proxy 环境；可选 `--log-file` 会写 audit log；无业务输出文件。 |
+| `toolx-http` | 低 | 低 | 低 | 低 | 不适用 | endpoint 访问是显式目标，默认读取 proxy 环境；根 manifest 或 `--no-proxy-from-env` 可关闭；可选 `--log-file` 会写 audit log；无业务输出文件。 |
 | `toolx-log` | 否 | 低 | 低 | 低 | 不适用 | 只读 log 输入；可选 `--log-file` 写 audit；gate failure 只影响 exit code/envelope。 |
 | `toolx-inspect` | 否 | 低 | 低 | 低 | 不适用 | 只读 config/schema/manifest；可选 `--log-file` 写 audit；`run` 使用 `tuix` 终端状态但不写业务文件。 |
 

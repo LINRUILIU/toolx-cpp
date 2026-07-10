@@ -77,6 +77,49 @@ bool EnsureTestNetworkReady()
 #endif
 }
 
+struct ScopedEnvVar
+{
+    std::string key;
+    std::optional<std::string> original;
+
+    ScopedEnvVar(std::string name, std::string value) : key(std::move(name))
+    {
+        if (const char* current = std::getenv(key.c_str()))
+        {
+            original = std::string(current);
+        }
+        Set(value);
+    }
+
+    ~ScopedEnvVar()
+    {
+        if (original.has_value())
+        {
+            Set(*original);
+            return;
+        }
+        Clear();
+    }
+
+    void Set(const std::string& value)
+    {
+#if defined(_WIN32)
+        _putenv_s(key.c_str(), value.c_str());
+#else
+        setenv(key.c_str(), value.c_str(), 1);
+#endif
+    }
+
+    void Clear()
+    {
+#if defined(_WIN32)
+        _putenv_s(key.c_str(), "");
+#else
+        unsetenv(key.c_str());
+#endif
+    }
+};
+
 std::string ReceiveHttpRequest(TestSocket client)
 {
     std::string req;
@@ -415,8 +458,8 @@ void AssertJsonEnvelope(const std::string& case_name, const std::string& text, c
 
 void AssertHttpDataFields(const std::string& case_name, const std::string& text)
 {
-    for (const char* field :
-         {"command", "manifest", "checked", "passed", "failed", "duration_ms", "checks", "warnings"})
+    for (const char* field : {"command", "manifest", "proxy_from_environment", "checked", "passed", "failed",
+                              "duration_ms", "checks", "warnings"})
     {
         AssertContains(case_name, text, std::string("\"") + field + "\":");
     }
@@ -496,6 +539,86 @@ int main(int argc, char** argv)
         AssertJsonEnvelope("ok", ok.out, "toolx.http.result", true, 0);
         AssertHttpDataFields("ok", ok.out);
         AssertHttpCheckFields("ok", ok.out);
+    }
+
+    {
+        auto captured = std::make_shared<std::string>();
+        auto proxy = StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 0,
+                                               captured);
+        if (!proxy)
+        {
+            Fail("failed to start local proxy server");
+        }
+        ScopedEnvVar http_proxy("HTTP_PROXY", "http://127.0.0.1:" + std::to_string(proxy->port));
+        ScopedEnvVar no_proxy("NO_PROXY", "not-used.invalid");
+
+        auto proxied = RunTool(tool, root, "proxy-default",
+                               {"check", "--url", "http://nonexistent.invalid/proxy-default", "--json"});
+        AssertCode("proxy-default", proxied, 0);
+        AssertJsonEnvelope("proxy-default", proxied.out, "toolx.http.result", true, 0);
+        AssertContains("proxy-default", proxied.out, "\"proxy_from_environment\": true");
+        AssertContains("proxy-default-captured", *captured, "GET http://nonexistent.invalid/proxy-default HTTP/1.1");
+    }
+
+    {
+        auto server = StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        if (!server)
+        {
+            Fail("failed to start local server");
+        }
+        ScopedEnvVar http_proxy("HTTP_PROXY", "http://127.0.0.1:9");
+        ScopedEnvVar no_proxy("NO_PROXY", "not-used.invalid");
+
+        auto direct =
+            RunTool(tool, root, "proxy-disabled", {"check", "--url", UrlFor(*server), "--no-proxy-from-env", "--json"});
+        AssertCode("proxy-disabled", direct, 0);
+        AssertJsonEnvelope("proxy-disabled", direct.out, "toolx.http.result", true, 0);
+        AssertContains("proxy-disabled", direct.out, "\"proxy_from_environment\": false");
+    }
+
+    {
+        auto server = StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        if (!server)
+        {
+            Fail("failed to start local server");
+        }
+        WriteFile(root / "manifest-proxy-disabled.json", "{\n"
+                                                         "  \"use_proxy_from_environment\": false,\n"
+                                                         "  \"checks\": [{\"url\":\"" +
+                                                             UrlFor(*server) +
+                                                             "\"}]\n"
+                                                             "}\n");
+        ScopedEnvVar http_proxy("HTTP_PROXY", "http://127.0.0.1:9");
+        ScopedEnvVar no_proxy("NO_PROXY", "not-used.invalid");
+
+        auto manifest = RunTool(tool, root, "manifest-proxy-disabled",
+                                {"check", "--manifest", (root / "manifest-proxy-disabled.json").string(), "--json"});
+        AssertCode("manifest-proxy-disabled", manifest, 0);
+        AssertJsonEnvelope("manifest-proxy-disabled", manifest.out, "toolx.http.result", true, 0);
+        AssertContains("manifest-proxy-disabled", manifest.out, "\"proxy_from_environment\": false");
+    }
+
+    {
+        auto server = StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        if (!server)
+        {
+            Fail("failed to start local server");
+        }
+        WriteFile(root / "manifest-proxy-enabled.json", "{\n"
+                                                        "  \"use_proxy_from_environment\": true,\n"
+                                                        "  \"checks\": [{\"url\":\"" +
+                                                            UrlFor(*server) +
+                                                            "\"}]\n"
+                                                            "}\n");
+        ScopedEnvVar http_proxy("HTTP_PROXY", "http://127.0.0.1:9");
+        ScopedEnvVar no_proxy("NO_PROXY", "not-used.invalid");
+
+        auto override = RunTool(
+            tool, root, "manifest-proxy-cli-override",
+            {"check", "--manifest", (root / "manifest-proxy-enabled.json").string(), "--no-proxy-from-env", "--json"});
+        AssertCode("manifest-proxy-cli-override", override, 0);
+        AssertJsonEnvelope("manifest-proxy-cli-override", override.out, "toolx.http.result", true, 0);
+        AssertContains("manifest-proxy-cli-override", override.out, "\"proxy_from_environment\": false");
     }
 
     {

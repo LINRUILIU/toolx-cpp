@@ -53,6 +53,9 @@ struct RunOptions
     std::string backup_suffix{".bak"};
     RollbackMode rollback_mode{RollbackMode::BestEffort};
     ConflictPolicy conflict_policy{ConflictPolicy::Overwrite};
+    // When configured, Run writes synchronized FSXJ3 undo records before each
+    // destructive primitive mutation. This is a recoverable ordering contract,
+    // not a universal power-loss atomicity guarantee.
     std::string journal_path;
     // Retained successful journals are finalized and are audit-only;
     // RecoverFromJournal rejects them rather than rolling back completed work.

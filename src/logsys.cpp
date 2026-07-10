@@ -1,12 +1,14 @@
 #include "logsys.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <regex>
 #include <string_view>
 #include <unordered_set>
@@ -489,6 +491,28 @@ std::optional<RollingTimeMode> ParseRollingTimeModeFromToken(std::string_view to
     }
 
     return ParseRollingTimeMode(cleaned);
+}
+
+std::optional<std::uint64_t> ParseUnsignedJsonToken(std::string_view token, std::uint64_t max_value)
+{
+    std::string cleaned(token);
+    cleaned.erase(std::remove_if(cleaned.begin(), cleaned.end(),
+                                 [](unsigned char c) { return std::isspace(c) != 0 || c == '"'; }),
+                  cleaned.end());
+    if (cleaned.empty() ||
+        !std::all_of(cleaned.begin(), cleaned.end(), [](unsigned char c) { return std::isdigit(c) != 0; }))
+    {
+        return std::nullopt;
+    }
+
+    errno = 0;
+    char* end = nullptr;
+    const auto parsed = std::strtoull(cleaned.c_str(), &end, 10);
+    if (errno == ERANGE || end == nullptr || *end != '\0' || parsed > max_value)
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(parsed);
 }
 
 std::optional<std::string> ExtractJsonToken(std::string_view body, std::string_view key)
@@ -1578,7 +1602,12 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
     }
     if (const auto token = ExtractJsonToken(text, "global_text_field_mask"); token.has_value())
     {
-        cfg.global_text_field_mask = static_cast<std::uint32_t>(std::strtoul(token->c_str(), nullptr, 10));
+        const auto parsed = ParseUnsignedJsonToken(*token, std::numeric_limits<std::uint32_t>::max());
+        if (!parsed.has_value())
+        {
+            return false;
+        }
+        cfg.global_text_field_mask = static_cast<std::uint32_t>(*parsed);
     }
     if (const auto token = ExtractJsonToken(text, "global_enable_console"); token.has_value())
     {
@@ -1630,11 +1659,23 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
         }
         if (const auto token = ExtractJsonToken(*body, "max_file_size_bytes"); token.has_value())
         {
-            cfg.rolling.max_file_size_bytes = static_cast<std::size_t>(std::strtoull(token->c_str(), nullptr, 10));
+            const auto parsed =
+                ParseUnsignedJsonToken(*token, static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()));
+            if (!parsed.has_value())
+            {
+                return false;
+            }
+            cfg.rolling.max_file_size_bytes = static_cast<std::size_t>(*parsed);
         }
         if (const auto token = ExtractJsonToken(*body, "keep_recent_files"); token.has_value())
         {
-            cfg.rolling.keep_recent_files = static_cast<std::size_t>(std::strtoull(token->c_str(), nullptr, 10));
+            const auto parsed =
+                ParseUnsignedJsonToken(*token, static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()));
+            if (!parsed.has_value())
+            {
+                return false;
+            }
+            cfg.rolling.keep_recent_files = static_cast<std::size_t>(*parsed);
         }
         if (const auto token = ExtractJsonToken(*body, "time_mode"); token.has_value())
         {
@@ -1660,8 +1701,14 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
         }
         if (const auto token = ExtractJsonToken(*body, "flush_interval_ms"); token.has_value())
         {
+            const auto parsed =
+                ParseUnsignedJsonToken(*token, static_cast<std::uint64_t>(std::chrono::milliseconds::max().count()));
+            if (!parsed.has_value())
+            {
+                return false;
+            }
             cfg.schedule.flush_interval =
-                std::chrono::milliseconds(static_cast<std::uint64_t>(std::strtoull(token->c_str(), nullptr, 10)));
+                std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(*parsed));
         }
     }
 
@@ -1718,8 +1765,13 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
         }
         if (const auto token = ExtractJsonToken(*body, "queue_high_watermark"); token.has_value())
         {
-            cfg.backpressure.queue_high_watermark =
-                static_cast<std::size_t>(std::strtoull(token->c_str(), nullptr, 10));
+            const auto parsed =
+                ParseUnsignedJsonToken(*token, static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()));
+            if (!parsed.has_value())
+            {
+                return false;
+            }
+            cfg.backpressure.queue_high_watermark = static_cast<std::size_t>(*parsed);
         }
     }
 
@@ -1747,22 +1799,22 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
 
         if (const auto token = ExtractJsonToken(*body, "udp_port"); token.has_value())
         {
-            const auto parsed = std::strtoul(token->c_str(), nullptr, 10);
-            if (parsed == 0 || parsed > 65535)
+            const auto parsed = ParseUnsignedJsonToken(*token, 65535);
+            if (!parsed.has_value() || *parsed == 0)
             {
                 return false;
             }
-            cfg.remote.udp_port = static_cast<std::uint16_t>(parsed);
+            cfg.remote.udp_port = static_cast<std::uint16_t>(*parsed);
         }
 
         if (const auto token = ExtractJsonToken(*body, "syslog_facility"); token.has_value())
         {
-            const auto parsed = std::strtoul(token->c_str(), nullptr, 10);
-            if (parsed > 23)
+            const auto parsed = ParseUnsignedJsonToken(*token, 23);
+            if (!parsed.has_value())
             {
                 return false;
             }
-            cfg.remote.syslog_facility = static_cast<std::uint8_t>(parsed);
+            cfg.remote.syslog_facility = static_cast<std::uint8_t>(*parsed);
         }
 
         if (const auto token = ExtractJsonToken(*body, "syslog_app_name"); token.has_value())
@@ -1809,10 +1861,16 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
                 module_text.erase(std::remove_if(module_text.begin(), module_text.end(),
                                                  [](unsigned char c) { return std::isspace(c) != 0 || c == '"'; }),
                                   module_text.end());
-                if (!module_text.empty() && std::all_of(module_text.begin(), module_text.end(), [](unsigned char c)
-                                                        { return std::isdigit(c) != 0 || c == '-'; }))
+                if (!module_text.empty() && std::all_of(module_text.begin(), module_text.end(),
+                                                        [](unsigned char c) { return std::isdigit(c) != 0; }))
                 {
-                    profile.module = static_cast<ModuleId>(std::atoi(module_text.c_str()));
+                    const auto parsed =
+                        ParseUnsignedJsonToken(module_text, static_cast<std::uint64_t>(ModuleId::BusinessCommon));
+                    if (!parsed.has_value() || *parsed < static_cast<std::uint64_t>(ModuleId::Core))
+                    {
+                        return false;
+                    }
+                    profile.module = static_cast<ModuleId>(*parsed);
                 }
                 else
                 {
@@ -1826,7 +1884,12 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
             }
             if (const auto token = ExtractJsonToken(obj, "text_field_mask"); token.has_value())
             {
-                profile.text_field_mask = static_cast<std::uint32_t>(std::strtoul(token->c_str(), nullptr, 10));
+                const auto parsed = ParseUnsignedJsonToken(*token, std::numeric_limits<std::uint32_t>::max());
+                if (!parsed.has_value())
+                {
+                    return false;
+                }
+                profile.text_field_mask = static_cast<std::uint32_t>(*parsed);
             }
             if (const auto token = ExtractJsonToken(obj, "output_level"); token.has_value())
             {

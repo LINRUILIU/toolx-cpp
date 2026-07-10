@@ -2416,7 +2416,7 @@ Result<ReloadEvent> PollReloader::ReloadNow()
         const auto loaded = LoadFromRemote(remote_url, options_.remote_format, options_.remote_headers);
         if (!loaded.ok)
         {
-            if (!options_.allow_remote_failure || has_current_)
+            if (!options_.allow_remote_failure)
             {
                 return rollback_or_fail("failed to fetch remote config: " + loaded.error);
             }

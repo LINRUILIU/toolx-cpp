@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cctype>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -159,6 +160,42 @@ TEST(ArgtoolTests, RangeFallbackUsesDefaultAndWarns)
     EXPECT_EQ(result.GetInt("level"), 3);
     ASSERT_EQ(logger.warnings.size(), 1U);
     EXPECT_NE(logger.warnings[0].find("fallback to default"), std::string::npos);
+}
+
+TEST(ArgtoolTests, RangeFallbackWithoutLoggerIsVisibleInTraceJson)
+{
+    argtool::Parser parser;
+    parser.SetProgramName("app.exe").EnableTrace(true);
+    parser.Option("level", 'l')
+        .Int()
+        .Range(0, 5, argtool::RangePolicy::UseDefaultAndWarn)
+        .Default("3")
+        .Done()
+        .Positional("input")
+        .String()
+        .Done();
+
+    const std::vector<std::string> args = {"app.exe", "--level", "9", "input.txt"};
+    const auto argv = ToArgv(args);
+
+    const auto result = parser.Parse(static_cast<int>(argv.size()), argv.data());
+    ASSERT_TRUE(result.ok);
+    EXPECT_EQ(result.GetInt("level"), 3);
+
+    bool saw_warning = false;
+    for (const auto& event : result.trace)
+    {
+        if (event.stage == "warning" && event.token == "--level" &&
+            event.detail.find("range fallback") != std::string::npos)
+        {
+            saw_warning = true;
+        }
+    }
+    EXPECT_TRUE(saw_warning);
+
+    const auto json = parser.ResultToJson(result, true);
+    EXPECT_NE(json.find("\"stage\":\"warning\""), std::string::npos);
+    EXPECT_NE(json.find("range fallback"), std::string::npos);
 }
 
 TEST(ArgtoolTests, ChoiceValidationIsCaseInsensitive)
@@ -381,6 +418,75 @@ TEST(ArgtoolTests, LocalConverterOverridesGlobalConverter)
     EXPECT_EQ(result.GetString("input"), "ABC.TXT");
 }
 
+TEST(ArgtoolTests, ConverterReturnedErrorIsStructuredTypeMismatch)
+{
+    argtool::Parser parser;
+    parser.SetProgramName("app.exe")
+        .Option("mode", 'm')
+        .String()
+        .ConvertWith(
+            [](std::string_view)
+            {
+                argtool::ConvertResult out;
+                out.ok = false;
+                out.error = "mode converter rejected value";
+                return out;
+            })
+        .Done();
+
+    const std::vector<std::string> args = {"app.exe", "--mode", "bad"};
+    const auto argv = ToArgv(args);
+    const auto result = parser.Parse(static_cast<int>(argv.size()), argv.data());
+
+    ASSERT_FALSE(result.ok);
+    ASSERT_TRUE(result.error.has_value());
+    EXPECT_EQ(result.error->kind, argtool::ParseErrorKind::TypeMismatch);
+    EXPECT_EQ(result.error->field, "mode");
+    EXPECT_EQ(result.error->token, "--mode");
+    EXPECT_NE(result.error->message.find("mode converter rejected value"), std::string::npos);
+    EXPECT_EQ(result.exit_code, 2);
+}
+
+TEST(ArgtoolTests, ConverterExceptionIsCapturedAsStructuredError)
+{
+    argtool::Parser parser;
+    parser.SetProgramName("app.exe")
+        .Option("mode", 'm')
+        .String()
+        .ConvertWith([](std::string_view) -> argtool::ConvertResult { throw std::runtime_error("converter exploded"); })
+        .Done();
+
+    const std::vector<std::string> args = {"app.exe", "--mode", "bad"};
+    const auto argv = ToArgv(args);
+    const auto result = parser.Parse(static_cast<int>(argv.size()), argv.data());
+
+    ASSERT_FALSE(result.ok);
+    ASSERT_TRUE(result.error.has_value());
+    EXPECT_EQ(result.error->kind, argtool::ParseErrorKind::TypeMismatch);
+    EXPECT_EQ(result.error->field, "mode");
+    EXPECT_NE(result.error->message.find("converter exploded"), std::string::npos);
+    EXPECT_EQ(result.exit_code, 2);
+}
+
+TEST(ArgtoolTests, ExitCodeIsParseAdviceNotProcessExitContract)
+{
+    argtool::Parser parser;
+    parser.SetProgramName("app.exe").Option("verbose", 'v').BoolFlag().Done();
+
+    const std::vector<std::string> ok_args = {"app.exe", "--verbose"};
+    const auto ok_argv = ToArgv(ok_args);
+    const auto ok = parser.Parse(static_cast<int>(ok_argv.size()), ok_argv.data());
+    ASSERT_TRUE(ok.ok);
+    EXPECT_EQ(ok.exit_code, 0);
+
+    const std::vector<std::string> bad_args = {"app.exe", "--missing"};
+    const auto bad_argv = ToArgv(bad_args);
+    const auto bad = parser.Parse(static_cast<int>(bad_argv.size()), bad_argv.data());
+    ASSERT_FALSE(bad.ok);
+    EXPECT_EQ(bad.exit_code, 2);
+    EXPECT_FALSE(bad.help_requested);
+}
+
 TEST(ArgtoolTests, OptionalAndListCardinalityWork)
 {
     argtool::Parser parser;
@@ -431,6 +537,36 @@ TEST(ArgtoolTests, UnknownOptionHandlerCanSwallowUnknown)
     const auto result = parser.Parse(static_cast<int>(argv.size()), argv.data());
     ASSERT_TRUE(result.ok);
     EXPECT_EQ(result.GetString("output"), "app.log");
+}
+
+TEST(ArgtoolTests, UnknownOptionHandlerSwallowIsVisibleInTraceJson)
+{
+    argtool::Parser parser;
+    parser.SetProgramName("app.exe").EnableTrace(true).SetUnknownOptionHandler([](std::string_view token, std::string*)
+                                                                               { return token == "--legacy"; });
+
+    parser.Option("output", 'o').String().Done().Positional("input").String().Done();
+
+    const std::vector<std::string> args = {"app.exe", "--legacy", "--output", "app.log", "input.txt"};
+    const auto argv = ToArgv(args);
+
+    const auto result = parser.Parse(static_cast<int>(argv.size()), argv.data());
+    ASSERT_TRUE(result.ok);
+
+    bool saw_unknown = false;
+    for (const auto& event : result.trace)
+    {
+        if (event.stage == "unknown-option" && event.token == "--legacy" &&
+            event.detail.find("unknown option handler") != std::string::npos)
+        {
+            saw_unknown = true;
+        }
+    }
+    EXPECT_TRUE(saw_unknown);
+
+    const auto json = parser.ResultToJson(result, true);
+    EXPECT_NE(json.find("\"stage\":\"unknown-option\""), std::string::npos);
+    EXPECT_NE(json.find("\"token\":\"--legacy\""), std::string::npos);
 }
 
 TEST(ArgtoolTests, LongAliasParsesAsCanonicalOption)

@@ -6,6 +6,8 @@ if(NOT EXISTS "${TOOLX_SYNC_EXE}")
     message(FATAL_ERROR "toolx-sync executable not found: ${TOOLX_SYNC_EXE}")
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/toolx_cli_contract_helpers.cmake")
+
 set(test_root "${CMAKE_BINARY_DIR}/toolx_sync_cli_scenario")
 file(REMOVE_RECURSE "${test_root}")
 file(MAKE_DIRECTORY "${test_root}")
@@ -16,6 +18,8 @@ set(schema_json "${test_root}/schema.json")
 set(schema_fail_json "${test_root}/schema-fail.json")
 set(out_json "${test_root}/resolved.json")
 set(dry_run_json "${test_root}/dry-run-resolved.json")
+set(dry_run_snapshot_json "${test_root}/dry-run-snapshot.json")
+set(dry_run_journal_path "${test_root}/dry-run.journal")
 set(snapshot_json "${test_root}/snapshot.json")
 set(journal_path "${test_root}/resolved.journal")
 set(log_path "${test_root}/audit.log")
@@ -55,6 +59,15 @@ endfunction()
 run_toolx_sync(HELP 0 --help)
 assert_contains(HELP "${HELP_OUT}" "toolx-sync - validate and atomically publish composed config")
 
+run_toolx_sync(MISSING_BASE 2 --out "${out_json}" --json)
+toolx_assert_json_envelope(MISSING_BASE "${MISSING_BASE_OUT}" "toolx.sync.result" false 2)
+
+run_toolx_sync(MISSING_OUT 2 --base "${base_json}" --json)
+toolx_assert_json_envelope(MISSING_OUT "${MISSING_OUT_OUT}" "toolx.sync.result" false 2)
+
+run_toolx_sync(MISSING_BASE_FILE 1 --base "${test_root}/missing-base.json" --out "${test_root}/missing-base-out.json" --json)
+toolx_assert_json_envelope(MISSING_BASE_FILE "${MISSING_BASE_FILE_OUT}" "toolx.sync.result" false 1)
+
 run_toolx_sync(PUBLISH_JSON 0
     --base "${base_json}"
     --overlay "${overlay_json}"
@@ -76,6 +89,21 @@ assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"dry_run\": false")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"planned_steps\"")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"source_trace\"")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"schema_issues\": []")
+toolx_assert_json_envelope(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "toolx.sync.result" true 0)
+toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "${base_json}" data base)
+toolx_assert_json_path(PUBLISH_JSON "${PUBLISH_JSON_OUT}" data overlays)
+toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "" data remote_url)
+toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "${out_json}" data out)
+toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "${snapshot_json}" data snapshot)
+toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "${journal_path}" data journal)
+toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "${log_path}" data log_file)
+toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "${schema_json}" data schema)
+toolx_assert_json_path(PUBLISH_JSON "${PUBLISH_JSON_OUT}" data schema_issues)
+toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" true data append_arrays)
+toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" false data dry_run)
+toolx_assert_json_path(PUBLISH_JSON "${PUBLISH_JSON_OUT}" data steps)
+toolx_assert_json_path(PUBLISH_JSON "${PUBLISH_JSON_OUT}" data planned_steps)
+toolx_assert_json_path(PUBLISH_JSON "${PUBLISH_JSON_OUT}" data source_trace)
 
 if(NOT EXISTS "${out_json}")
     message(FATAL_ERROR "toolx-sync did not create ${out_json}")
@@ -86,16 +114,27 @@ endif()
 if(NOT EXISTS "${log_path}")
     message(FATAL_ERROR "toolx-sync did not create ${log_path}")
 endif()
+if(NOT EXISTS "${journal_path}")
+    message(FATAL_ERROR "toolx-sync did not create ${journal_path}")
+endif()
 
 file(READ "${out_json}" resolved_text)
 assert_contains(PUBLISH_JSON_FILE "${resolved_text}" "\"port\": 9090")
 assert_contains(PUBLISH_JSON_FILE "${resolved_text}" "\"base\"")
 assert_contains(PUBLISH_JSON_FILE "${resolved_text}" "\"overlay\"")
 
+file(WRITE "${dry_run_json}" "sentinel out\n")
+file(WRITE "${dry_run_snapshot_json}" "sentinel snapshot\n")
+file(WRITE "${dry_run_journal_path}" "sentinel journal\n")
+file(READ "${dry_run_json}" dry_run_out_before)
+file(READ "${dry_run_snapshot_json}" dry_run_snapshot_before)
+file(READ "${dry_run_journal_path}" dry_run_journal_before)
 run_toolx_sync(DRY_RUN_JSON 0
     --base "${base_json}"
     --overlay "${overlay_json}"
     --out "${dry_run_json}"
+    --snapshot "${dry_run_snapshot_json}"
+    --journal "${dry_run_journal_path}"
     --schema "${schema_json}"
     --require svc.port
     --dry-run
@@ -103,8 +142,23 @@ run_toolx_sync(DRY_RUN_JSON 0
 assert_contains(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" "\"message\": \"dry run passed\"")
 assert_contains(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" "\"dry_run\": true")
 assert_contains(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" "\"planned_steps\"")
-if(EXISTS "${dry_run_json}")
-    message(FATAL_ERROR "toolx-sync dry-run created ${dry_run_json}")
+toolx_assert_json_envelope(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" "toolx.sync.result" true 0)
+toolx_assert_json_value(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" true data dry_run)
+toolx_assert_json_value(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" "${dry_run_json}" data out)
+toolx_assert_json_value(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" "${dry_run_snapshot_json}" data snapshot)
+toolx_assert_json_value(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" "${dry_run_journal_path}" data journal)
+toolx_assert_json_path(DRY_RUN_JSON "${DRY_RUN_JSON_OUT}" data planned_steps)
+file(READ "${dry_run_json}" dry_run_out_after)
+file(READ "${dry_run_snapshot_json}" dry_run_snapshot_after)
+file(READ "${dry_run_journal_path}" dry_run_journal_after)
+if(NOT "${dry_run_out_before}" STREQUAL "${dry_run_out_after}")
+    message(FATAL_ERROR "toolx-sync dry-run modified ${dry_run_json}")
+endif()
+if(NOT "${dry_run_snapshot_before}" STREQUAL "${dry_run_snapshot_after}")
+    message(FATAL_ERROR "toolx-sync dry-run modified ${dry_run_snapshot_json}")
+endif()
+if(NOT "${dry_run_journal_before}" STREQUAL "${dry_run_journal_after}")
+    message(FATAL_ERROR "toolx-sync dry-run modified ${dry_run_journal_path}")
 endif()
 
 run_toolx_sync(VALIDATION_FAIL 4
@@ -114,6 +168,7 @@ run_toolx_sync(VALIDATION_FAIL 4
     --json)
 assert_contains(VALIDATION_FAIL "${VALIDATION_FAIL_OUT}" "\"ok\": false")
 assert_contains(VALIDATION_FAIL "${VALIDATION_FAIL_OUT}" "\"code\": 4")
+toolx_assert_json_envelope(VALIDATION_FAIL "${VALIDATION_FAIL_OUT}" "toolx.sync.result" false 4)
 
 run_toolx_sync(SCHEMA_FAIL 4
     --base "${schema_fail_json}"
@@ -122,6 +177,7 @@ run_toolx_sync(SCHEMA_FAIL 4
     --json)
 assert_contains(SCHEMA_FAIL "${SCHEMA_FAIL_OUT}" "\"schema_issues\"")
 assert_contains(SCHEMA_FAIL "${SCHEMA_FAIL_OUT}" "\"code\": \"maximum\"")
+toolx_assert_json_envelope(SCHEMA_FAIL "${SCHEMA_FAIL_OUT}" "toolx.sync.result" false 4)
 
 if(EXISTS "${test_root}/schema-invalid.json")
     message(FATAL_ERROR "toolx-sync created output for schema-invalid config")

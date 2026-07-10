@@ -2098,7 +2098,16 @@ bool AppendBodyChunk(httpx::Response* response, std::string_view chunk, const ht
 
     if (request.on_response_chunk)
     {
-        const bool accepted = request.on_response_chunk(chunk);
+        bool accepted = false;
+        try
+        {
+            accepted = request.on_response_chunk(chunk);
+        }
+        catch (...)
+        {
+            *error = MakeError(httpx::ErrorKind::Internal, "response chunk callback threw an exception");
+            return false;
+        }
         if (!accepted)
         {
             *error = MakeError(httpx::ErrorKind::Internal, "response chunk callback aborted stream");
@@ -3741,6 +3750,176 @@ std::optional<httpx::ProxyOptions> ProxyFromEnvironment(std::string_view scheme)
     return proxy;
 }
 
+std::string NormalizeNoProxyHost(std::string_view host)
+{
+    std::string out = ToLower(Trim(host));
+    if (out.size() >= 2 && out.front() == '[' && out.back() == ']')
+    {
+        out = out.substr(1, out.size() - 2);
+    }
+    while (!out.empty() && out.back() == '.')
+    {
+        out.pop_back();
+    }
+    return out;
+}
+
+bool ParseNoProxyPort(std::string_view text, std::uint16_t* out)
+{
+    if (out == nullptr || text.empty())
+    {
+        return false;
+    }
+    const auto parsed = utils::parse::parse_int32(text);
+    if (!parsed.ok || parsed.value <= 0 || parsed.value > 65535)
+    {
+        return false;
+    }
+    *out = static_cast<std::uint16_t>(parsed.value);
+    return true;
+}
+
+bool NoProxyRuleMatches(std::string_view raw_rule, const ParsedUrl& url)
+{
+    std::string rule = ToLower(Trim(raw_rule));
+    if (rule.empty())
+    {
+        return false;
+    }
+    if (rule == "*")
+    {
+        return true;
+    }
+
+    bool suffix_rule = false;
+    if (rule.size() >= 2 && rule[0] == '*' && rule[1] == '.')
+    {
+        suffix_rule = true;
+        rule.erase(rule.begin());
+    }
+    if (!rule.empty() && rule.front() == '.')
+    {
+        suffix_rule = true;
+        rule.erase(rule.begin());
+    }
+
+    std::optional<std::uint16_t> rule_port;
+    std::string rule_host;
+    if (!rule.empty() && rule.front() == '[')
+    {
+        const auto closing = rule.find(']');
+        if (closing == std::string::npos)
+        {
+            return false;
+        }
+        rule_host = rule.substr(1, closing - 1);
+        if (closing + 1 < rule.size())
+        {
+            if (rule[closing + 1] != ':')
+            {
+                return false;
+            }
+            std::uint16_t parsed_port = 0;
+            if (!ParseNoProxyPort(std::string_view(rule).substr(closing + 2), &parsed_port))
+            {
+                return false;
+            }
+            rule_port = parsed_port;
+        }
+    }
+    else
+    {
+        const auto colon_count = static_cast<std::size_t>(std::count(rule.begin(), rule.end(), ':'));
+        if (colon_count == 1)
+        {
+            const auto colon = rule.rfind(':');
+            std::uint16_t parsed_port = 0;
+            if (ParseNoProxyPort(std::string_view(rule).substr(colon + 1), &parsed_port))
+            {
+                rule_host = rule.substr(0, colon);
+                rule_port = parsed_port;
+            }
+            else
+            {
+                rule_host = rule;
+            }
+        }
+        else
+        {
+            rule_host = rule;
+        }
+    }
+
+    rule_host = NormalizeNoProxyHost(rule_host);
+    if (rule_host.empty())
+    {
+        return false;
+    }
+    if (rule_port.has_value() && *rule_port != url.port)
+    {
+        return false;
+    }
+
+    const std::string host = NormalizeNoProxyHost(url.host);
+    if (host == rule_host)
+    {
+        return true;
+    }
+
+    const bool domain_rule = suffix_rule || std::any_of(rule_host.begin(), rule_host.end(),
+                                                        [](unsigned char c) { return std::isalpha(c) != 0; });
+    return domain_rule && host.size() > rule_host.size() &&
+           host.compare(host.size() - rule_host.size(), rule_host.size(), rule_host) == 0 &&
+           host[host.size() - rule_host.size() - 1] == '.';
+}
+
+bool ShouldBypassProxyFromEnvironment(const ParsedUrl& url)
+{
+    std::string rules = ReadEnv("NO_PROXY");
+    if (rules.empty())
+    {
+        rules = ReadEnv("no_proxy");
+    }
+    if (rules.empty())
+    {
+        return false;
+    }
+
+    const auto parts = utils::str::split(rules, ',', false);
+    return std::any_of(parts.begin(), parts.end(),
+                       [&url](const std::string& rule) { return NoProxyRuleMatches(rule, url); });
+}
+
+std::filesystem::path MakeDownloadBackupPath(const std::filesystem::path& target, std::error_code* error)
+{
+    if (error != nullptr)
+    {
+        error->clear();
+    }
+
+    for (std::size_t i = 0; i < 1000; ++i)
+    {
+        const std::string suffix = i == 0 ? ".bak" : ".bak." + std::to_string(i);
+        std::filesystem::path candidate(target.string() + suffix);
+        std::error_code ec;
+        const bool exists = std::filesystem::exists(candidate, ec);
+        if (ec)
+        {
+            if (error != nullptr)
+            {
+                *error = ec;
+            }
+            return {};
+        }
+        if (!exists)
+        {
+            return candidate;
+        }
+    }
+
+    return {};
+}
+
 bool ContainsHeader(const httpx::HeaderList& headers, std::string_view key)
 {
     const std::string target = ToLower(key);
@@ -4193,7 +4372,7 @@ Result<ClientOptions> ParseOptionsFromFlatConfig(const std::vector<FlatConfigEnt
 
         if (key == "httpx.retry.max_attempts")
         {
-            if (!ParseSizeValue(value, &out.value.max_retry_attempts))
+            if (!ParseSizeValue(value, &out.value.retry_policy.max_attempts))
             {
                 out.ok = false;
                 out.error = MakeError(ErrorKind::InvalidArgument, "invalid retry.max_attempts value");
@@ -4294,6 +4473,34 @@ Result<Response> Client::Send(const Request& request)
         return out;
     }
 
+    if (!request.multipart.empty())
+    {
+        std::size_t multipart_data_bytes = 0;
+        bool exceeds_limit = false;
+        for (const auto& part : request.multipart)
+        {
+            if (part.data.size() > effective.limits.max_body_bytes - multipart_data_bytes)
+            {
+                exceeds_limit = true;
+                break;
+            }
+            multipart_data_bytes += part.data.size();
+        }
+
+        if (exceeds_limit)
+        {
+            Result<Response> out;
+            out.error = MakeError(ErrorKind::InvalidArgument, "request multipart body exceeds configured limit");
+            EmitLog(request, out, 0, effective, LogSeverity::Error);
+
+            std::scoped_lock lock(mu_);
+            ++stats_.total_requests;
+            ++stats_.total_failures;
+            ++stats_.consecutive_failures;
+            return out;
+        }
+    }
+
     if (HeaderBytes(request.headers) > effective.limits.max_header_bytes)
     {
         Result<Response> out;
@@ -4307,7 +4514,8 @@ Result<Response> Client::Send(const Request& request)
         return out;
     }
 
-    if (!effective.proxy.enabled && effective.use_proxy_from_environment)
+    if (!effective.proxy.enabled && effective.use_proxy_from_environment &&
+        !ShouldBypassProxyFromEnvironment(parsed_url.value))
     {
         const auto env_proxy = ProxyFromEnvironment(parsed_url.value.scheme);
         if (env_proxy.has_value())
@@ -4317,9 +4525,9 @@ Result<Response> Client::Send(const Request& request)
     }
 
     Result<Response> last;
-    std::size_t attempt = 0;
-    const std::size_t max_attempt =
-        effective.retry_policy.max_attempts > 0 ? effective.retry_policy.max_attempts : effective.max_retry_attempts;
+    std::size_t retries_used = 0;
+    const std::size_t retry_budget = effective.retry_policy.max_attempts > 0 ? effective.retry_policy.max_attempts - 1u
+                                                                             : effective.max_retry_attempts;
     for (;;)
     {
         if (RemainingMs(deadline) == 0)
@@ -4329,21 +4537,42 @@ Result<Response> Client::Send(const Request& request)
             break;
         }
 
+        if (request.on_attempt_start)
+        {
+            bool initialized = false;
+            try
+            {
+                initialized = request.on_attempt_start(retries_used + 1u);
+            }
+            catch (...)
+            {
+                last.ok = false;
+                last.error = MakeError(ErrorKind::Internal, "request attempt callback threw an exception");
+                break;
+            }
+            if (!initialized)
+            {
+                last.ok = false;
+                last.error = MakeError(ErrorKind::Internal, "request attempt initialization failed");
+                break;
+            }
+        }
+
         last = SendOnce(request, effective, deadline);
         if (last.ok)
         {
             break;
         }
 
-        const bool can_retry = attempt < max_attempt;
+        const bool can_retry = retries_used < retry_budget;
         const bool should_retry =
-            can_retry && ((effective.should_retry && effective.should_retry(last.error, attempt + 1)) ||
+            can_retry && ((effective.should_retry && effective.should_retry(last.error, retries_used + 1)) ||
                           (effective.retry_policy.retry_transient_errors && last.error.retryable));
         if (!should_retry)
         {
             break;
         }
-        ++attempt;
+        ++retries_used;
         if (effective.retry_policy.delay_ms > 0)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(effective.retry_policy.delay_ms));
@@ -4478,7 +4707,18 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
     }
 
     const std::filesystem::path target(output_path);
+    if (options.temp_suffix.empty())
+    {
+        status.error = MakeError(ErrorKind::InvalidArgument, "temporary download suffix cannot be empty");
+        return status;
+    }
     const std::filesystem::path temp = target.string() + options.temp_suffix;
+    if (temp.lexically_normal() == target.lexically_normal())
+    {
+        status.error = MakeError(ErrorKind::InvalidArgument, "temporary download path must differ from output path");
+        return status;
+    }
+
     std::error_code ec;
     if (std::filesystem::exists(target, ec) && !options.overwrite)
     {
@@ -4504,20 +4744,56 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
 
     std::uint64_t received = 0;
     bool wrote_chunks = false;
+    const auto report_progress = [&]()
+    {
+        if (!options.on_progress)
+        {
+            return true;
+        }
+        try
+        {
+            options.on_progress(received);
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    };
+
     Request request;
     request.method = HttpMethod::Get;
     request.url = std::move(url);
     request.headers = std::move(options.headers);
+    request.on_attempt_start = [&](std::size_t attempt)
+    {
+        if (attempt == 1)
+        {
+            return true;
+        }
+
+        out.close();
+        out.clear();
+        out.open(temp, std::ios::binary | std::ios::trunc);
+        if (!out.is_open())
+        {
+            return false;
+        }
+        received = 0;
+        wrote_chunks = false;
+        return true;
+    };
     request.on_response_chunk = [&](std::string_view chunk)
     {
-        wrote_chunks = true;
         out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
-        received += static_cast<std::uint64_t>(chunk.size());
-        if (options.on_progress)
+        if (!out.good())
         {
-            options.on_progress(received);
+            return false;
         }
-        return out.good();
+
+        wrote_chunks = true;
+        received += static_cast<std::uint64_t>(chunk.size());
+        return report_progress();
     };
 
     const auto response = Send(request);
@@ -4532,10 +4808,19 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
     if (!wrote_chunks && !response.value.body.empty())
     {
         out.write(response.value.body.data(), static_cast<std::streamsize>(response.value.body.size()));
-        received += static_cast<std::uint64_t>(response.value.body.size());
-        if (options.on_progress)
+        if (!out.good())
         {
-            options.on_progress(received);
+            std::filesystem::remove(temp, ec);
+            status.error = MakeError(ErrorKind::Internal, "failed to write downloaded file");
+            return status;
+        }
+        received += static_cast<std::uint64_t>(response.value.body.size());
+        if (!report_progress())
+        {
+            out.close();
+            std::filesystem::remove(temp, ec);
+            status.error = MakeError(ErrorKind::Internal, "download progress callback threw an exception");
+            return status;
         }
     }
     out.close();
@@ -4546,22 +4831,77 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
         return status;
     }
 
-    if (std::filesystem::exists(target, ec))
+    const bool target_exists = std::filesystem::exists(target, ec);
+    if (ec)
     {
-        std::filesystem::remove(target, ec);
-        if (ec)
+        const std::string inspect_error = ec.message();
+        std::filesystem::remove(temp, ec);
+        status.error = MakeError(ErrorKind::Internal, "failed to inspect output file: " + inspect_error);
+        return status;
+    }
+
+    std::optional<std::filesystem::path> backup;
+    if (target_exists)
+    {
+        if (std::filesystem::is_directory(target, ec))
         {
             std::filesystem::remove(temp, ec);
-            status.error = MakeError(ErrorKind::Internal, "failed to replace output file: " + ec.message());
+            status.error = MakeError(ErrorKind::InvalidArgument, "output path is a directory");
+            return status;
+        }
+        if (ec)
+        {
+            const std::string inspect_error = ec.message();
+            std::filesystem::remove(temp, ec);
+            status.error = MakeError(ErrorKind::Internal, "failed to inspect output file type: " + inspect_error);
+            return status;
+        }
+
+        std::error_code backup_ec;
+        backup = MakeDownloadBackupPath(target, &backup_ec);
+        if (backup->empty())
+        {
+            std::filesystem::remove(temp, ec);
+            const std::string reason = backup_ec ? backup_ec.message() : "no available backup path";
+            status.error = MakeError(ErrorKind::Internal, "failed to prepare output backup: " + reason);
+            return status;
+        }
+
+        std::filesystem::rename(target, *backup, ec);
+        if (ec)
+        {
+            const std::string replace_error = ec.message();
+            std::filesystem::remove(temp, ec);
+            status.error = MakeError(ErrorKind::Internal, "failed to prepare output replacement: " + replace_error);
             return status;
         }
     }
+
     std::filesystem::rename(temp, target, ec);
     if (ec)
     {
+        const std::string publish_error = ec.message();
+        std::error_code restore_ec;
+        if (backup.has_value())
+        {
+            std::filesystem::rename(*backup, target, restore_ec);
+        }
         std::filesystem::remove(temp, ec);
-        status.error = MakeError(ErrorKind::Internal, "failed to publish downloaded file: " + ec.message());
+        if (restore_ec)
+        {
+            status.error =
+                MakeError(ErrorKind::Internal, "failed to publish downloaded file: " + publish_error +
+                                                   "; failed to restore previous file: " + restore_ec.message());
+        }
+        else
+        {
+            status.error = MakeError(ErrorKind::Internal, "failed to publish downloaded file: " + publish_error);
+        }
         return status;
+    }
+    if (backup.has_value())
+    {
+        std::filesystem::remove(*backup, ec);
     }
 
     status.ok = true;

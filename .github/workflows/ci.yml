@@ -52,7 +52,7 @@ jobs:
       BUILD_DIR: build-ci
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -76,7 +76,7 @@ jobs:
 
       - name: Set up MSVC developer command prompt
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: x64
 
@@ -89,6 +89,7 @@ jobs:
         run: >
           cmake -S . -B "${BUILD_DIR}"
           -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
           -DTOOLX_BUILD_TESTS=ON
           -DTOOLX_BUILD_EXAMPLES=ON
           -DTOOLX_BUILD_TOOLS=ON
@@ -102,6 +103,7 @@ jobs:
         run: >
           cmake -S . -B "$env:BUILD_DIR"
           -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
           -DTOOLX_BUILD_TESTS=ON
           -DTOOLX_BUILD_EXAMPLES=ON
           -DTOOLX_BUILD_TOOLS=ON
@@ -135,7 +137,9 @@ jobs:
         shell: bash
         run: >
           cmake -S examples/install_consumer -B build-consumer -G Ninja
-          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/stage" &&
+          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/stage"
+          -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}"
+          -DCMAKE_BUILD_TYPE=Debug &&
           cmake --build build-consumer --parallel
 
       - name: Release smoke
@@ -155,6 +159,8 @@ jobs:
           cmake
           -DPACKAGE_DIR="${{ github.workspace }}/${BUILD_DIR}/packages"
           -DVERIFY_CMAKE_GENERATOR=Ninja
+          -DVERIFY_CMAKE_CXX_COMPILER="${{ matrix.cxx }}"
+          -DVERIFY_CMAKE_BUILD_TYPE=Debug
           -P cmake/release_archive_smoke.cmake
 
       - name: Package source archive
@@ -168,7 +174,7 @@ jobs:
 
       - name: Upload coverage artifacts
         if: matrix.enable_coverage == 'ON'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-${{ matrix.os }}-${{ matrix.compiler }}
           path: |
@@ -177,7 +183,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.enable_coverage == 'ON'
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: build-ci/coverage.xml
           fail_ci_if_error: false

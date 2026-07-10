@@ -15,6 +15,17 @@ TEST(ResultxTests, CfgxStatusCanBeNormalized)
     EXPECT_EQ(status.error.message, "missing svc.port");
 }
 
+TEST(ResultxTests, CfgxStatusHonorsExplicitKindAndDomain)
+{
+    cfgx::Status source{false, "remote config unavailable"};
+    const auto status = resultx::FromCfgx(source, resultx::ErrorKind::NotSupported, resultx::ErrorDomain::Network);
+
+    EXPECT_FALSE(status.ok);
+    EXPECT_EQ(status.error.kind, resultx::ErrorKind::NotSupported);
+    EXPECT_EQ(status.error.domain, resultx::ErrorDomain::Network);
+    EXPECT_EQ(status.error.message, "remote config unavailable");
+}
+
 TEST(ResultxTests, AsyncxStatusMapsTimeoutIntoSysxModel)
 {
     asyncx::Status source;

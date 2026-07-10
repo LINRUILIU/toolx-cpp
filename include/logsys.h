@@ -639,17 +639,28 @@ class Logger
         event.vendor_name = vendor_name ? vendor_name : "";
         event.vendor_code = vendor_code ? vendor_code : "";
 
-        char buffer[2048] = {0};
+        if constexpr (sizeof...(Args) == 0)
+        {
+            // A no-argument message may come from a dynamic source. Treat it
+            // as data, not as a printf format string.
+            event.message = Sanitize(fmt ? fmt : "");
+            Enqueue(std::move(event));
+            return;
+        }
+        else
+        {
+            char buffer[2048] = {0};
 #if defined(_MSC_VER) // MSVC 的 std::snprintf 可能会触发安全警告，禁用该警告以避免编译问题。
 #pragma warning(push)
 #pragma warning(disable : 4996)
 #endif
-        std::snprintf(buffer, sizeof(buffer), fmt, args...);
+            std::snprintf(buffer, sizeof(buffer), fmt ? fmt : "", args...);
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
-        event.message = Sanitize(buffer);
-        Enqueue(std::move(event));
+            event.message = Sanitize(buffer);
+            Enqueue(std::move(event));
+        }
     }
 
     template <typename... Args>

@@ -873,6 +873,7 @@ int RunStage(const PackConfig& config, bool json_mode)
     run_options.conflict_policy = fsx::ConflictPolicy::Overwrite;
     run_options.rollback_mode = fsx::RollbackMode::BestEffort;
     run_options.journal_path = config.journal;
+    run_options.keep_journal_on_success = !config.journal.empty();
     const auto run = fsx::Run(plan.value.batch, run_options);
     if (!run.ok)
     {

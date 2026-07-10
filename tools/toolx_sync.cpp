@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "argtool.h"
@@ -364,6 +365,52 @@ cfgx::RemoteFetcher MakeHttpxFetcher(httpx::Client* client)
     };
 }
 
+class ScopedRemoteFetcher
+{
+  public:
+    explicit ScopedRemoteFetcher(cfgx::RemoteFetcher fetcher)
+    {
+        cfgx::SetRemoteFetcher(std::move(fetcher));
+    }
+
+    ScopedRemoteFetcher(const ScopedRemoteFetcher&) = delete;
+    ScopedRemoteFetcher& operator=(const ScopedRemoteFetcher&) = delete;
+
+    ScopedRemoteFetcher(ScopedRemoteFetcher&& other) noexcept
+    {
+        active_ = other.active_;
+        other.active_ = false;
+    }
+
+    ScopedRemoteFetcher& operator=(ScopedRemoteFetcher&& other) noexcept
+    {
+        if (this != &other)
+        {
+            Reset();
+            active_ = other.active_;
+            other.active_ = false;
+        }
+        return *this;
+    }
+
+    ~ScopedRemoteFetcher()
+    {
+        Reset();
+    }
+
+    void Reset()
+    {
+        if (active_)
+        {
+            cfgx::SetRemoteFetcher({});
+            active_ = false;
+        }
+    }
+
+  private:
+    bool active_{true};
+};
+
 cfgx::Result<std::vector<schemax::Issue>> RunSchemaValidation(const std::string& schema_path,
                                                               const cfgx::Node& document)
 {
@@ -481,6 +528,8 @@ int main(int argc, const char* const argv[])
     const bool dry_run = parsed.GetBool("dry-run", false);
     const std::vector<std::string> overlay_paths = parsed.GetAll("overlay");
 
+    httpx::Client client;
+    std::optional<ScopedRemoteFetcher> remote_fetcher;
     asyncx::ThreadPool pool;
     const std::string base_path = parsed.GetString("base");
     auto base_task = pool.Submit([base_path]() { return cfgx::LoadFromFile(base_path); });
@@ -489,17 +538,15 @@ int main(int argc, const char* const argv[])
         return ExitError(json_mode, kExitRuntimeError, base_task.error.message);
     }
 
-    httpx::Client client;
     std::optional<std::future<cfgx::Result<cfgx::Node>>> remote_task;
     const std::string remote_url = parsed.GetString("remote-url", "");
     if (!remote_url.empty())
     {
-        cfgx::SetRemoteFetcher(MakeHttpxFetcher(&client));
+        remote_fetcher.emplace(MakeHttpxFetcher(&client));
         auto submitted =
             pool.Submit([remote_url, remote_format]() { return cfgx::LoadFromRemote(remote_url, *remote_format); });
         if (!submitted.ok)
         {
-            cfgx::SetRemoteFetcher({});
             return ExitError(json_mode, kExitRuntimeError, submitted.error.message);
         }
         remote_task.emplace(std::move(submitted.value));
@@ -508,7 +555,6 @@ int main(int argc, const char* const argv[])
     auto base = base_task.value.get();
     if (!base.ok)
     {
-        cfgx::SetRemoteFetcher({});
         return ExitError(json_mode, kExitRuntimeError, "failed to load base config: " + base.error);
     }
 
@@ -516,7 +562,7 @@ int main(int argc, const char* const argv[])
     if (remote_task.has_value())
     {
         auto remote = remote_task->get();
-        cfgx::SetRemoteFetcher({});
+        remote_fetcher.reset();
         if (!remote.ok)
         {
             return ExitError(json_mode, kExitRuntimeError, "failed to load remote config: " + remote.error);
@@ -612,6 +658,7 @@ int main(int argc, const char* const argv[])
     run_options.conflict_policy = fsx::ConflictPolicy::Overwrite;
     run_options.rollback_mode = fsx::RollbackMode::BestEffort;
     run_options.journal_path = journal_path;
+    run_options.keep_journal_on_success = !journal_path.empty();
 
     const auto run = fsx::Run(plan, run_options);
     if (!run.ok)

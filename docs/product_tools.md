@@ -47,6 +47,11 @@ operator workflow needs a standalone command.
 its own installed target, black-box contract tests, install/archive smoke
 coverage, standalone reference, and workflow example.
 
+The cross-CLI command, dependency, side-effect, and risk matrix is recorded in
+[product_cli_matrix.md](product_cli_matrix.md).
+The API-to-product gap audit is recorded in
+[api_product_gap_audit.md](api_product_gap_audit.md).
+
 ## Admission Rules
 
 A CLI enters the public product chain only when it has:

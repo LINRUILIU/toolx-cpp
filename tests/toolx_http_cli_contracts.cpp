@@ -394,6 +394,43 @@ void AssertContains(const std::string& case_name, const std::string& text, const
     }
 }
 
+void AssertNotContains(const std::string& case_name, const std::string& text, const std::string& needle)
+{
+    if (text.find(needle) != std::string::npos)
+    {
+        Fail("[" + case_name + "] expected output not to contain: " + needle + "\nactual:\n" + text);
+    }
+}
+
+void AssertJsonEnvelope(const std::string& case_name, const std::string& text, const std::string& schema, bool ok,
+                        int code)
+{
+    AssertContains(case_name, text, "\"schema\": \"" + schema + "\"");
+    AssertContains(case_name, text, "\"schema_version\": 1");
+    AssertContains(case_name, text, std::string("\"ok\": ") + (ok ? "true" : "false"));
+    AssertContains(case_name, text, "\"code\": " + std::to_string(code));
+    AssertContains(case_name, text, "\"issues\":");
+    AssertContains(case_name, text, "\"data\":");
+}
+
+void AssertHttpDataFields(const std::string& case_name, const std::string& text)
+{
+    for (const char* field :
+         {"command", "manifest", "checked", "passed", "failed", "duration_ms", "checks", "warnings"})
+    {
+        AssertContains(case_name, text, std::string("\"") + field + "\":");
+    }
+}
+
+void AssertHttpCheckFields(const std::string& case_name, const std::string& text)
+{
+    for (const char* field : {"name", "url", "method", "ok", "status", "duration_ms", "error_kind", "message",
+                              "expect_status", "body_matched"})
+    {
+        AssertContains(case_name, text, std::string("\"") + field + "\":");
+    }
+}
+
 std::string UrlFor(const LocalHttpServer& server, const std::string& path = "/")
 {
     return "http://127.0.0.1:" + std::to_string(server.port) + path;
@@ -422,23 +459,27 @@ int main(int argc, char** argv)
     AssertCode("missing", missing, 2);
     AssertContains("missing", missing.out, "\"code\": 2");
     AssertContains("missing", missing.out, "missing required option --url or --manifest");
+    AssertJsonEnvelope("missing", missing.out, "toolx.http.result", false, 2);
 
     auto missing_manifest =
         RunTool(tool, root, "missing-manifest", {"check", "--manifest", (root / "missing.json").string(), "--json"});
     AssertCode("missing-manifest", missing_manifest, 3);
     AssertContains("missing-manifest", missing_manifest.out, "\"code\": 3");
+    AssertJsonEnvelope("missing-manifest", missing_manifest.out, "toolx.http.result", false, 3);
 
     WriteFile(root / "bad-manifest.json", R"({"checks":[{"url":"http://127.0.0.1","unexpected":true}]})");
     auto bad_manifest =
         RunTool(tool, root, "bad-manifest", {"check", "--manifest", (root / "bad-manifest.json").string(), "--json"});
     AssertCode("bad-manifest", bad_manifest, 4);
     AssertContains("bad-manifest", bad_manifest.out, "manifest validation failed");
+    AssertJsonEnvelope("bad-manifest", bad_manifest.out, "toolx.http.result", false, 4);
 
     auto missing_body = RunTool(
         tool, root, "missing-body",
         {"check", "--url", "http://127.0.0.1:1", "--body-file", (root / "missing-body.txt").string(), "--json"});
     AssertCode("missing-body", missing_body, 3);
     AssertContains("missing-body", missing_body.out, "body file not found");
+    AssertJsonEnvelope("missing-body", missing_body.out, "toolx.http.result", false, 3);
 
     {
         auto server =
@@ -452,6 +493,9 @@ int main(int argc, char** argv)
         AssertContains("ok", ok.out, "\"schema\": \"toolx.http.result\"");
         AssertContains("ok", ok.out, "\"status\": 200");
         AssertContains("ok", ok.out, "\"body_matched\": true");
+        AssertJsonEnvelope("ok", ok.out, "toolx.http.result", true, 0);
+        AssertHttpDataFields("ok", ok.out);
+        AssertHttpCheckFields("ok", ok.out);
     }
 
     {
@@ -466,6 +510,9 @@ int main(int argc, char** argv)
         AssertCode("mismatch", mismatch, 4);
         AssertContains("mismatch", mismatch.out, "\"code\": 4");
         AssertContains("mismatch", mismatch.out, "preflight validation failed");
+        AssertJsonEnvelope("mismatch", mismatch.out, "toolx.http.result", false, 4);
+        AssertHttpDataFields("mismatch", mismatch.out);
+        AssertHttpCheckFields("mismatch", mismatch.out);
     }
 
     {
@@ -492,6 +539,7 @@ int main(int argc, char** argv)
                                  {"check", "--url", UrlFor(*server), "--expect-body-contains", "missing", "--json"});
         AssertCode("body-fail", body_fail, 4);
         AssertContains("body-fail", body_fail.out, "response body did not contain expected text");
+        AssertJsonEnvelope("body-fail", body_fail.out, "toolx.http.result", false, 4);
     }
 
     {
@@ -506,6 +554,9 @@ int main(int argc, char** argv)
                             {"check", "--url", UrlFor(*server, "/submit"), "--method", "POST", "--header",
                              "X-Test: yes", "--body", "payload", "--json"});
         AssertCode("post", post, 0);
+        AssertJsonEnvelope("post", post.out, "toolx.http.result", true, 0);
+        AssertHttpDataFields("post", post.out);
+        AssertHttpCheckFields("post", post.out);
         AssertContains("post-captured", *captured, "POST /submit");
         AssertContains("post-captured", *captured, "X-Test: yes");
         AssertContains("post-captured", *captured, "payload");
@@ -535,6 +586,47 @@ int main(int argc, char** argv)
         AssertCode("manifest", manifest, 0);
         AssertContains("manifest", manifest.out, "\"checked\": 2");
         AssertContains("manifest", manifest.out, "\"passed\": 2");
+        AssertJsonEnvelope("manifest", manifest.out, "toolx.http.result", true, 0);
+        AssertHttpDataFields("manifest", manifest.out);
+        AssertHttpCheckFields("manifest", manifest.out);
+    }
+
+    {
+        auto captured = std::make_shared<std::string>();
+        auto server = StartSingleResponseServer(
+            "HTTP/1.1 201 Created\r\nContent-Length: 7\r\nConnection: close\r\n\r\ncreated", 0, captured);
+        if (!server)
+        {
+            Fail("failed to start local server");
+        }
+        WriteFile(root / "manifest-override.json",
+                  "{\n"
+                  "  \"headers\": [\"X-Manifest: should-not-be-sent\"],\n"
+                  "  \"checks\": [\n"
+                  "    {\"name\":\"override\",\"url\":\"" +
+                      UrlFor(*server, "/override?token=secret&name=demo") +
+                      "\",\"method\":\"GET\",\"headers\":[\"X-Check: yes\"],\"body\":\"manifest-body\","
+                      "\"expect_status\":\"500\"}\n"
+                      "  ]\n"
+                      "}\n");
+        auto manifest_override =
+            RunTool(tool, root, "manifest-override",
+                    {"check", "--manifest", (root / "manifest-override.json").string(), "--method", "POST", "--header",
+                     "X-Override: yes", "--expect-status", "201", "--body", "cli-body", "--json"});
+        AssertCode("manifest-override", manifest_override, 0);
+        AssertJsonEnvelope("manifest-override", manifest_override.out, "toolx.http.result", true, 0);
+        AssertHttpDataFields("manifest-override", manifest_override.out);
+        AssertHttpCheckFields("manifest-override", manifest_override.out);
+        AssertContains("manifest-override", manifest_override.out, "\"method\": \"POST\"");
+        AssertContains("manifest-override", manifest_override.out, "\"expect_status\": \"201\"");
+        AssertContains("manifest-override", manifest_override.out, "token=***&name=demo");
+        AssertNotContains("manifest-override", manifest_override.out, "token=secret");
+        AssertContains("manifest-override-captured", *captured, "POST /override?token=secret&name=demo");
+        AssertContains("manifest-override-captured", *captured, "X-Override: yes");
+        AssertContains("manifest-override-captured", *captured, "X-Check: yes");
+        AssertNotContains("manifest-override-captured", *captured, "X-Manifest: should-not-be-sent");
+        AssertContains("manifest-override-captured", *captured, "cli-body");
+        AssertNotContains("manifest-override-captured", *captured, "manifest-body");
     }
 
     {
@@ -550,6 +642,9 @@ int main(int argc, char** argv)
         AssertCode("timeout", timeout, 1);
         AssertContains("timeout", timeout.out, "\"code\": 1");
         AssertContains("timeout", timeout.out, "runtime failed");
+        AssertJsonEnvelope("timeout", timeout.out, "toolx.http.result", false, 1);
+        AssertHttpDataFields("timeout", timeout.out);
+        AssertHttpCheckFields("timeout", timeout.out);
     }
 
     return 0;

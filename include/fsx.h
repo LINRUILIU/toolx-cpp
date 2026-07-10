@@ -54,6 +54,8 @@ struct RunOptions
     RollbackMode rollback_mode{RollbackMode::BestEffort};
     ConflictPolicy conflict_policy{ConflictPolicy::Overwrite};
     std::string journal_path;
+    // Retained successful journals are finalized and are audit-only;
+    // RecoverFromJournal rejects them rather than rolling back completed work.
     bool keep_journal_on_success{false};
 }; // 运行选项，包含是否快速失败、是否覆盖现有文件、默认备份选项、备份文件后缀、回滚模式、冲突处理策略、日志路径以及成功后是否保留日志等选项。
 
@@ -214,9 +216,17 @@ class BatchPlan
     BatchPlan& AddCopyTree(std::string src, std::string dst);
 
     const std::vector<Action>& Actions() const; // 获取操作列表，返回一个包含所有操作的向量。
+    bool ok() const noexcept;
+    const std::string& error() const noexcept;
 
   private:
+    void MarkInvalid(std::string error);
+
     std::vector<Action> actions_;
+    bool ok_{true};
+    std::string error_;
+
+    friend BatchPlan BuildSyncPlan(std::string_view source_root, std::string_view destination_root, bool remove_extra);
 };
 
 RunResult Run(const BatchPlan& plan,

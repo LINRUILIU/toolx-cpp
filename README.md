@@ -1,11 +1,11 @@
 # ToolX C++ Toolkit
 
 ToolX is a practical C++20 toolkit for small tools and small-to-medium projects.
-The `v0.3.0` release finalizes the first ToolX CLI product chain: config
-authoring, config publishing, local packaging, HTTP preflight, log diagnosis,
-and terminal inspection. `v0.2.0` established the single-tool product baseline
-with `toolx-config`; the `0.2.x` development line admitted the remaining
-bounded-stable CLI products that are now finalized in `v0.3.0`.
+`v0.3.1` is a maintenance release that hardens filesystem recovery, archive
+extraction, download retries, logging, and Windows/MSVC configuration. The
+`v0.3.0` release finalized the first ToolX CLI product chain: config authoring,
+config publishing, local packaging, HTTP preflight, log diagnosis, and terminal
+inspection.
 
 ## Stability
 
@@ -97,12 +97,12 @@ The install tree is also the shape of the prebuilt release archives:
 
 ## Release Artifacts
 
-The `v0.3.0` release is distributed through GitHub Releases with:
+The `v0.3.1` release is distributed through GitHub Releases with:
 
-- `ToolX-v0.3.0-source.tar.gz`
-- `ToolX-v0.3.0-windows-x86_64.zip`
-- `ToolX-v0.3.0-linux-x86_64.tar.gz`
-- `ToolX-v0.3.0-macos-universal.tar.gz` or `ToolX-v0.3.0-macos-x86_64.tar.gz`
+- `ToolX-v0.3.1-source.tar.gz`
+- `ToolX-v0.3.1-windows-x86_64.zip`
+- `ToolX-v0.3.1-linux-x86_64.tar.gz`
+- `ToolX-v0.3.1-macos-universal.tar.gz` or `ToolX-v0.3.1-macos-x86_64.tar.gz`
 - `SHA256SUMS`
 
 Each binary archive is validated by unpacking it, running `toolx-config --help`,

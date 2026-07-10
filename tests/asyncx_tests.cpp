@@ -785,6 +785,61 @@ TEST(AsyncxTests, CancellationSourceAndTaskGroupTrackOutcomes)
     EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::Drain).ok);
 }
 
+TEST(AsyncxTests, RunningTaskDeadlineDoesNotForceInterrupt)
+{
+    asyncx::PoolOptions options;
+    options.worker_count = 1;
+    options.queue_capacity = 4;
+    asyncx::ThreadPool pool(options);
+
+    std::promise<void> started_promise;
+    auto started = started_promise.get_future();
+    std::promise<void> release_promise;
+    auto release = release_promise.get_future().share();
+    std::atomic<bool> completed{false};
+
+    asyncx::TaskOptions task_options;
+    task_options.deadline = sysx::time::SteadyNow() + std::chrono::milliseconds(10);
+    const auto posted = pool.PostWithOptions(task_options,
+                                             [&](asyncx::CancellationToken)
+                                             {
+                                                 started_promise.set_value();
+                                                 release.wait();
+                                                 completed.store(true, std::memory_order_relaxed);
+                                             });
+    ASSERT_TRUE(posted.ok) << posted.error.message;
+    ASSERT_EQ(started.wait_for(std::chrono::milliseconds(500)), std::future_status::ready);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    EXPECT_FALSE(completed.load(std::memory_order_relaxed));
+
+    release_promise.set_value();
+    EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::Drain).ok);
+    EXPECT_TRUE(completed.load(std::memory_order_relaxed));
+}
+
+TEST(AsyncxTests, TaskGroupClassifiesUserExceptionsAsFailed)
+{
+    asyncx::PoolOptions options;
+    options.worker_count = 1;
+    options.queue_capacity = 4;
+    asyncx::ThreadPool pool(options);
+    asyncx::TaskGroup group(pool);
+
+    ASSERT_TRUE(
+        group.Submit(asyncx::TaskOptions{}, [](asyncx::CancellationToken) { throw std::runtime_error("task failed"); })
+            .ok);
+    ASSERT_TRUE(group.WaitFor(std::chrono::milliseconds(500)).ok);
+
+    const auto stats = group.Stats();
+    EXPECT_EQ(stats.submitted, 1u);
+    EXPECT_EQ(stats.completed, 0u);
+    EXPECT_EQ(stats.failed, 1u);
+    EXPECT_EQ(stats.cancelled, 0u);
+
+    EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::Drain).ok);
+}
+
 TEST(AsyncxTests, PostWithOptionsHonorsPreCancelledToken)
 {
     asyncx::ThreadPool pool;

@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -28,6 +32,47 @@ std::string ReadText(const std::filesystem::path& p)
     std::ifstream in(p.string(), std::ios::binary);
     std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     return s;
+}
+
+void WriteOctal(char* field, std::size_t width, std::uintmax_t value)
+{
+    std::snprintf(field, width, "%0*llo", static_cast<int>(width - 1), static_cast<unsigned long long>(value));
+}
+
+void WriteTarWithSingleEntry(const std::filesystem::path& archive, const std::string& name, const std::string& payload)
+{
+    std::array<char, 512> header{};
+    std::memcpy(header.data(), name.data(), std::min<std::size_t>(name.size(), 100));
+    WriteOctal(header.data() + 100, 8, 0644);
+    WriteOctal(header.data() + 108, 8, 0);
+    WriteOctal(header.data() + 116, 8, 0);
+    WriteOctal(header.data() + 124, 12, payload.size());
+    WriteOctal(header.data() + 136, 12, 0);
+    std::memset(header.data() + 148, ' ', 8);
+    header[156] = '0';
+    std::memcpy(header.data() + 257, "ustar", 5);
+    std::memcpy(header.data() + 263, "00", 2);
+
+    unsigned int checksum = 0;
+    for (const char ch : header)
+    {
+        checksum += static_cast<unsigned char>(ch);
+    }
+    std::snprintf(header.data() + 148, 8, "%06o", checksum);
+    header[154] = '\0';
+    header[155] = ' ';
+
+    std::ofstream out(archive, std::ios::binary | std::ios::trunc);
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+    const std::size_t padding = (512 - (payload.size() % 512)) % 512;
+    std::array<char, 512> zeros{};
+    if (padding > 0)
+    {
+        out.write(zeros.data(), static_cast<std::streamsize>(padding));
+    }
+    out.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+    out.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
 }
 
 } // namespace
@@ -175,6 +220,7 @@ TEST(FsxTests, RecoverFromJournalRollsBack)
         .AddSafeReplace((root / "missing.txt").string(), (root / "x.txt").string(), false);
 
     fsx::RunOptions options;
+    options.fail_fast = false;
     options.journal_path = journal.string();
     options.keep_journal_on_success = true;
 
@@ -191,6 +237,185 @@ TEST(FsxTests, RecoverFromJournalRollsBack)
     EXPECT_TRUE(std::filesystem::exists(src));
     EXPECT_FALSE(std::filesystem::exists(dst));
     EXPECT_FALSE(std::filesystem::exists(journal));
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, RecoverFromJournalRestoresAllUndoActionsForOverwrittenCopy)
+{
+    const auto root = TestRoot() / "recover_copy_overwrite";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    const auto source = root / "source.txt";
+    const auto destination = root / "destination.txt";
+    const auto journal = root / "run.journal";
+    WriteText(source, "new");
+    WriteText(destination, "old");
+
+    fsx::BatchPlan plan;
+    plan.AddCopyFile(source.string(), destination.string())
+        .AddSafeReplace((root / "missing.txt").string(), (root / "later.txt").string(), false);
+
+    fsx::RunOptions options;
+    options.fail_fast = false;
+    options.journal_path = journal.string();
+
+    const auto run_result = fsx::Run(plan, options);
+    ASSERT_FALSE(run_result.ok);
+    EXPECT_EQ(ReadText(destination), "new");
+    EXPECT_TRUE(std::filesystem::exists(journal));
+
+    const auto recovered = fsx::RecoverFromJournal(journal.string());
+    ASSERT_TRUE(recovered.ok) << recovered.error;
+    EXPECT_EQ(ReadText(source), "new");
+    EXPECT_EQ(ReadText(destination), "old");
+    EXPECT_FALSE(std::filesystem::exists(journal));
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, CommittedJournalCannotBeRecoveredAndCanBeReused)
+{
+    const auto root = TestRoot() / "committed_journal";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    const auto target = root / "target.txt";
+    const auto journal = root / "run.journal";
+    std::filesystem::create_directories(root, ec);
+    fsx::RunOptions options;
+    options.journal_path = journal.string();
+    options.keep_journal_on_success = true;
+
+    fsx::BatchPlan first;
+    first.AddAtomicWrite(target.string(), "first");
+    ASSERT_TRUE(fsx::Run(first, options).ok);
+    EXPECT_TRUE(std::filesystem::exists(journal));
+
+    const auto recovered = fsx::RecoverFromJournal(journal.string());
+    EXPECT_FALSE(recovered.ok);
+    EXPECT_NE(recovered.error.find("completed transaction"), std::string::npos);
+    EXPECT_EQ(ReadText(target), "first");
+
+    fsx::BatchPlan second;
+    second.AddAtomicWrite(target.string(), "second");
+    const auto rerun = fsx::Run(second, options);
+    ASSERT_TRUE(rerun.ok) << rerun.error;
+    EXPECT_EQ(ReadText(target), "second");
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, FailFastRollbackRestoresExistingAtomicWriteTarget)
+{
+    const auto root = TestRoot() / "rollback_existing_atomic";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    const auto target = root / "target.txt";
+    WriteText(target, "old");
+
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite(target.string(), "new")
+        .AddSafeReplace((root / "missing.txt").string(), (root / "dest.txt").string(), false);
+
+    const auto result = fsx::Run(plan);
+    ASSERT_FALSE(result.ok);
+    EXPECT_EQ(ReadText(target), "old");
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, FailFastRollbackRemovesJournalAfterSuccessfulRollback)
+{
+    const auto root = TestRoot() / "rollback_journal_cleanup";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+
+    const auto target = root / "target.txt";
+    const auto journal = root / "run.journal";
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite(target.string(), "new")
+        .AddSafeReplace((root / "missing.txt").string(), (root / "later.txt").string(), false);
+
+    fsx::RunOptions options;
+    options.journal_path = journal.string();
+    const auto result = fsx::Run(plan, options);
+    ASSERT_FALSE(result.ok);
+    EXPECT_FALSE(std::filesystem::exists(target));
+    EXPECT_FALSE(std::filesystem::exists(journal));
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, FailFastRollbackRestoresSafeReplaceSourceAndDestination)
+{
+    const auto root = TestRoot() / "rollback_safe_replace";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    const auto src = root / "src.txt";
+    const auto dst = root / "dst.txt";
+    WriteText(src, "new");
+    WriteText(dst, "old");
+
+    fsx::BatchPlan plan;
+    plan.AddSafeReplace(src.string(), dst.string(), false)
+        .AddSafeReplace((root / "missing.txt").string(), (root / "later.txt").string(), false);
+
+    const auto result = fsx::Run(plan);
+    ASSERT_FALSE(result.ok);
+    EXPECT_EQ(ReadText(src), "new");
+    EXPECT_EQ(ReadText(dst), "old");
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, NonFailFastFailureReturnsFailureAndKeepsJournal)
+{
+    const auto root = TestRoot() / "non_fail_fast";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    const auto created = root / "created.txt";
+    const auto journal = root / "run.journal";
+    std::filesystem::create_directories(root, ec);
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite(created.string(), "created")
+        .AddSafeReplace((root / "missing.txt").string(), (root / "dest.txt").string(), false);
+
+    fsx::RunOptions options;
+    options.fail_fast = false;
+    options.journal_path = journal.string();
+
+    const auto result = fsx::Run(plan, options);
+    EXPECT_FALSE(result.ok);
+    EXPECT_FALSE(result.error.empty());
+    EXPECT_TRUE(std::filesystem::exists(created));
+    EXPECT_TRUE(std::filesystem::exists(journal));
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, RunFailsWhenJournalCannotBeCreated)
+{
+    const auto root = TestRoot() / "journal_open_failure";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite((root / "out.txt").string(), "payload");
+    fsx::RunOptions options;
+    options.journal_path = (root / "missing" / "run.journal").string();
+    options.keep_journal_on_success = true;
+
+    const auto result = fsx::Run(plan, options);
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error.find("journal"), std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(root / "out.txt"));
 
     std::filesystem::remove_all(root, ec);
 }
@@ -406,6 +631,59 @@ TEST(FsxTests, DirectoryDiffBuildsSyncPlan)
     EXPECT_FALSE(std::filesystem::exists(dst / "remove.txt"));
 }
 
+TEST(FsxTests, BuildSyncPlanReportsInvalidSourceRoot)
+{
+    const auto root = TestRoot() / "sync_plan_invalid_source";
+    const auto missing_src = root / "missing";
+    const auto dst = root / "dst";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(dst, ec);
+
+    const auto plan = fsx::BuildSyncPlan(missing_src.string(), dst.string(), true);
+    EXPECT_FALSE(plan.ok());
+    EXPECT_TRUE(plan.Actions().empty());
+    EXPECT_NE(plan.error().find("root does not exist"), std::string::npos);
+
+    const auto run = fsx::Run(plan);
+    EXPECT_FALSE(run.ok);
+    EXPECT_EQ(run.error, plan.error());
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, BuildSyncPlanRejectsSameOrNestedRoots)
+{
+    const auto root = TestRoot() / "sync_plan_boundaries";
+    const auto src = root / "src";
+    const auto nested_dst = src / "dst";
+    const auto parent_dst = root / "parent_dst";
+    const auto nested_src = parent_dst / "src";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    WriteText(src / "a.txt", "a");
+    WriteText(nested_dst / "extra.txt", "extra");
+    WriteText(nested_src / "b.txt", "b");
+
+    const auto same = fsx::BuildSyncPlan(src.string(), src.string(), true);
+    EXPECT_FALSE(same.ok());
+    EXPECT_TRUE(same.Actions().empty());
+    EXPECT_NE(same.error().find("different"), std::string::npos);
+
+    const auto dst_inside_src = fsx::BuildSyncPlan(src.string(), nested_dst.string(), true);
+    EXPECT_FALSE(dst_inside_src.ok());
+    EXPECT_TRUE(dst_inside_src.Actions().empty());
+    EXPECT_NE(dst_inside_src.error().find("overlap"), std::string::npos);
+
+    const auto src_inside_dst = fsx::BuildSyncPlan(nested_src.string(), parent_dst.string(), true);
+    EXPECT_FALSE(src_inside_dst.ok());
+    EXPECT_TRUE(src_inside_dst.Actions().empty());
+    EXPECT_NE(src_inside_dst.error().find("overlap"), std::string::npos);
+
+    std::filesystem::remove_all(root, ec);
+}
+
 TEST(FsxTests, TarArchiveCreateAndExtractRoundTrip)
 {
     const auto root = TestRoot() / "tar_archive";
@@ -424,3 +702,71 @@ TEST(FsxTests, TarArchiveCreateAndExtractRoundTrip)
     EXPECT_EQ(ReadText(out / "a.txt"), "alpha");
     EXPECT_EQ(ReadText(out / "nested" / "b.txt"), "beta");
 }
+
+TEST(FsxTests, ExtractArchiveRejectsTraversalEntry)
+{
+    const auto root = TestRoot() / "tar_traversal";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    const auto archive = root / "evil.tar";
+    const auto out = root / "out";
+
+    WriteTarWithSingleEntry(archive, "../evil.txt", "owned");
+    const auto status = fsx::ExtractArchive(archive.string(), out.string());
+    EXPECT_FALSE(status.ok);
+    EXPECT_NE(status.error.find("unsafe archive entry"), std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(root / "evil.txt"));
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, ExtractArchiveRejectsWindowsRootedEntry)
+{
+    const auto root = TestRoot() / "tar_windows_root";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    const auto archive = root / "evil.tar";
+    const auto out = root / "out";
+
+    WriteTarWithSingleEntry(archive, "C:/evil.txt", "owned");
+    const auto drive_status = fsx::ExtractArchive(archive.string(), out.string());
+    EXPECT_FALSE(drive_status.ok);
+    EXPECT_NE(drive_status.error.find("unsafe archive entry"), std::string::npos);
+
+    WriteTarWithSingleEntry(archive, "\\\\evil.txt", "owned");
+    const auto slash_status = fsx::ExtractArchive(archive.string(), out.string());
+    EXPECT_FALSE(slash_status.ok);
+    EXPECT_NE(slash_status.error.find("unsafe archive entry"), std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(root / "evil.txt"));
+
+    std::filesystem::remove_all(root, ec);
+}
+
+#if !defined(_WIN32)
+TEST(FsxTests, ExtractArchiveRejectsPreexistingSymlinkEscape)
+{
+    const auto root = TestRoot() / "tar_symlink_escape";
+    const auto archive = root / "evil.tar";
+    const auto out = root / "out";
+    const auto outside = root / "outside";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(out, ec);
+    std::filesystem::create_directories(outside, ec);
+    std::filesystem::create_directory_symlink(outside, out / "link", ec);
+    if (ec)
+    {
+        GTEST_SKIP() << "directory symlinks are unavailable: " << ec.message();
+    }
+
+    WriteTarWithSingleEntry(archive, "link/escape.txt", "owned");
+    const auto status = fsx::ExtractArchive(archive.string(), out.string());
+    EXPECT_FALSE(status.ok);
+    EXPECT_NE(status.error.find("escapes destination root"), std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(outside / "escape.txt"));
+
+    std::filesystem::remove_all(root, ec);
+}
+#endif

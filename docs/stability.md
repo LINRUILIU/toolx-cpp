@@ -105,6 +105,10 @@ The following are intentionally outside the 0.3.x stable surface:
 
 ## CLI Contracts
 
+This section summarizes the stable CLI contracts. The detailed cross-CLI
+command matrix, file side effects, API dependencies, implicit defaults, and
+magic-risk checklist live in [product_cli_matrix.md](product_cli_matrix.md).
+
 `toolx-config` was introduced as the first product CLI and remains the primary
 0.3.x command-line contract. Stable subcommands currently include
 `load`, `adapters`, `adapter-activate`, `doctor`, `snapshot-export`,
@@ -245,7 +249,7 @@ general TUI framework.
 
 ## Versioning
 
-Recommended current public tag: `v0.3.0`.
+Recommended current public tag: `v0.3.1`.
 
 For 0.3.x:
 

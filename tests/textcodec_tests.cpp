@@ -41,6 +41,21 @@ TEST(TextcodecHexTests, UppercaseAndErrors)
     EXPECT_EQ(out[2], 0xFEu);
 }
 
+TEST(TextcodecHexTests, DecodeToBufferRejectsInsufficientCapacity)
+{
+    std::array<unsigned char, 1> small{{0}};
+    const auto too_small = textcodec::hex_decode_to_buffer("6869", small.data(), small.size());
+    ASSERT_FALSE(too_small.ok);
+    EXPECT_EQ(too_small.code, textcodec::DecodeError::OutOfRange);
+
+    std::array<unsigned char, 2> exact{{0, 0}};
+    const auto ok = textcodec::hex_decode_to_buffer("6869", exact.data(), exact.size());
+    ASSERT_TRUE(ok.ok) << ok.error;
+    EXPECT_EQ(ok.value, 2u);
+    EXPECT_EQ(exact[0], static_cast<unsigned char>('h'));
+    EXPECT_EQ(exact[1], static_cast<unsigned char>('i'));
+}
+
 TEST(TextcodecBase64Tests, EncodeDecodeRoundTrip)
 {
     const std::string src = "hello";
@@ -112,6 +127,10 @@ TEST(TextcodecUrlTests, DecodeErrors)
     const auto plus_dec = textcodec::url_decode("a+b", dec_opt);
     ASSERT_TRUE(plus_dec.ok);
     EXPECT_EQ(plus_dec.value, "a b");
+
+    const auto preserved_plus = textcodec::url_decode("a+b");
+    ASSERT_TRUE(preserved_plus.ok);
+    EXPECT_EQ(preserved_plus.value, "a+b");
 }
 
 TEST(TextcodecTests, ErrorToString)

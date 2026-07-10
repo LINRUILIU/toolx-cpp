@@ -525,6 +525,59 @@ TEST(TuixFrameworkTests, TextInputEditsFocusedText)
     EXPECT_EQ(input.text(), "a");
 }
 
+TEST(TuixFrameworkTests, TextInputDocumentsByteOrientedMultibyteEditing)
+{
+    tuix::TextInput input;
+    input.Layout(tuix::Rect{0, 0, 8, 1});
+    input.SetFocused(true);
+
+    tuix::InputEvent ch;
+    ch.type = tuix::EventType::Key;
+    ch.key.key = tuix::Key::Character;
+    ch.key.text = "\xC3\xA9";
+    EXPECT_TRUE(input.HandleEvent(ch));
+    EXPECT_EQ(input.text().size(), 2u);
+    EXPECT_EQ(input.cursor(), 2u);
+
+    tuix::InputEvent left;
+    left.type = tuix::EventType::Key;
+    left.key.key = tuix::Key::ArrowLeft;
+    EXPECT_TRUE(input.HandleEvent(left));
+    EXPECT_EQ(input.cursor(), 1u);
+
+    tuix::InputEvent backspace;
+    backspace.type = tuix::EventType::Key;
+    backspace.key.key = tuix::Key::Backspace;
+    EXPECT_TRUE(input.HandleEvent(backspace));
+    EXPECT_EQ(input.text().size(), 1u);
+}
+
+TEST(TuixFrameworkTests, ApplicationAcceptsDegradedTeeBackInputSource)
+{
+    tuix::InputEvent key;
+    key.type = tuix::EventType::Key;
+    key.key.key = tuix::Key::Enter;
+
+    tuix::PollResult result;
+    result.status = tuix::PollStatus::HasEvent;
+    result.event = key;
+    result.message = "TeeBack degraded to exclusive consume";
+
+    auto source = std::make_unique<FakeInputSource>(std::vector<tuix::PollResult>{result});
+    auto* raw_source = source.get();
+    ASSERT_TRUE(raw_source->SetConsumeMode(tuix::InputConsumeMode::TeeBack));
+    auto root = std::make_shared<MarkWidget>('x', true);
+
+    tuix::Application app(nullptr);
+    app.SetRoot(root);
+    app.SetFocusedWidget(root.get());
+    app.SetInputSource(std::move(source));
+
+    EXPECT_TRUE(app.Tick(0));
+    EXPECT_EQ(raw_source->consume_mode(), tuix::InputConsumeMode::TeeBack);
+    EXPECT_EQ(root->events(), 1);
+}
+
 TEST(TuixFrameworkTests, ListViewKeyboardAndMouseSelectionWork)
 {
     tuix::ListView list({"one", "two", "three"});

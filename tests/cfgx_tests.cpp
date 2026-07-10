@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <string>
 
 #include "cfgx.h"
 
@@ -41,6 +44,51 @@ class RemoteFetcherScope
     {
         cfgx::SetRemoteFetcher({});
     }
+};
+
+class ScopedEnvVar
+{
+  public:
+    ScopedEnvVar(std::string key, std::string value) : key_(std::move(key))
+    {
+        if (const char* current = std::getenv(key_.c_str()))
+        {
+            original_ = std::string(current);
+        }
+        Set(value);
+    }
+
+    ~ScopedEnvVar()
+    {
+        if (original_.has_value())
+        {
+            Set(*original_);
+            return;
+        }
+        Clear();
+    }
+
+  private:
+    void Set(const std::string& value)
+    {
+#if defined(_WIN32)
+        _putenv_s(key_.c_str(), value.c_str());
+#else
+        setenv(key_.c_str(), value.c_str(), 1);
+#endif
+    }
+
+    void Clear()
+    {
+#if defined(_WIN32)
+        _putenv_s(key_.c_str(), "");
+#else
+        unsetenv(key_.c_str());
+#endif
+    }
+
+    std::string key_;
+    std::optional<std::string> original_;
 };
 
 cfgx::ParserAdapter MakeFailingAdapter(std::string name)
@@ -223,6 +271,35 @@ TEST(CfgxV2ComposeTests, BuildEnvLayerFromPairsSupportsPolicyPrecedence)
     ASSERT_TRUE(port.ok) << port.error;
     EXPECT_EQ(port.value->Kind(), cfgx::NodeKind::Integer);
     EXPECT_EQ(port.value->AsInt(-1), 8080);
+}
+
+TEST(CfgxV2ComposeTests, BuildEnvLayerFromEnvironmentIsScopedByPrefix)
+{
+    ScopedEnvVar port("TOOLX_MATRIX_CFG_SERVICE__PORT", "8088");
+    ScopedEnvVar ignored("TOOLX_MATRIX_OTHER_SERVICE__PORT", "9000");
+
+    const auto layer = cfgx::BuildEnvLayerFromEnvironment("TOOLX_MATRIX_CFG_");
+    ASSERT_TRUE(layer.ok) << layer.error;
+    const auto port_node = cfgx::GetNode(layer.value, "service.port");
+    ASSERT_TRUE(port_node.ok) << port_node.error;
+    EXPECT_EQ(port_node.value->AsInt(-1), 8088);
+    EXPECT_FALSE(cfgx::Exists(layer.value, "other.service.port"));
+}
+
+TEST(CfgxValueTests, FallbackAccessorsDoNotHideStrictValidationFailures)
+{
+    cfgx::Node root = cfgx::Node::MakeObject();
+    ASSERT_TRUE(cfgx::SetNode(root, "service.port", cfgx::Node("not-a-number")).ok);
+
+    const auto port = cfgx::GetNode(root, "service.port");
+    ASSERT_TRUE(port.ok);
+    EXPECT_EQ(port.value->AsInt(5432), 5432);
+
+    const std::vector<cfgx::ValidationRule> rules = {cfgx::ExpectKindRule("service.port", cfgx::NodeKind::Integer)};
+    const auto validation = cfgx::Validate(root, rules);
+    ASSERT_FALSE(validation.ok);
+    ASSERT_EQ(validation.value.size(), 1u);
+    EXPECT_EQ(validation.value[0].path, "service.port");
 }
 
 TEST(CfgxV2ComposeTests, RuntimeOverridesApplyLastWriteWins)
@@ -1188,6 +1265,52 @@ TEST(CfgxParserAdapterTests, LoadFallsBackToBuiltinWhenAdapterParseFails)
     std::filesystem::remove(file, ec);
 }
 
+TEST(CfgxParserAdapterTests, ClearParserAdaptersRestoresBuiltinParser)
+{
+    ParserAdapterScope scope;
+    cfgx::ParserAdapter adapter;
+    adapter.name = "SurfaceIsolation";
+    adapter.parse = [](std::string_view, cfgx::ConfigFormat)
+    {
+        cfgx::Node root = cfgx::Node::MakeObject();
+        (void)cfgx::SetNode(root, "source", cfgx::Node("adapter"));
+        cfgx::Result<cfgx::Node> out;
+        out.ok = true;
+        out.value = std::move(root);
+        return out;
+    };
+    adapter.dump = [](const cfgx::Node&, cfgx::ConfigFormat, int)
+    {
+        cfgx::Result<std::string> out;
+        out.ok = true;
+        out.value = R"({"source":"adapter"})";
+        return out;
+    };
+    ASSERT_TRUE(cfgx::RegisterParserAdapter(std::move(adapter), true).ok);
+
+    const auto file = TestTempPath("cfgx_adapter_clear_restores_builtin.json");
+    {
+        std::ofstream out(file);
+        out << R"({"source":"builtin"})";
+    }
+
+    const auto adapter_load = cfgx::LoadFromFile(file.string());
+    ASSERT_TRUE(adapter_load.ok) << adapter_load.error;
+    const auto adapter_source = cfgx::GetNode(adapter_load.value, "source");
+    ASSERT_TRUE(adapter_source.ok) << adapter_source.error;
+    EXPECT_EQ(adapter_source.value->AsString(), "adapter");
+
+    cfgx::ClearParserAdapters();
+    const auto builtin_load = cfgx::LoadFromFile(file.string());
+    ASSERT_TRUE(builtin_load.ok) << builtin_load.error;
+    const auto builtin_source = cfgx::GetNode(builtin_load.value, "source");
+    ASSERT_TRUE(builtin_source.ok) << builtin_source.error;
+    EXPECT_EQ(builtin_source.value->AsString(), "builtin");
+
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
 TEST(CfgxParserAdapterTests, SaveFallsBackToBuiltinWhenAdapterDumpFails)
 {
     ParserAdapterScope scope;
@@ -1303,6 +1426,28 @@ TEST(CfgxRemoteTests, LoadFromRemoteRequiresFetcher)
     const auto loaded = cfgx::LoadFromRemote("https://config.test/app.json");
     ASSERT_FALSE(loaded.ok);
     EXPECT_NE(loaded.error.find("remote fetcher"), std::string::npos);
+}
+
+TEST(CfgxRemoteTests, ClearingRemoteFetcherRestoresFailClosedBehavior)
+{
+    RemoteFetcherScope scope;
+    ASSERT_TRUE(cfgx::SetRemoteFetcher(
+                    [](const cfgx::RemoteFetchRequest&)
+                    {
+                        cfgx::Result<cfgx::RemoteFetchResponse> out;
+                        out.ok = true;
+                        out.value.body = R"({"port":8080})";
+                        return out;
+                    })
+                    .ok);
+
+    const auto loaded = cfgx::LoadFromRemote("https://config.example.test/app.json");
+    ASSERT_TRUE(loaded.ok) << loaded.error;
+    cfgx::SetRemoteFetcher({});
+
+    const auto after_clear = cfgx::LoadFromRemote("https://config.example.test/app.json");
+    EXPECT_FALSE(after_clear.ok);
+    EXPECT_NE(after_clear.error.find("remote fetcher"), std::string::npos);
 }
 
 TEST(CfgxRemoteTests, LoadFromRemoteParsesJsonWithFetcher)
@@ -1456,6 +1601,124 @@ TEST(CfgxRemoteTests, PollReloaderTickPollsRemoteByInterval)
     const auto port = cfgx::GetNode(*current, "svc.port");
     ASSERT_TRUE(port.ok) << port.error;
     EXPECT_EQ(port.value->AsInt(-1), 1002);
+
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
+TEST(CfgxRemoteTests, AllowRemoteFailureWarnsAndKeepsReloadingAfterCurrentExists)
+{
+    RemoteFetcherScope scope;
+
+    const auto file = TestTempPath("cfgx_remote_allowed_failure.json");
+    {
+        std::ofstream out(file.string(), std::ios::trunc);
+        out << R"({"svc":{"port":1000}})";
+    }
+
+    int call_count = 0;
+    cfgx::SetRemoteFetcher(
+        [&](const cfgx::RemoteFetchRequest&)
+        {
+            ++call_count;
+            cfgx::Result<cfgx::RemoteFetchResponse> out;
+            if (call_count == 1)
+            {
+                out.ok = true;
+                out.value.body = R"({"svc":{"port":9001}})";
+                return out;
+            }
+            out.ok = false;
+            out.error = "remote unavailable";
+            return out;
+        });
+
+    cfgx::PollReloader reloader(file.string());
+    cfgx::ReloadOptions options;
+    options.remote_url = "https://config.test/app.json";
+    options.allow_remote_failure = true;
+    options.debounce_ms = 0;
+    reloader.SetOptions(options);
+
+    const auto init = reloader.ReloadNow();
+    ASSERT_TRUE(init.ok) << init.error;
+    ASSERT_FALSE(init.value.rolled_back);
+    const auto initial_port = cfgx::GetNode(*reloader.Current(), "svc.port");
+    ASSERT_TRUE(initial_port.ok) << initial_port.error;
+    EXPECT_EQ(initial_port.value->AsInt(-1), 9001);
+
+    {
+        std::ofstream out(file.string(), std::ios::trunc);
+        out << R"({"svc":{"port":2000}})";
+    }
+
+    const auto reload = reloader.ReloadNow();
+    ASSERT_TRUE(reload.ok) << reload.error;
+    EXPECT_TRUE(reload.value.attempted);
+    EXPECT_TRUE(reload.value.changed);
+    EXPECT_FALSE(reload.value.rolled_back);
+    EXPECT_NE(reload.value.message.find("remote fetch skipped"), std::string::npos);
+    EXPECT_NE(reload.value.message.find("remote unavailable"), std::string::npos);
+
+    const auto port = cfgx::GetNode(*reloader.Current(), "svc.port");
+    ASSERT_TRUE(port.ok) << port.error;
+    EXPECT_EQ(port.value->AsInt(-1), 2000);
+
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
+TEST(CfgxRemoteTests, DisallowRemoteFailureRollsBackAfterCurrentExists)
+{
+    RemoteFetcherScope scope;
+
+    const auto file = TestTempPath("cfgx_remote_disallowed_failure.json");
+    {
+        std::ofstream out(file.string(), std::ios::trunc);
+        out << R"({"svc":{"port":1000}})";
+    }
+
+    int call_count = 0;
+    cfgx::SetRemoteFetcher(
+        [&](const cfgx::RemoteFetchRequest&)
+        {
+            ++call_count;
+            cfgx::Result<cfgx::RemoteFetchResponse> out;
+            if (call_count == 1)
+            {
+                out.ok = true;
+                out.value.body = R"({"svc":{"port":9001}})";
+                return out;
+            }
+            out.ok = false;
+            out.error = "remote unavailable";
+            return out;
+        });
+
+    cfgx::PollReloader reloader(file.string());
+    cfgx::ReloadOptions options;
+    options.remote_url = "https://config.test/app.json";
+    options.allow_remote_failure = false;
+    options.debounce_ms = 0;
+    reloader.SetOptions(options);
+
+    const auto init = reloader.ReloadNow();
+    ASSERT_TRUE(init.ok) << init.error;
+
+    {
+        std::ofstream out(file.string(), std::ios::trunc);
+        out << R"({"svc":{"port":2000}})";
+    }
+
+    const auto reload = reloader.ReloadNow();
+    ASSERT_TRUE(reload.ok) << reload.error;
+    EXPECT_TRUE(reload.value.rolled_back);
+    EXPECT_FALSE(reload.value.changed);
+    EXPECT_NE(reload.value.message.find("failed to fetch remote config"), std::string::npos);
+
+    const auto port = cfgx::GetNode(*reloader.Current(), "svc.port");
+    ASSERT_TRUE(port.ok) << port.error;
+    EXPECT_EQ(port.value->AsInt(-1), 9001);
 
     std::error_code ec;
     std::filesystem::remove(file, ec);

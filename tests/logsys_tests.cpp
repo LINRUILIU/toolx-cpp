@@ -6,6 +6,7 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "logsys.h"
 
@@ -94,6 +95,29 @@ TEST(LoggerTests, SimpleDefaultApiUsesConfiguredOrigin)
     EXPECT_EQ(logger.GetErrorCountByCode(expected), 1u);
     EXPECT_EQ(logger.GetErrorCountByCategory(ErrorCategory::Business), 1u);
     ASSERT_FALSE(sink->lines.empty());
+}
+
+TEST(LoggerTests, DynamicMessageWithoutArgumentsIsNotParsedAsFormat)
+{
+    using namespace logsys;
+
+    auto& logger = Logger::Instance();
+    DefaultLoggerOptions options;
+    options.level = LogLevel::Trace;
+    options.enable_console = false;
+    options.enable_file = false;
+    options.enable_debugger = false;
+    logger.ConfigureDefaultLogger(options);
+
+    auto sink = std::make_shared<MemorySink>();
+    logger.AddDefaultSink(sink);
+
+    const std::string dynamic_message = "download complete: 100%%";
+    logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, __func__, dynamic_message.c_str());
+    logger.Flush();
+
+    ASSERT_FALSE(sink->lines.empty());
+    EXPECT_NE(sink->lines.back().find(dynamic_message), std::string::npos);
 }
 
 TEST(LoggerTests, TextFieldMaskCanHideTimestampAndCode)
@@ -324,6 +348,105 @@ TEST(LoggerTests, LoadConfigV2FromJsonFileAppliesSettings)
     std::filesystem::remove(cfg_path, ec);
 }
 
+TEST(LoggerTests, LoadConfigV2FromJsonFileRejectsInvalidNumericFieldsWithoutApplying)
+{
+    using namespace logsys;
+
+    auto& logger = Logger::Instance();
+    LoggerConfigV2 baseline;
+    baseline.global_record_level = LogLevel::Warning;
+    baseline.global_output_level = LogLevel::Error;
+    baseline.global_text_field_mask = 123u;
+    baseline.global_enable_console = false;
+    baseline.global_enable_file = false;
+    baseline.global_enable_debugger = false;
+    baseline.schedule.periodic_flush_enabled = false;
+    baseline.backpressure.queue_high_watermark = 17u;
+    baseline.profiles.clear();
+    logger.ApplyConfigV2(baseline);
+
+    const auto cfg_path = TestTempPath("logsys_v2_bad_numeric.json");
+    std::filesystem::create_directories(cfg_path.parent_path());
+
+    {
+        std::ofstream out(cfg_path.string(), std::ios::trunc);
+        out << R"({
+  "global_record_level": "debug",
+  "global_text_field_mask": "not-a-number"
+})";
+    }
+    ASSERT_FALSE(logger.LoadConfigV2FromJsonFile(cfg_path.string()));
+    auto current = logger.CurrentConfigV2();
+    EXPECT_EQ(current.global_record_level, LogLevel::Warning);
+    EXPECT_EQ(current.global_text_field_mask, 123u);
+
+    {
+        std::ofstream out(cfg_path.string(), std::ios::trunc);
+        out << R"({
+  "profiles": [
+    {
+      "name": "bad-module",
+      "module": 999,
+      "output_level": "debug"
+    }
+  ]
+})";
+    }
+    ASSERT_FALSE(logger.LoadConfigV2FromJsonFile(cfg_path.string()));
+    current = logger.CurrentConfigV2();
+    EXPECT_TRUE(current.profiles.empty());
+    EXPECT_EQ(current.backpressure.queue_high_watermark, 17u);
+
+    std::error_code ec;
+    std::filesystem::remove(cfg_path, ec);
+}
+
+TEST(LoggerTests, LoadConfigV2FromJsonFileIgnoresUnknownFieldsButRejectsMalformedKnownFields)
+{
+    using namespace logsys;
+
+    auto& logger = Logger::Instance();
+    LoggerConfigV2 baseline;
+    baseline.global_record_level = LogLevel::Warning;
+    baseline.global_output_level = LogLevel::Error;
+    baseline.global_text_field_mask = 77u;
+    baseline.global_enable_console = false;
+    baseline.global_enable_file = false;
+    baseline.global_enable_debugger = false;
+    baseline.schedule.periodic_flush_enabled = false;
+    logger.ApplyConfigV2(baseline);
+
+    const auto cfg_path = TestTempPath("logsys_v2_unknown_and_malformed.json");
+    std::filesystem::create_directories(cfg_path.parent_path());
+    {
+        std::ofstream out(cfg_path.string(), std::ios::trunc);
+        out << R"({
+  "global_output_level": "critical",
+  "unknown_future_field": "ignored"
+})";
+    }
+    ASSERT_TRUE(logger.LoadConfigV2FromJsonFile(cfg_path.string()));
+    EXPECT_EQ(logger.CurrentConfigV2().global_output_level, LogLevel::Critical);
+    baseline.global_output_level = LogLevel::Critical;
+    logger.ApplyConfigV2(baseline);
+
+    {
+        std::ofstream out(cfg_path.string(), std::ios::trunc);
+        out << R"({
+  "global_record_level": "debug",
+  "global_enable_console": "maybe"
+})";
+    }
+    ASSERT_FALSE(logger.LoadConfigV2FromJsonFile(cfg_path.string()));
+    const auto current = logger.CurrentConfigV2();
+    EXPECT_EQ(current.global_record_level, LogLevel::Warning);
+    EXPECT_EQ(current.global_output_level, LogLevel::Critical);
+    EXPECT_EQ(current.global_text_field_mask, 77u);
+
+    std::error_code ec;
+    std::filesystem::remove(cfg_path, ec);
+}
+
 TEST(LoggerTests, BackpressureDropsLowLevelEvents)
 {
     using namespace logsys;
@@ -439,6 +562,37 @@ TEST(LoggerTests, FatalFlushOnlyPolicyDoesNotAbort)
     EXPECT_EQ(logger.GetFatalPolicy(), FatalPolicy::FlushOnly);
 }
 
+TEST(LoggerTests, AbortAfterFlushPolicyAbortsInDeathTest)
+{
+    EXPECT_DEATH(
+        {
+            using namespace logsys;
+            auto& logger = Logger::Instance();
+            LoggerConfigV2 cfg;
+            cfg.global_record_level = LogLevel::Trace;
+            cfg.global_output_level = LogLevel::Fatal;
+            cfg.global_enable_console = false;
+            cfg.global_enable_file = false;
+            cfg.global_enable_debugger = false;
+            cfg.schedule.periodic_flush_enabled = false;
+            cfg.fatal_policy = FatalPolicy::AbortAfterFlush;
+            logger.ApplyConfigV2(cfg);
+            logger.SetFlushOnFatal(true);
+
+            LogEvent event;
+            event.timestamp = std::chrono::system_clock::now();
+            event.level = LogLevel::Fatal;
+            event.code = LOGSYS_MAKE_ERROR_CODE(ErrorSource::System, ModuleId::Core, 1);
+            event.category = ErrorCategory::System;
+            event.file = __FILE__;
+            event.line = __LINE__;
+            event.function = __func__;
+            event.message = "fatal abort";
+            logger.LogEventNow(std::move(event));
+        },
+        "");
+}
+
 TEST(LoggerTests, ReapplyingConfigCanDisablePeriodicFlush)
 {
     using namespace logsys;
@@ -501,6 +655,37 @@ TEST(LoggerTests, JsonProfilesSupportModuleAndFileOverrides)
 
     std::error_code ec;
     std::filesystem::remove(cfg_path, ec);
+}
+
+TEST(LoggerTests, FileSinkRollingHonorsKeepRecentLimit)
+{
+    using namespace logsys;
+
+    const auto root = TestTempPath("logsys_rolling_limit");
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    const auto file = root / "app.log";
+
+    RollingConfigV2 rolling;
+    rolling.enabled = true;
+    rolling.max_file_size_bytes = 1;
+    rolling.keep_recent_files = 1;
+    rolling.time_mode = RollingTimeMode::None;
+
+    {
+        FileSink sink(file.string(), rolling);
+        sink.Write("one");
+        sink.Write("two");
+        sink.Write("three");
+        sink.Flush();
+    }
+
+    EXPECT_TRUE(std::filesystem::exists(file));
+    EXPECT_TRUE(std::filesystem::exists(file.string() + ".1"));
+    EXPECT_FALSE(std::filesystem::exists(file.string() + ".2"));
+
+    std::filesystem::remove_all(root, ec);
 }
 
 TEST(LoggerTests, ScopedContextTraceSpanAndMetricsWork)

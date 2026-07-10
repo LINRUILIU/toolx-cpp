@@ -3,9 +3,11 @@
 #include "utils.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -63,9 +65,10 @@ bool ensure_parent(const Path& p, std::string* error)
 
 Path make_temp_path(const Path& base, std::string_view tag)
 {
+    static std::atomic<std::uint64_t> next_id{0};
     const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
     std::ostringstream os;
-    os << base.string() << "." << tag << ".tmp." << now;
+    os << base.string() << "." << tag << ".tmp." << now << "." << next_id.fetch_add(1, std::memory_order_relaxed);
     return Path(os.str());
 }
 
@@ -73,6 +76,47 @@ bool path_exists(const Path& p)
 {
     std::error_code ec;
     return std::filesystem::exists(p, ec) && !ec;
+}
+
+std::string boundary_key(Path path)
+{
+    std::error_code ec;
+    path = std::filesystem::weakly_canonical(path, ec);
+    if (ec)
+    {
+        ec.clear();
+        path = std::filesystem::absolute(path, ec);
+    }
+    path = path.lexically_normal();
+
+    std::string out = path.generic_string();
+#if defined(_WIN32)
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
+    while (out.size() > 1 && out.back() == '/')
+    {
+        out.pop_back();
+    }
+    return out;
+}
+
+bool path_is_within(std::string_view child, std::string_view parent)
+{
+    if (child.size() <= parent.size())
+    {
+        return false;
+    }
+    if (child.compare(0, parent.size(), parent) != 0)
+    {
+        return false;
+    }
+    return parent == "/" || child[parent.size()] == '/';
+}
+
+bool path_is_at_or_within(std::string_view child, std::string_view parent)
+{
+    return child == parent || path_is_within(child, parent);
 }
 
 bool files_have_same_content(const Path& lhs, const Path& rhs)
@@ -187,40 +231,148 @@ std::vector<std::string> split_pipe(std::string_view line)
     return out;
 }
 
-void journal_write_header(const RunOptions& options)
+constexpr std::string_view kJournalHeaderV1{"FSXJ1"};
+constexpr std::string_view kJournalHeaderV2{"FSXJ2"};
+constexpr std::string_view kJournalCommit{"COMMIT"};
+
+bool journal_can_start(const RunOptions& options, std::string* error)
 {
     if (options.journal_path.empty())
     {
-        return;
+        return true;
     }
-    std::ofstream j(options.journal_path, std::ios::binary | std::ios::trunc);
-    if (!j.is_open())
+
+    const Path journal(options.journal_path);
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(journal, ec);
+    if (ec)
     {
-        return;
+        if (error != nullptr)
+        {
+            *error = utils::err::join_context("fsx", "journal", "failed to inspect existing journal: " + ec.message());
+        }
+        return false;
     }
-    j << "FSXJ1\n";
+    if (!exists)
+    {
+        return true;
+    }
+
+    std::ifstream in(journal, std::ios::binary);
+    if (!in.is_open())
+    {
+        if (error != nullptr)
+        {
+            *error = utils::err::join_context("fsx", "journal", "failed to inspect existing journal");
+        }
+        return false;
+    }
+
+    std::string header;
+    if (!std::getline(in, header))
+    {
+        return true;
+    }
+    if (header == kJournalHeaderV2)
+    {
+        std::string line;
+        while (std::getline(in, line))
+        {
+            if (line == kJournalCommit)
+            {
+                return true;
+            }
+        }
+    }
+
+    if (error != nullptr)
+    {
+        *error = utils::err::join_context(
+            "fsx", "journal", "existing journal is incomplete; recover or remove it before starting a new run");
+    }
+    return false;
 }
 
-void journal_write_undo(const RunOptions& options, const UndoAction& undo)
+bool journal_append_line(const RunOptions& options, std::string_view line, std::string_view operation,
+                         std::string* error)
 {
     if (options.journal_path.empty())
     {
-        return;
+        return true;
     }
 
-    std::ofstream j(options.journal_path, std::ios::binary | std::ios::app);
-    if (!j.is_open())
+    std::ofstream journal(options.journal_path, std::ios::binary | std::ios::app);
+    if (!journal.is_open())
     {
-        return;
+        if (error != nullptr)
+        {
+            *error = utils::err::join_context("fsx", "journal", "failed to open journal for " + std::string(operation));
+        }
+        return false;
     }
 
+    journal << line;
+    journal.flush();
+    if (!journal.good())
+    {
+        if (error != nullptr)
+        {
+            *error = utils::err::join_context("fsx", "journal", "failed to " + std::string(operation));
+        }
+        return false;
+    }
+    return true;
+}
+
+bool journal_write_header(const RunOptions& options, std::string* error)
+{
+    if (!journal_can_start(options, error))
+    {
+        return false;
+    }
+    if (options.journal_path.empty())
+    {
+        return true;
+    }
+
+    std::ofstream journal(options.journal_path, std::ios::binary | std::ios::trunc);
+    if (!journal.is_open())
+    {
+        if (error != nullptr)
+        {
+            *error = utils::err::join_context("fsx", "journal", "failed to open journal for writing");
+        }
+        return false;
+    }
+
+    journal << kJournalHeaderV2 << '\n';
+    journal.flush();
+    if (!journal.good())
+    {
+        if (error != nullptr)
+        {
+            *error = utils::err::join_context("fsx", "journal", "failed to write journal header");
+        }
+        return false;
+    }
+    return true;
+}
+
+bool journal_write_undo(const RunOptions& options, const UndoAction& undo, std::string* error)
+{
     if (undo.kind == UndoAction::Kind::RemovePath)
     {
-        j << "UNDO|REMOVE|" << escape_field(undo.from.string()) << "\n";
-        return;
+        return journal_append_line(options, "UNDO|REMOVE|" + escape_field(undo.from.string()) + "\n",
+                                   "append journal undo", error);
     }
+    return journal_append_line(
+        options, "UNDO|MOVE|" + escape_field(undo.from.string()) + "|" + escape_field(undo.to.string()) + "\n",
+        "append journal undo", error);
+}
 
-    j << "UNDO|MOVE|" << escape_field(undo.from.string()) << "|" << escape_field(undo.to.string()) << "\n";
+bool journal_write_commit(const RunOptions& options, std::string* error)
+{
+    return journal_append_line(options, std::string(kJournalCommit) + "\n", "commit journal", error);
 }
 
 bool move_file_force(const Path& from, const Path& to, ConflictPolicy conflict_policy, bool* skipped,
@@ -366,7 +518,8 @@ bool write_file_atomic(const Path& target, std::string_view data, ConflictPolicy
 
     if (had_existing)
     {
-        state->undo_stack.push_back({UndoAction::Kind::MovePath, target, previous_backup});
+        state->undo_stack.push_back({UndoAction::Kind::MovePath, previous_backup, target});
+        state->undo_stack.push_back({UndoAction::Kind::RemovePath, target, {}});
     }
     else
     {
@@ -455,12 +608,11 @@ bool safe_replace_file(const Path& src, const Path& dst, bool backup, const RunO
         return true;
     }
 
-    state->undo_stack.push_back({UndoAction::Kind::MovePath, dst, src});
-
     if (destination_exists)
     {
         state->undo_stack.push_back({UndoAction::Kind::MovePath, destination_backup, dst});
     }
+    state->undo_stack.push_back({UndoAction::Kind::MovePath, dst, src});
 
     return true;
 }
@@ -532,11 +684,11 @@ bool rename_file(const Path& src, const Path& dst, const RunOptions& options, Ex
         return true;
     }
 
-    state->undo_stack.push_back({UndoAction::Kind::MovePath, dst, src});
     if (destination_exists)
     {
         state->undo_stack.push_back({UndoAction::Kind::MovePath, destination_backup, dst});
     }
+    state->undo_stack.push_back({UndoAction::Kind::MovePath, dst, src});
 
     return true;
 }
@@ -690,6 +842,7 @@ bool copy_tree_tracked(const Path& src, const Path& dst, const RunOptions& optio
 
 bool rollback(ExecuteState* state, RunResult* result, RollbackMode mode)
 {
+    (void)mode;
     bool all_ok = true;
     for (auto it = state->undo_stack.rbegin(); it != state->undo_stack.rend(); ++it)
     {
@@ -728,12 +881,7 @@ bool rollback(ExecuteState* state, RunResult* result, RollbackMode mode)
         }
     }
 
-    if (!all_ok && mode == RollbackMode::Strict)
-    {
-        return false;
-    }
-
-    return true;
+    return all_ok;
 }
 
 ConflictPolicy effective_policy(const RunOptions& options)
@@ -1068,14 +1216,78 @@ const std::vector<BatchPlan::Action>& BatchPlan::Actions() const
     return actions_;
 }
 
+bool BatchPlan::ok() const noexcept
+{
+    return ok_;
+}
+
+const std::string& BatchPlan::error() const noexcept
+{
+    return error_;
+}
+
+void BatchPlan::MarkInvalid(std::string error)
+{
+    ok_ = false;
+    error_ = std::move(error);
+    actions_.clear();
+}
+
 RunResult Run(const BatchPlan& plan, const RunOptions& options)
 {
     RunResult result;
+    if (!plan.ok())
+    {
+        result.error =
+            plan.error().empty() ? utils::err::join_context("fsx", "run", "invalid batch plan") : plan.error();
+        return result;
+    }
+
     ExecuteState state;
-    journal_write_header(options);
+    std::string journal_error;
+    if (!journal_write_header(options, &journal_error))
+    {
+        result.error = journal_error;
+        return result;
+    }
+
+    auto rollback_and_mark = [&]()
+    {
+        const bool rollback_ok = rollback(&state, &result, options.rollback_mode);
+        for (auto& step : result.steps)
+        {
+            if (step.ok)
+            {
+                step.rolled_back = true;
+            }
+        }
+        if (!rollback_ok)
+        {
+            result.error = utils::err::join_context("fsx", "rollback", "rollback failed");
+        }
+        return rollback_ok;
+    };
+
+    auto cleanup_rolled_back_journal = [&]()
+    {
+        if (options.journal_path.empty())
+        {
+            return;
+        }
+
+        std::error_code cleanup_ec;
+        std::filesystem::remove(Path(options.journal_path), cleanup_ec);
+        if (cleanup_ec)
+        {
+            result.error +=
+                "; " + utils::err::join_context("fsx", "journal",
+                                                "failed to remove rolled-back journal: " + cleanup_ec.message());
+        }
+    };
 
     const auto& actions = plan.Actions();
     result.steps.reserve(actions.size());
+    bool had_step_failure = false;
 
     for (std::size_t i = 0; i < actions.size(); ++i)
     {
@@ -1089,6 +1301,7 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
 
         ExecOutcome outcome;
         const ConflictPolicy policy = effective_policy(options);
+        const std::size_t undo_start = state.undo_stack.size();
 
         if (action.kind == BatchPlan::ActionKind::AtomicWrite)
         {
@@ -1135,22 +1348,30 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
         report.skipped = outcome.skipped;
         result.steps.push_back(report);
 
+        for (std::size_t undo_index = undo_start; undo_index < state.undo_stack.size(); ++undo_index)
+        {
+            journal_error.clear();
+            if (!journal_write_undo(options, state.undo_stack[undo_index], &journal_error))
+            {
+                result.error = journal_error;
+                if (rollback_and_mark())
+                {
+                    cleanup_rolled_back_journal();
+                }
+                result.ok = false;
+                return result;
+            }
+        }
+
         if (!outcome.ok)
         {
             result.error = outcome.error;
+            had_step_failure = true;
             if (options.fail_fast)
             {
-                const bool rollback_ok = rollback(&state, &result, options.rollback_mode);
-                for (auto& step : result.steps)
+                if (rollback_and_mark())
                 {
-                    if (step.ok)
-                    {
-                        step.rolled_back = true;
-                    }
-                }
-                if (!rollback_ok)
-                {
-                    result.error = utils::err::join_context("fsx", "rollback", "strict rollback failed");
+                    cleanup_rolled_back_journal();
                 }
                 result.ok = false;
                 return result;
@@ -1165,9 +1386,24 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
         }
 
         ++result.completed_steps;
-        if (!state.undo_stack.empty())
+    }
+
+    if (had_step_failure)
+    {
+        result.ok = false;
+        return result;
+    }
+
+    journal_error.clear();
+    if (!journal_write_commit(options, &journal_error))
+    {
+        std::error_code cleanup_ec;
+        const bool removed =
+            options.journal_path.empty() || std::filesystem::remove(Path(options.journal_path), cleanup_ec);
+        if (cleanup_ec || !removed)
         {
-            journal_write_undo(options, state.undo_stack.back());
+            result.error = journal_error;
+            return result;
         }
     }
 
@@ -1199,18 +1435,26 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
     }
 
     std::string header;
-    if (!std::getline(in, header) || header != "FSXJ1")
+    if (!std::getline(in, header) || (header != kJournalHeaderV1 && header != kJournalHeaderV2))
     {
         result.error = utils::err::join_context("fsx", "recover", "invalid journal header");
         return result;
     }
 
+    const bool version_two = header == kJournalHeaderV2;
+    bool committed = false;
     std::vector<UndoAction> undo_list;
     std::string line;
     while (std::getline(in, line))
     {
         if (line.empty())
         {
+            continue;
+        }
+
+        if (version_two && line == kJournalCommit)
+        {
+            committed = true;
             continue;
         }
 
@@ -1235,6 +1479,12 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
             u.to = Path(unescape_field(parts[3]));
             undo_list.push_back(std::move(u));
         }
+    }
+
+    if (committed)
+    {
+        result.error = utils::err::join_context("fsx", "recover", "journal records a completed transaction");
+        return result;
     }
 
     for (std::size_t i = undo_list.size(); i > 0; --i)
@@ -1510,9 +1760,30 @@ DirectoryDiff BuildDirectoryDiff(std::string_view source_root, std::string_view 
 BatchPlan BuildSyncPlan(std::string_view source_root, std::string_view destination_root, bool remove_extra)
 {
     BatchPlan plan;
+    if (std::string(source_root).empty() || std::string(destination_root).empty())
+    {
+        plan.MarkInvalid(utils::err::join_context("fsx", "sync", "source and destination roots must not be empty"));
+        return plan;
+    }
+
+    const std::string source_key = boundary_key(Path(std::string(source_root)));
+    const std::string destination_key = boundary_key(Path(std::string(destination_root)));
+    if (source_key == destination_key)
+    {
+        plan.MarkInvalid(utils::err::join_context("fsx", "sync", "source and destination roots must be different"));
+        return plan;
+    }
+    if (path_is_within(destination_key, source_key) || path_is_within(source_key, destination_key))
+    {
+        plan.MarkInvalid(utils::err::join_context("fsx", "sync", "source and destination roots must not overlap"));
+        return plan;
+    }
+
     const auto diff = BuildDirectoryDiff(source_root, destination_root, remove_extra);
     if (!diff.ok)
     {
+        plan.MarkInvalid(diff.error.empty() ? utils::err::join_context("fsx", "sync", "failed to build directory diff")
+                                            : diff.error);
         return plan;
     }
 
@@ -1594,7 +1865,25 @@ std::uintmax_t parse_tar_octal(const char* field, std::size_t width)
 
 bool tar_name_is_safe(std::string_view name)
 {
-    return !name.empty() && name.front() != '/' && name.find("..") == std::string_view::npos;
+    if (name.empty() || name.find('\\') != std::string_view::npos || name.find(':') != std::string_view::npos)
+    {
+        return false;
+    }
+
+    const Path path{std::string(name)};
+    if (path.empty() || path.is_absolute() || path.has_root_name() || path.has_root_directory())
+    {
+        return false;
+    }
+
+    for (const auto& part : path)
+    {
+        if (part == "." || part == "..")
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::size_t bounded_cstr_len(const char* text, std::size_t max_len)
@@ -1733,6 +2022,12 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
         status.error = utils::err::join_context("fsx", "tar", ec.message());
         return status;
     }
+    const std::string root_key = boundary_key(root);
+    if (root_key.empty())
+    {
+        status.error = utils::err::join_context("fsx", "tar", "failed to canonicalize destination root");
+        return status;
+    }
 
     for (;;)
     {
@@ -1761,6 +2056,11 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
         const bool directory = header[156] == '5';
         const std::uintmax_t size = parse_tar_octal(header.data() + 124, 12);
         const Path target = root / Path(name);
+        if (!path_is_at_or_within(boundary_key(target), root_key))
+        {
+            status.error = utils::err::join_context("fsx", "tar", "archive entry escapes destination root");
+            return status;
+        }
 
         if (directory)
         {

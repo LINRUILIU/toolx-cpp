@@ -174,6 +174,12 @@ TEST(UtilsPathTests, EnsureParentDir)
     std::filesystem::remove_all(root, ec);
 }
 
+TEST(UtilsPathTests, EnsureParentDirNoParentIsNoOpSuccess)
+{
+    const auto st = utils::path::ensure_parent_dir("plain-file.txt");
+    EXPECT_TRUE(st.ok) << st.error;
+}
+
 TEST(UtilsStringTests, MeasureTextStrlenSizeof)
 {
     EXPECT_EQ(utils::str::measure_text_utf8_strlen("abc"), 3U);

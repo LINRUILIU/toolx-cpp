@@ -123,6 +123,25 @@ TEST(SysxThreadTests, ThreadRunsAndJoins)
     EXPECT_EQ(value.load(std::memory_order_relaxed), 7);
 }
 
+TEST(SysxThreadTests, ThreadMoveAndSwapTransferJoinableOwnership)
+{
+    std::atomic<int> value{0};
+    sysx::thread::Thread first([&value]() { value.fetch_add(1, std::memory_order_relaxed); });
+    sysx::thread::Thread second;
+
+    EXPECT_TRUE(first.Joinable());
+    EXPECT_FALSE(second.Joinable());
+    second.Swap(first);
+    EXPECT_FALSE(first.Joinable());
+    ASSERT_TRUE(second.Joinable());
+
+    sysx::thread::Thread moved(std::move(second));
+    EXPECT_FALSE(second.Joinable());
+    ASSERT_TRUE(moved.Joinable());
+    moved.Join();
+    EXPECT_EQ(value.load(std::memory_order_relaxed), 1);
+}
+
 TEST(SysxSyncTests, ConditionVariableWaitForTimesOut)
 {
     sysx::sync::Mutex mu;

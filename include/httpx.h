@@ -140,6 +140,9 @@ struct Request
     std::vector<MultipartPart> multipart;
     std::optional<bool> follow_redirect;
     std::optional<std::size_t> max_redirects;
+    // Called before each Send attempt, including the first. Return false to
+    // abort before the transport runs.
+    std::function<bool(std::size_t attempt)> on_attempt_start;
     std::function<bool(std::string_view chunk)> on_response_chunk;
     std::function<void(std::uint64_t sent_bytes, std::uint64_t total_bytes)> on_upload_progress;
 };
@@ -192,7 +195,7 @@ struct DownloadOptions
 {
     HeaderList headers;
     // DownloadFile writes output_path + temp_suffix first, then replaces the
-    // destination on success.
+    // destination on success. The suffix must be non-empty.
     std::string temp_suffix{".part"};
     // false fails when output_path already exists.
     bool overwrite{true};

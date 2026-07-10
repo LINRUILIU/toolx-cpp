@@ -906,7 +906,8 @@ TEST(HttpxConfigTests, ParseOptionsFromFlatConfigWorks)
     EXPECT_TRUE(parsed.value.tls.verify_peer);
     EXPECT_FALSE(parsed.value.tls.verify_host);
     EXPECT_EQ(parsed.value.tls.ca_file, "certs/test-root.pem");
-    EXPECT_EQ(parsed.value.max_retry_attempts, 2u);
+    EXPECT_EQ(parsed.value.retry_policy.max_attempts, 2u);
+    EXPECT_EQ(parsed.value.max_retry_attempts, 0u);
 }
 
 TEST(HttpxConfigTests, ParseOptionsRejectsUnknownKey)
@@ -995,6 +996,80 @@ TEST(HttpxClientTests, RetryHookCanRecoverTransientFailure)
     const auto result = client.Get("http://localhost/retry");
     ASSERT_TRUE(result.ok) << result.error.message;
     EXPECT_EQ(calls.load(), 2);
+}
+
+TEST(HttpxClientTests, RetryPolicyMaxAttemptsCountsInitialAttempt)
+{
+    std::atomic<int> calls{0};
+
+    httpx::ClientOptions options;
+    options.retry_policy.max_attempts = 1;
+    options.retry_policy.retry_transient_errors = true;
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
+    {
+        ++calls;
+        httpx::Result<httpx::Response> out;
+        out.ok = false;
+        out.error.kind = httpx::ErrorKind::Timeout;
+        out.error.retryable = true;
+        out.error.message = "transient";
+        return out;
+    };
+
+    httpx::Client client(options);
+    const auto result = client.Get("http://example.test/retry-budget");
+    ASSERT_FALSE(result.ok);
+    EXPECT_EQ(calls.load(), 1);
+}
+
+TEST(HttpxClientTests, LegacyMaxRetryAttemptsStillCountsRetries)
+{
+    std::atomic<int> calls{0};
+
+    httpx::ClientOptions options;
+    options.max_retry_attempts = 1;
+    options.retry_policy.max_attempts = 0;
+    options.retry_policy.retry_transient_errors = true;
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
+    {
+        ++calls;
+        httpx::Result<httpx::Response> out;
+        out.ok = false;
+        out.error.kind = httpx::ErrorKind::Timeout;
+        out.error.retryable = true;
+        out.error.message = "transient";
+        return out;
+    };
+
+    httpx::Client client(options);
+    const auto result = client.Get("http://example.test/legacy-retry-budget");
+    ASSERT_FALSE(result.ok);
+    EXPECT_EQ(calls.load(), 2);
+}
+
+TEST(HttpxClientTests, RetryPolicyMaxAttemptsOverridesLegacyRetryBudget)
+{
+    std::atomic<int> calls{0};
+
+    httpx::ClientOptions options;
+    options.max_retry_attempts = 3;
+    options.retry_policy.max_attempts = 1;
+    options.retry_policy.retry_transient_errors = true;
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&) -> httpx::Result<httpx::Response>
+    {
+        ++calls;
+        httpx::Result<httpx::Response> out;
+        out.ok = false;
+        out.error.kind = httpx::ErrorKind::Timeout;
+        out.error.retryable = true;
+        out.error.message = "transient";
+        return out;
+    };
+
+    httpx::Client client(options);
+    const auto result = client.Get("http://example.test/retry-conflict");
+    ASSERT_FALSE(result.ok);
+    EXPECT_EQ(calls.load(), 1);
 }
 
 TEST(HttpxClientTests, FailureStatsAreExposed)
@@ -1460,6 +1535,7 @@ TEST(HttpxClientTests, ProxyCanBeLoadedFromEnvironment)
     }
 
     ScopedEnvVar http_proxy("HTTP_PROXY", "http://127.0.0.1:" + std::to_string(proxy->port));
+    ScopedEnvVar no_proxy("NO_PROXY", "not-used.invalid");
 
     httpx::ClientOptions options;
     options.use_proxy_from_environment = true;
@@ -1470,6 +1546,101 @@ TEST(HttpxClientTests, ProxyCanBeLoadedFromEnvironment)
     ASSERT_TRUE(result.ok) << result.error.message;
 
     EXPECT_NE(captured->find("GET http://nonexistent.invalid/proxy/env HTTP/1.1"), std::string::npos);
+}
+
+TEST(HttpxClientTests, NoProxyBypassesEnvironmentProxyRules)
+{
+    struct Case
+    {
+        std::string rule;
+        std::string url;
+    };
+
+    const std::vector<Case> cases = {
+        {"service.internal", "http://service.internal:8080/path"},
+        {".example.com", "http://api.example.com/path"},
+        {"api.example.com:8080", "http://api.example.com:8080/path"},
+        {"[::1]:8080", "http://[::1]:8080/path"},
+        {"*", "http://anything.invalid/path"},
+    };
+
+    for (const auto& c : cases)
+    {
+        ScopedEnvVar http_proxy("HTTP_PROXY", "http://127.0.0.1:9");
+        ScopedEnvVar no_proxy("NO_PROXY", c.rule);
+
+        bool saw_transport = false;
+        httpx::ClientOptions options;
+        options.use_proxy_from_environment = true;
+        options.transport = [&saw_transport](const httpx::Request&,
+                                             const httpx::ClientOptions& effective) -> httpx::Result<httpx::Response>
+        {
+            saw_transport = true;
+            EXPECT_FALSE(effective.proxy.enabled);
+            httpx::Result<httpx::Response> out;
+            out.ok = true;
+            out.value.status_code = 200;
+            return out;
+        };
+
+        httpx::Client client(options);
+        const auto result = client.Get(c.url);
+        ASSERT_TRUE(result.ok) << c.rule << ": " << result.error.message;
+        EXPECT_TRUE(saw_transport);
+    }
+}
+
+TEST(HttpxClientTests, NoProxyPortMismatchKeepsEnvironmentProxy)
+{
+    ScopedEnvVar http_proxy("HTTP_PROXY", "http://127.0.0.1:9");
+    ScopedEnvVar no_proxy("NO_PROXY", "api.example.com:9090");
+
+    bool saw_transport = false;
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = true;
+    options.transport = [&saw_transport](const httpx::Request&,
+                                         const httpx::ClientOptions& effective) -> httpx::Result<httpx::Response>
+    {
+        saw_transport = true;
+        EXPECT_TRUE(effective.proxy.enabled);
+        EXPECT_EQ(effective.proxy.host, "127.0.0.1");
+        EXPECT_EQ(effective.proxy.port, 9u);
+        httpx::Result<httpx::Response> out;
+        out.ok = true;
+        out.value.status_code = 200;
+        return out;
+    };
+
+    httpx::Client client(options);
+    const auto result = client.Get("http://api.example.com:8080/path");
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_TRUE(saw_transport);
+}
+
+TEST(HttpxClientTests, LowercaseNoProxyBypassesEnvironmentProxy)
+{
+    ScopedEnvVar http_proxy("HTTP_PROXY", "http://127.0.0.1:9");
+    ScopedEnvVar upper_no_proxy("NO_PROXY", "");
+    ScopedEnvVar no_proxy("no_proxy", "api.lowercase.test");
+
+    bool saw_transport = false;
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = true;
+    options.transport = [&saw_transport](const httpx::Request&,
+                                         const httpx::ClientOptions& effective) -> httpx::Result<httpx::Response>
+    {
+        saw_transport = true;
+        EXPECT_FALSE(effective.proxy.enabled);
+        httpx::Result<httpx::Response> out;
+        out.ok = true;
+        out.value.status_code = 200;
+        return out;
+    };
+
+    httpx::Client client(options);
+    const auto result = client.Get("http://api.lowercase.test/path");
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_TRUE(saw_transport);
 }
 
 TEST(HttpxClientTests, Socks5NoAuthProxyUsesOriginFormTarget)
@@ -1528,6 +1699,7 @@ TEST(HttpxClientTests, Socks5ProxyCanBeLoadedFromEnvironment)
     }
 
     ScopedEnvVar http_proxy("HTTP_PROXY", "socks5://127.0.0.1:" + std::to_string(proxy->port));
+    ScopedEnvVar no_proxy("NO_PROXY", "not-used.invalid");
 
     httpx::ClientOptions options;
     options.use_proxy_from_environment = true;
@@ -1544,6 +1716,7 @@ TEST(HttpxClientTests, Socks5ProxyCanBeLoadedFromEnvironment)
 TEST(HttpxClientTests, Socks5ProxyWithCredentialsFromEnvironmentIsRejected)
 {
     ScopedEnvVar http_proxy("HTTP_PROXY", "socks5://alice:secret@127.0.0.1:1080");
+    ScopedEnvVar no_proxy("NO_PROXY", "not-used.invalid");
 
     httpx::ClientOptions options;
     options.use_proxy_from_environment = true;
@@ -1683,6 +1856,124 @@ TEST(HttpxClientTests, DownloadFileWritesThroughTemporaryFile)
     EXPECT_EQ(progress, 5u);
 }
 
+TEST(HttpxClientTests, DownloadFileRetriesWithFreshTemporaryFile)
+{
+    const auto root = std::filesystem::current_path() / "toolx_test_tmp" / "httpx_download_retry";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+
+    std::atomic<int> calls{0};
+    httpx::ClientOptions options;
+    options.retry_policy.max_attempts = 2;
+    options.transport = [&calls](const httpx::Request& request, const httpx::ClientOptions&)
+    {
+        const int attempt = ++calls;
+        httpx::Result<httpx::Response> out;
+        EXPECT_TRUE(static_cast<bool>(request.on_response_chunk));
+        if (attempt == 1)
+        {
+            EXPECT_TRUE(request.on_response_chunk("partial"));
+            out.ok = false;
+            out.error.kind = httpx::ErrorKind::Network;
+            out.error.message = "transient failure after partial response";
+            out.error.retryable = true;
+            return out;
+        }
+
+        EXPECT_TRUE(request.on_response_chunk("complete"));
+        out.ok = true;
+        out.value.status_code = 200;
+        return out;
+    };
+    httpx::Client client(options);
+
+    const auto target = root / "file.txt";
+    const auto status = client.DownloadFile("http://example.test/file", target.string());
+    ASSERT_TRUE(status.ok) << status.error.message;
+    EXPECT_EQ(calls.load(), 2);
+
+    std::ifstream in(target, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(text, "complete");
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(HttpxClientTests, DownloadFileRejectsEmptyTempSuffixWithoutTouchingExistingFile)
+{
+    const auto root = std::filesystem::current_path() / "toolx_test_tmp" / "httpx_download_empty_suffix";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    const auto target = root / "file.txt";
+    {
+        std::ofstream out(target, std::ios::binary);
+        out << "original";
+    }
+
+    std::atomic<int> calls{0};
+    httpx::ClientOptions options;
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&)
+    {
+        calls.fetch_add(1);
+        httpx::Result<httpx::Response> out;
+        out.error.kind = httpx::ErrorKind::Network;
+        out.error.message = "network unavailable";
+        return out;
+    };
+    httpx::Client client(options);
+
+    httpx::DownloadOptions download;
+    download.temp_suffix.clear();
+    const auto status = client.DownloadFile("http://example.test/file", target.string(), download);
+    EXPECT_FALSE(status.ok);
+    EXPECT_EQ(status.error.kind, httpx::ErrorKind::InvalidArgument);
+    EXPECT_EQ(calls.load(), 0);
+
+    std::ifstream in(target, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(text, "original");
+}
+
+TEST(HttpxClientTests, DownloadFileOverwriteFalseDoesNotCreateTempFile)
+{
+    const auto root = std::filesystem::current_path() / "toolx_test_tmp" / "httpx_download_no_overwrite";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    const auto target = root / "file.txt";
+    {
+        std::ofstream out(target, std::ios::binary);
+        out << "original";
+    }
+
+    std::atomic<int> calls{0};
+    httpx::ClientOptions options;
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&)
+    {
+        ++calls;
+        httpx::Result<httpx::Response> out;
+        out.ok = true;
+        out.value.status_code = 200;
+        out.value.body = "replacement";
+        return out;
+    };
+    httpx::Client client(options);
+
+    httpx::DownloadOptions download;
+    download.overwrite = false;
+    const auto status = client.DownloadFile("http://example.test/file", target.string(), download);
+    EXPECT_FALSE(status.ok);
+    EXPECT_EQ(status.error.kind, httpx::ErrorKind::InvalidArgument);
+    EXPECT_EQ(calls.load(), 0);
+    EXPECT_FALSE(std::filesystem::exists(target.string() + download.temp_suffix));
+
+    std::ifstream in(target, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(text, "original");
+}
+
 TEST(HttpxClientTests, UploadFileBuildsMultipartRequest)
 {
     const auto root = std::filesystem::current_path() / "toolx_test_tmp" / "httpx_upload";
@@ -1712,11 +2003,61 @@ TEST(HttpxClientTests, UploadFileBuildsMultipartRequest)
     EXPECT_TRUE(saw_file);
 }
 
+TEST(HttpxClientTests, UploadFileMissingInputFailsBeforeTransport)
+{
+    std::atomic<int> calls{0};
+    httpx::ClientOptions options;
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&)
+    {
+        ++calls;
+        httpx::Result<httpx::Response> out;
+        out.ok = true;
+        return out;
+    };
+
+    httpx::Client client(options);
+    const auto response = client.UploadFile("http://example.test/upload", "file", "missing-input.bin");
+    EXPECT_FALSE(response.ok);
+    EXPECT_EQ(response.error.kind, httpx::ErrorKind::InvalidArgument);
+    EXPECT_EQ(calls.load(), 0);
+}
+
+TEST(HttpxClientTests, UploadFilePayloadLimitFailsBeforeTransport)
+{
+    const auto root = std::filesystem::current_path() / "toolx_test_tmp" / "httpx_upload_limit";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    const auto input = root / "blob.bin";
+    {
+        std::ofstream out(input, std::ios::binary);
+        out << "payload";
+    }
+
+    std::atomic<int> calls{0};
+    httpx::ClientOptions options;
+    options.limits.max_body_bytes = 1;
+    options.limits.max_header_bytes = 1;
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&)
+    {
+        ++calls;
+        httpx::Result<httpx::Response> out;
+        out.ok = true;
+        return out;
+    };
+
+    httpx::Client client(options);
+    const auto response = client.UploadFile("http://example.test/upload", "file", input.string());
+    EXPECT_FALSE(response.ok);
+    EXPECT_EQ(response.error.kind, httpx::ErrorKind::InvalidArgument);
+    EXPECT_EQ(calls.load(), 0);
+}
+
 TEST(HttpxClientTests, RetryPolicyAndCircuitBreakerWork)
 {
     std::atomic<int> attempts{0};
     httpx::ClientOptions options;
-    options.retry_policy.max_attempts = 1;
+    options.retry_policy.max_attempts = 2;
     options.retry_policy.retry_transient_errors = true;
     options.circuit_breaker.enabled = true;
     options.circuit_breaker.failure_threshold = 1;

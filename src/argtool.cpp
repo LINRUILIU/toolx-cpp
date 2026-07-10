@@ -1984,7 +1984,21 @@ ParseResult Parser::Parse(int argc, const char* const argv[]) const
             }
         }
 
-        const ConvertResult converted = converter(value);
+        ConvertResult converted;
+        try
+        {
+            converted = converter(value);
+        }
+        catch (const std::exception& ex)
+        {
+            return Fail(std::move(current_result), ParseErrorKind::TypeMismatch, std::string(field), std::string(token),
+                        std::string("Value converter threw exception: ") + ex.what());
+        }
+        catch (...)
+        {
+            return Fail(std::move(current_result), ParseErrorKind::TypeMismatch, std::string(field), std::string(token),
+                        "Value converter threw unknown exception.");
+        }
         if (!converted.ok)
         {
             return Fail(std::move(current_result), ParseErrorKind::TypeMismatch, std::string(field), std::string(token),
@@ -2015,6 +2029,8 @@ ParseResult Parser::Parse(int argc, const char* const argv[]) const
             if (range_policy == RangePolicy::UseDefaultAndWarn && default_value.has_value())
             {
                 *normalized = *default_value;
+                Trace(result, "warning", std::string(token),
+                      "range fallback for '" + std::string(field) + "' to default '" + *default_value + "'");
                 if (logger_ != nullptr)
                 {
                     logger_->OnWarning("Range violation on '" + std::string(field) + "', value '" + value +
@@ -2218,6 +2234,7 @@ ParseResult Parser::Parse(int argc, const char* const argv[]) const
                     std::string callback_error;
                     if (unknown_option_handler_(token, &callback_error))
                     {
+                        Trace(result, "unknown-option", token, "handled by unknown option handler");
                         continue;
                     }
                     if (!callback_error.empty())
@@ -2283,6 +2300,7 @@ ParseResult Parser::Parse(int argc, const char* const argv[]) const
                         std::string callback_error;
                         if (unknown_option_handler_(token, &callback_error))
                         {
+                            Trace(result, "unknown-option", token, "handled by unknown option handler");
                             continue;
                         }
                         if (!callback_error.empty())

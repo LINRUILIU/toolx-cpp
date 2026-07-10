@@ -45,7 +45,7 @@ jobs:
       BUILD_DIR: build-release
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -69,7 +69,7 @@ jobs:
 
       - name: Set up MSVC developer command prompt
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: x64
 
@@ -82,6 +82,7 @@ jobs:
         run: >
           cmake -S . -B "${BUILD_DIR}"
           -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
           -DTOOLX_BUILD_TESTS=ON
           -DTOOLX_BUILD_EXAMPLES=ON
           -DTOOLX_BUILD_TOOLS=ON
@@ -95,6 +96,7 @@ jobs:
         run: >
           cmake -S . -B "$env:BUILD_DIR"
           -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
           -DTOOLX_BUILD_TESTS=ON
           -DTOOLX_BUILD_EXAMPLES=ON
           -DTOOLX_BUILD_TOOLS=ON
@@ -123,7 +125,9 @@ jobs:
         shell: bash
         run: >
           cmake -S examples/install_consumer -B build-consumer -G Ninja
-          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/stage" &&
+          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/stage"
+          -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}"
+          -DCMAKE_BUILD_TYPE=Release &&
           cmake --build build-consumer --parallel
 
       - name: Release smoke
@@ -143,6 +147,8 @@ jobs:
           cmake
           -DPACKAGE_DIR="${{ github.workspace }}/${BUILD_DIR}/packages"
           -DVERIFY_CMAKE_GENERATOR=Ninja
+          -DVERIFY_CMAKE_CXX_COMPILER="${{ matrix.cxx }}"
+          -DVERIFY_CMAKE_BUILD_TYPE=Release
           -P cmake/release_archive_smoke.cmake
 
       - name: Package source archive
@@ -151,7 +157,7 @@ jobs:
         run: cpack --config "${BUILD_DIR}/CPackSourceConfig.cmake"
 
       - name: Upload release packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.os }}-${{ matrix.compiler }}
           path: ${{ env.BUILD_DIR }}/packages/*
@@ -163,9 +169,9 @@ jobs:
     needs: build-release
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: release-artifacts
 
@@ -190,7 +196,7 @@ jobs:
           } > release-body.md
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           body_path: release-body.md
           files: |

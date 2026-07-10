@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(ToolX VERSION 0.3.0 LANGUAGES CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/toolx_msvc_env.cmake")
+
+project(ToolX VERSION 0.3.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -409,6 +411,7 @@ if(TOOLX_BUILD_TESTS)
     FetchContent_Declare(
         googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+        URL_HASH SHA256=1f357c27ca988c3f7c6b4bf68a9395005ac6761f034046e9dde0896e3aba00e4
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
 
@@ -420,6 +423,24 @@ if(TOOLX_BUILD_TESTS)
     add_executable(argtool_tests tests/argtool_tests.cpp)
     target_link_libraries(argtool_tests PRIVATE argtool GTest::gtest_main)
     add_test(NAME argtool_tests COMMAND argtool_tests)
+
+    add_executable(api_surface_tests tests/api_surface_tests.cpp)
+    target_link_libraries(api_surface_tests PRIVATE
+        argtool
+        asyncx
+        cfgx
+        fsx
+        hashx
+        httpx
+        logsys
+        resultx
+        schemax
+        sysx
+        textcodec
+        tuix
+        utils
+        GTest::gtest_main)
+    add_test(NAME api_surface_tests COMMAND api_surface_tests)
 
     add_executable(asyncx_tests tests/asyncx_tests.cpp)
     target_link_libraries(asyncx_tests PRIVATE asyncx GTest::gtest_main)
@@ -444,6 +465,9 @@ if(TOOLX_BUILD_TESTS)
     add_executable(logsys_tests tests/logsys_tests.cpp)
     target_link_libraries(logsys_tests PRIVATE logsys GTest::gtest_main)
     add_test(NAME logsys_tests COMMAND logsys_tests)
+    set(TOOLX_CTEST_TEMP_DIR "${CMAKE_CURRENT_BINARY_DIR}/toolx-ctest-temp")
+    file(MAKE_DIRECTORY "${TOOLX_CTEST_TEMP_DIR}")
+    set_tests_properties(logsys_tests PROPERTIES ENVIRONMENT "TEMP=${TOOLX_CTEST_TEMP_DIR};TMP=${TOOLX_CTEST_TEMP_DIR}")
 
     add_executable(schemax_tests tests/schemax_tests.cpp)
     target_link_libraries(schemax_tests PRIVATE schemax GTest::gtest_main)
@@ -551,6 +575,7 @@ if(TOOLX_BUILD_TESTS)
 
     if(TOOLX_ENABLE_COVERAGE AND GCOVR_BIN)
         set(toolx_coverage_dependencies
+            api_surface_tests
             argtool_tests
             asyncx_tests
             cfgx_tests

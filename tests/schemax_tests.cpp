@@ -24,9 +24,11 @@ TEST(SchemaxTests, CompileRejectsUnknownKeysAndBadShapes)
 {
     const auto bad_key = schemax::Compile(Obj({{"unexpected", cfgx::Node(true)}}));
     EXPECT_FALSE(bad_key.ok);
+    EXPECT_NE(bad_key.error.find("unsupported schema key"), std::string::npos);
 
     const auto bad_required = schemax::Compile(Obj({{"type", cfgx::Node("object")}, {"required", cfgx::Node("name")}}));
     EXPECT_FALSE(bad_required.ok);
+    EXPECT_NE(bad_required.error.find("required"), std::string::npos);
 }
 
 TEST(SchemaxTests, ValidatesObjectPropertiesAndRequiredFields)
@@ -78,6 +80,40 @@ TEST(SchemaxTests, ValidatesRangeEnumLengthAndArrayItems)
     EXPECT_EQ(issues[1].code, "maximum");
     EXPECT_EQ(issues[2].code, "enum");
     EXPECT_EQ(issues[3].code, "maxLength");
+}
+
+TEST(SchemaxTests, NestedPathsAndAdditionalPropertiesDefaultAreStable)
+{
+    const cfgx::Node integer_schema = Obj({{"type", cfgx::Node("integer")}});
+    const cfgx::Node ports_schema = Obj({{"type", cfgx::Node("array")}, {"items", integer_schema}});
+    const cfgx::Node svc_schema = Obj({{"type", cfgx::Node("object")}, {"properties", Obj({{"ports", ports_schema}})}});
+    const auto compiled =
+        schemax::Compile(Obj({{"type", cfgx::Node("object")}, {"properties", Obj({{"svc", svc_schema}})}}));
+    ASSERT_TRUE(compiled.ok) << compiled.error;
+
+    const auto issues =
+        schemax::Validate(Obj({{"svc", Obj({{"ports", Arr({cfgx::Node(std::int64_t(1)), cfgx::Node("bad")})}})},
+                               {"extra", cfgx::Node(true)}}),
+                          compiled.value);
+    ASSERT_EQ(issues.size(), 1u);
+    EXPECT_EQ(issues[0].path, "svc.ports[1]");
+    EXPECT_EQ(issues[0].code, "type");
+}
+
+TEST(SchemaxTests, EnumComparisonRespectsScalarTypes)
+{
+    const auto compiled = schemax::Compile(Obj({
+        {"enum", Arr({cfgx::Node(std::int64_t(1)), cfgx::Node("1"), cfgx::Node(true)})},
+    }));
+    ASSERT_TRUE(compiled.ok) << compiled.error;
+
+    EXPECT_TRUE(schemax::Validate(cfgx::Node(std::int64_t(1)), compiled.value).empty());
+    EXPECT_TRUE(schemax::Validate(cfgx::Node("1"), compiled.value).empty());
+    EXPECT_TRUE(schemax::Validate(cfgx::Node(true), compiled.value).empty());
+
+    const auto mismatch = schemax::Validate(cfgx::Node(1.5), compiled.value);
+    ASSERT_EQ(mismatch.size(), 1u);
+    EXPECT_EQ(mismatch[0].code, "enum");
 }
 
 TEST(SchemaxTests, FailFastAndCfgxIssueConversionWork)

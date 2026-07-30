@@ -137,7 +137,14 @@ set(TOOLX_LINT_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/resultx_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_integration_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_http_cli_contracts.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/product_chain_showcase/server.cpp"
 )
+
+add_custom_target(docs-check
+    COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/docs_check.cmake"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Checking ToolX documentation structure and local links"
+    VERBATIM)
 
 if(CLANG_FORMAT_BIN)
     add_custom_target(format
@@ -392,6 +399,11 @@ if(TOOLX_BUILD_EXAMPLES)
 
     add_executable(toolx_cli_showcase examples/toolx_cli_showcase.cpp)
     target_link_libraries(toolx_cli_showcase PRIVATE argtool asyncx cfgx fsx logsys textcodec)
+
+    add_executable(toolx_showcase_server examples/product_chain_showcase/server.cpp)
+    if(WIN32)
+        target_link_libraries(toolx_showcase_server PRIVATE ws2_32)
+    endif()
 
     if(TOOLX_BUILD_BENCHMARKS)
         add_executable(asyncx_benchmark examples/asyncx_benchmark.cpp)

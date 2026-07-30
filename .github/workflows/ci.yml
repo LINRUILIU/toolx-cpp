@@ -19,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Documentation check
+        run: cmake -P cmake/docs_check.cmake
+
       - name: Install OpenSSL test dependencies
         shell: bash
         run: |
@@ -85,6 +88,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Documentation check
+        run: cmake -P cmake/docs_check.cmake
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -156,6 +162,16 @@ jobs:
       - name: Build
         shell: bash
         run: cmake --build "${BUILD_DIR}" --parallel
+
+      - name: Product-chain showcase (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash ./examples/product_chain_showcase/run.sh "${BUILD_DIR}" "${BUILD_DIR}/showcase"
+
+      - name: Product-chain showcase (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./examples/product_chain_showcase/run.ps1 -BinDir "$env:BUILD_DIR" -OutputDir "$env:BUILD_DIR/showcase"
 
       - name: Test
         shell: bash

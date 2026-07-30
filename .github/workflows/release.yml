@@ -47,6 +47,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Documentation check
+        run: cmake -P cmake/docs_check.cmake
+
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -113,6 +116,16 @@ jobs:
         shell: bash
         run: cmake --build "${BUILD_DIR}" --parallel
 
+      - name: Product-chain showcase (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash ./examples/product_chain_showcase/run.sh "${BUILD_DIR}" "${BUILD_DIR}/showcase"
+
+      - name: Product-chain showcase (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./examples/product_chain_showcase/run.ps1 -BinDir "$env:BUILD_DIR" -OutputDir "$env:BUILD_DIR/showcase"
+
       - name: Test
         shell: bash
         run: ctest --test-dir "${BUILD_DIR}" --output-on-failure
@@ -171,6 +184,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Documentation check
+        run: cmake -P cmake/docs_check.cmake
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: release-artifacts
@@ -189,11 +205,7 @@ jobs:
           if [ ! -f "${NOTES_PATH}" ]; then
             NOTES_PATH="docs/releases/template.md"
           fi
-          {
-            echo "# ToolX ${TAG}"
-            echo
-            cat "${NOTES_PATH}"
-          } > release-body.md
+          cp "${NOTES_PATH}" release-body.md
 
       - name: Publish release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2

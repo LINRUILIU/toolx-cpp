@@ -1,0 +1,18 @@
+toolx-inspect | file=resolved.json
+format=json root=object paths=12 matched=12 issues=0 focus=paths
+[paths]                                             [schema]
+> $ = {...}                                             schema: ok
+  svc = {...}
+  svc.name = toolx-showcase
+  svc.host = 127.0.0.1
+  svc.port = 9090
+  svc.features = [...]
+  svc.features[0] = resolved
+  svc.features[1] = inspected
+  release = {...}
+  release.channel = candidate
+  release.version = 0.3.2
+  release.platform = showcase
+[value]
+$ (object) = {...}
+Tab/Arrows navigate | Esc exits

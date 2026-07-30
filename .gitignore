@@ -20,6 +20,7 @@ Testing/
 *.pdb
 *.ipch
 *.log
+!examples/product_chain_showcase/fixtures/*.log
 
 # reference 本地实验/临时工具，不进入仓库
 /reference/

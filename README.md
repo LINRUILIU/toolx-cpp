@@ -1,263 +1,167 @@
 # ToolX C++ Toolkit
 
-ToolX is a practical C++20 toolkit for small tools and small-to-medium projects.
-`v0.3.2` is a compatible reliability patch: it makes CLI proxy behavior
-explicit, upgrades configured `fsx` journals to synchronous write-ahead
-recovery records, and adds real OpenSSL loopback TLS CI coverage. The
-`v0.3.0` release finalized the first ToolX CLI product chain: config authoring,
-config publishing, local packaging, HTTP preflight, log diagnosis, and terminal
-inspection.
+ToolX is a C++20 toolkit for building small operational tools without first
+assembling a framework. It provides focused libraries for command-line parsing,
+configuration, concurrency, filesystem transactions, HTTP, logging, terminal
+rendering, schemas, codecs, hashes, and platform utilities. Six installable CLIs
+compose those libraries into a practical release workflow.
 
-## Stability
+> **Repository status:** this branch is the `v0.3.2` release candidate. The
+> latest tagged release is `v0.3.1`. The candidate preserves the public `0.3.x`
+> source-compatibility boundary while hardening proxy control, filesystem
+> recovery ordering, and TLS verification coverage.
 
-| Module | Status | Purpose |
-| --- | --- | --- |
-| `argtool` | Stable core | CLI argument parsing, help, constraints, JSON parse output |
-| `cfgx` | Stable core | Config parsing, path edits, validation, reload, snapshots |
-| `schemax` | Experimental MVP | Config schema compile/validate helpers on top of `cfgx` |
-| `asyncx` | Stable core | Thread pool, scheduling, cancellation, task groups, wait helpers |
-| `fsx` | Stable core | Atomic writes, batch plans, directory sync, tar archives, watcher basics |
-| `logsys` | Stable core | Logging, context fields, trace spans, metrics, async queue |
-| `resultx` | Stable core | Cross-module result/status adapters |
-| `utils`, `sysx`, `hashx`, `textcodec` | Stable support | Common helpers, platform wrappers, hashes, text codecs |
-| `httpx` | Bounded stable | HTTP client, retries, circuit breaker, upload/download; TLS depends on selected backend |
-| `tuix` | Experimental foundation | Terminal UI building blocks, styled frames, layouts, and MVP widgets |
+## Understand ToolX in one minute
 
-Public stability commitments live in [docs/stability.md](docs/stability.md).
-`toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, `toolx-log`, and
-`toolx-inspect` contract details live in
-[docs/toolx-config.md](docs/toolx-config.md), [docs/toolx-sync.md](docs/toolx-sync.md),
-[docs/toolx-pack.md](docs/toolx-pack.md), [docs/toolx-http.md](docs/toolx-http.md),
-[docs/toolx-log.md](docs/toolx-log.md), and
-[docs/toolx-inspect.md](docs/toolx-inspect.md).
+ToolX has two public surfaces:
 
-## Requirements
+1. **Thirteen CMake library targets** for applications that want individual
+   capabilities.
+2. **Six product CLIs** for operators and release automation.
 
-- CMake >= 3.20
-- C++20 compiler
-- Git
+```mermaid
+flowchart LR
+    subgraph Libraries["Reusable C++20 libraries"]
+        Core["argtool · cfgx · asyncx · fsx · httpx · logsys"]
+        Support["utils · sysx · resultx · hashx · textcodec"]
+        Experimental["schemax · tuix"]
+    end
 
-CI covers Linux GCC, Linux Clang, Windows MSVC, and macOS Clang.
+    subgraph Products["Installed CLI workflow"]
+        Config["toolx-config\nauthor and review"] --> Sync["toolx-sync\ncompose and publish"]
+        Sync --> Pack["toolx-pack\nstage and archive"]
+        Pack --> Http["toolx-http\npreflight endpoints"]
+        Http --> Log["toolx-log\ndiagnose logs"]
+        Log --> Inspect["toolx-inspect\ninspect config state"]
+    end
 
-## Build
+    Libraries --> Products
+```
+
+The CLI arrows describe an operator journey, not runtime dependencies: each
+tool can be installed and invoked independently.
+
+## Choose your path
+
+### Five-minute path: use the product CLIs
 
 ```bash
 cmake --preset dev
 cmake --build --preset dev
-ctest --preset dev
+
+build/dev/toolx-config doctor --file app.json --require svc.host --expect svc.port=int --json
+build/dev/toolx-sync --base app.json --out resolved.json --dry-run --json
 ```
 
-Equivalent explicit configure:
+On multi-config generators, executables may be under a configuration directory.
+The complete command contracts are indexed in [CLI documentation](docs/cli/).
 
-```bash
-cmake -S . -B build-release-v030 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
-cmake --build build-release-v030 --parallel
-ctest --test-dir build-release-v030 --output-on-failure
-```
+### Five-minute path: consume the C++ libraries
 
-Deprecated `COPILOT_*` CMake options still exist for one compatibility cycle,
-but new integrations should use `TOOLX_*`.
-
-## Install And Consume
-
-Install a local stage tree:
-
-```bash
-cmake --install build-release-v030 --prefix build-release-v030-stage
-```
-
-Consumer project:
+After installing ToolX, use its exported CMake targets:
 
 ```cmake
 find_package(ToolX CONFIG REQUIRED)
 
-add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE toolx::cfgx toolx::logsys toolx::schemax)
+add_executable(my_tool main.cpp)
+target_link_libraries(my_tool PRIVATE toolx::argtool toolx::cfgx toolx::logsys)
 ```
 
-Installed tools:
+The standalone consumer in
+[`examples/install_consumer`](examples/install_consumer) verifies the installed
+package shape. Start with the [module guides](docs/modules/) before consulting
+headers directly.
 
-```bash
-cmake -S examples/install_consumer -B build-release-v030-consumer \
-  -DCMAKE_PREFIX_PATH="$PWD/build-release-v030-stage"
-cmake --build build-release-v030-consumer --parallel
-build-release-v030-stage/bin/toolx-config --help
-build-release-v030-stage/bin/toolx-sync --help
-build-release-v030-stage/bin/toolx-pack --help
-build-release-v030-stage/bin/toolx-http --help
-build-release-v030-stage/bin/toolx-log --help
-build-release-v030-stage/bin/toolx-inspect --help
-```
+### Five-minute path: explore working examples
 
-The install tree is also the shape of the prebuilt release archives:
+Every public module has a focused cookbook. Together the 13 cookbooks contain
+59 annotated, offline-friendly scenarios. A reproducible product-chain showcase
+then drives all six installed CLIs against fixed fixtures and a loopback HTTP
+server.
 
-- `bin/`
-- `include/`
-- `lib/`
-- `lib/cmake/ToolX/`
+See the [showcase guide](docs/examples/showcase.md) for commands, captured output,
+side effects, and platform notes.
 
-## Release Artifacts
+## Current capability map
 
-The `v0.3.2` release is distributed through GitHub Releases with:
+| Area | Targets | Status | What it provides |
+| --- | --- | --- | --- |
+| CLI and configuration | `argtool`, `cfgx` | Stable core | Typed arguments, constraints, structured config, layering, validation, reload and snapshots |
+| Runtime orchestration | `asyncx`, `fsx`, `logsys` | Stable core | Tasks, scheduling, transactional file work, archives, structured logs, spans and metrics |
+| Platform support | `utils`, `sysx`, `resultx`, `hashx`, `textcodec` | Stable support | Common helpers, platform wrappers, result adapters, non-cryptographic hashes and codecs |
+| Networking | `httpx` | Bounded stable | HTTP client, retry, redirects, proxy control, circuit breaker, upload/download and optional TLS |
+| Structured validation | `schemax` | Experimental MVP | A deliberately small schema layer on top of `cfgx` |
+| Terminal UI | `tuix` | Experimental foundation | Styled frames, layouts, input, widgets and deterministic rendering primitives |
 
-- `ToolX-v0.3.2-source.tar.gz`
-- `ToolX-v0.3.2-windows-x86_64.zip`
-- `ToolX-v0.3.2-linux-x86_64.tar.gz`
-- `ToolX-v0.3.2-macos-universal.tar.gz` or `ToolX-v0.3.2-macos-x86_64.tar.gz`
-- `SHA256SUMS`
+The normative classification and compatibility promises live in
+[Stability](docs/stability.md).
 
-Each binary archive is validated by unpacking it, running `toolx-config --help`,
-`toolx-sync --help`, `toolx-pack --help`, `toolx-http --help`, and
-`toolx-log --help`, `toolx-inspect --help`, running small pack/log/inspect smoke checks,
-and compiling the standalone
-[`examples/install_consumer`](examples/install_consumer) project via
-`find_package(ToolX)`.
+## Product workflow
 
-## `toolx-config`
+| CLI | Primary job | Typical inputs | Writes business output? |
+| --- | --- | --- | --- |
+| `toolx-config` | Inspect, edit, merge, validate and snapshot configuration | Config files and optional schema | Only for explicit editing/merge/snapshot commands |
+| `toolx-sync` | Compose base, remote and overlay layers, then publish atomically | Config layers, optional URL/schema | Yes, unless `--dry-run` |
+| `toolx-pack` | Stage a release tree and create deterministic tar archives | Source tree or manifest | Yes, unless `plan`/`--dry-run` |
+| `toolx-http` | Gate simple HTTP endpoint expectations | URL or manifest | Only an optional audit log |
+| `toolx-log` | Summarize existing logsys text/JSONL files | Log files or manifest | Only an optional audit log |
+| `toolx-inspect` | Report or render config/schema state | Config, schema or manifest | Only an optional audit log |
 
-`toolx-config` is the first productized CLI on top of ToolX. It supports config
-inspection, editing, merge, validation, reload dry-runs, snapshots, and stable
-machine-readable output.
+Exit codes, JSON envelopes, precedence, side effects, and implicit behavior are
+compared in the [cross-CLI matrix](docs/cli/matrix.md).
 
-```bash
-toolx-config set --file app.json --path svc.port --value 8080 --type int
-toolx-config get --file app.json --path svc.port
-toolx-config validate --file app.json --schema schema.json --require svc.host --range svc.port=1:65535
-toolx-config reload-dryrun --current current.json --candidate candidate.json --json
-toolx-config doctor --file app.json --schema schema.json --require svc.host --expect svc.port=int --json
-```
+## Build and compatibility snapshot
 
-`--json` output uses `schema=toolx.config.result` and `schema_version=1`. Fields may
-be added, but existing fields are additive-only within the `0.3.x` line. The
-full CLI reference is in [docs/toolx-config.md](docs/toolx-config.md).
+- CMake 3.20 or newer and a C++20 compiler are required.
+- CI verifies current Linux GCC, Linux Clang, Windows MSVC, and macOS Clang
+  environments. ToolX does not infer older minimum compiler versions from that
+  matrix.
+- Default builds do not require a third-party runtime library.
+- `httpx` can be built with OpenSSL or mbedTLS; the backends are mutually
+  exclusive and disabled in the default release package.
+- Enabling tests fetches pinned GoogleTest 1.14.0. Consumers do not inherit that
+  dependency.
+- ToolX promises documented source compatibility within `0.3.x`, not ABI
+  compatibility across compilers, standard libraries, or build configurations.
 
-## `toolx-config` Cookbook
+See [Build and compatibility](docs/build-and-compatibility.md) and
+[Dependencies](docs/dependencies.md) before choosing a TLS or test configuration.
 
-Common workflows are documented in [docs/toolx-config.md](docs/toolx-config.md), including
-preflight checks with `toolx-config doctor`, layered merge review, and snapshot
-export/restore. A realistic starter lives in
-[`examples/toolx_config_layered_template`](examples/toolx_config_layered_template).
+## What changed in the `v0.3.2` candidate
 
-## Module Cookbooks
+- `toolx-http` and `toolx-sync` expose deterministic opt-out from environment
+  proxy routing.
+- configured filesystem journals use synchronized FSXJ3 write-ahead undo
+  records and conflict-aware recovery.
+- CI adds real loopback TLS trust and hostname-mismatch checks for the OpenSSL
+  backend.
 
-Every public module has a focused `examples/*_cookbook.cpp` executable. Each
-cookbook contains 3-5 commented scenarios covering normal use, boundary behavior,
-and the current API additions without requiring network access or external
-services.
+User-visible history is maintained in [CHANGELOG.md](CHANGELOG.md); detailed
+candidate notes are in [the v0.3.2 release notes](docs/releases/v0.3.2.md).
 
-```bash
-cmake --build build-release-v030 --target asyncx_cookbook
-build-release-v030/asyncx_cookbook
-```
+## Repository map
 
-## `toolx-sync`
+| Path | Responsibility |
+| --- | --- |
+| `include/`, `src/` | Public headers and library implementations |
+| `tools/` | Six installed product CLI entry points |
+| `examples/` | Module cookbooks, integrations, benchmarks and showcase fixtures |
+| `tests/`, `cmake/` | Unit/integration/contract checks and release verification |
+| `docs/modules/` | Curated module guides and API matrices |
+| `docs/cli/` | CLI references and cross-product contracts |
+| `docs/examples/` | Reproducible reports and learning routes |
+| `docs/development/` | Chinese maintainer notes, audits, designs and retrospectives |
 
-`toolx-sync` is the bounded-stable product CLI for composing and publishing
-configuration: base config, local overlays, optional HTTP remote layer, async
-execution, validation, dry-run publish reports, atomic write, snapshot, and
-audit logging.
+The complete reading order begins at the [documentation portal](docs/index.md).
+The active direction is recorded in the [roadmap](docs/roadmap.md).
 
-```bash
-toolx-sync --base app.base.json --overlay app.local.json --out resolved.json \
-  --schema schema.json --require svc.port --range svc.port=1:65535 \
-  --dry-run --json
-toolx-sync --base app.base.json --overlay app.local.json --out resolved.json \
-  --snapshot snapshot.json --journal resolved.journal --log-file audit.log --json
-```
+## Explicit non-goals
 
-`toolx-sync` uses its own envelope, `schema=toolx.sync.result` and
-`schema_version=1`. It is part of the shipped install set, but its compatibility
-promise is narrower than the main `toolx-config` contract. The full CLI reference
-is in [docs/toolx-sync.md](docs/toolx-sync.md).
+ToolX is not a package manager, deployment platform, secret manager, complete
+JSON Schema implementation, monitoring system, `curl` replacement, or general
+TUI framework. New products are admitted only after a concrete workflow and a
+tested compatibility contract exist.
 
-## `toolx-pack`
+## License
 
-`toolx-pack` is the bounded-stable product CLI for local staging and packaging.
-It stages built files into a release-shaped tree and can create deterministic
-tar archives from that tree.
-
-```bash
-toolx-pack plan --src build-release-v030-stage --out dist/toolx --archive dist/toolx.tar --json
-toolx-pack stage --src build-release-v030-stage --out dist/toolx \
-  --include bin --include include --include lib --archive dist/toolx.tar --json
-toolx-pack archive --src dist/toolx --archive dist/toolx.tar --json
-```
-
-`toolx-pack` uses `schema=toolx.pack.result` and `schema_version=1`. Its MVP
-supports deterministic tar only; zip, compression, signing, remote publish, and
-dependency discovery are intentionally out of scope. The full CLI reference is
-in [docs/toolx-pack.md](docs/toolx-pack.md).
-
-## `toolx-http`
-
-`toolx-http` is the bounded-stable product CLI for runtime endpoint preflight.
-It checks HTTP endpoints against status/body expectations and emits stable JSON
-for release smoke and deployment gates.
-
-```bash
-toolx-http check --url http://127.0.0.1:8080/health \
-  --expect-status 200 --expect-body-contains ready --timeout-ms 1000 --json
-toolx-http check --manifest http-preflight.json --json
-```
-
-`toolx-http` uses `schema=toolx.http.result` and `schema_version=1`. It is not a
-general `curl` replacement; load testing, OAuth, download/upload workflows, and
-complex body assertion DSLs are intentionally out of scope. The full CLI
-reference is in [docs/toolx-http.md](docs/toolx-http.md).
-
-## `toolx-log`
-
-`toolx-log` is the bounded-stable product CLI for offline runtime log diagnosis.
-It summarizes logsys text and JSON-lines logs by level, reports parse failures,
-filters by simple time/text criteria, and can fail lightweight gates.
-
-```bash
-toolx-log summarize --file app.log --min-level warning --json
-toolx-log summarize --file app.jsonl --format jsonl \
-  --since "2026-06-04 10:00:00.000" --fail-on-level error --json
-toolx-log summarize --manifest log-summary.json --json
-```
-
-`toolx-log` uses `schema=toolx.log.result` and `schema_version=1`. It is an
-offline analyzer, not a real-time tailer, monitoring daemon, alerting system, or
-generic arbitrary-log parser. The full CLI reference is in
-[docs/toolx-log.md](docs/toolx-log.md).
-
-## `toolx-inspect`
-
-`toolx-inspect` is the bounded-stable product CLI for config/schema terminal
-inspection. It can emit a stable report, render a deterministic terminal frame,
-or run the same view interactively.
-
-```bash
-toolx-inspect report --file app.json --schema schema.json --json
-toolx-inspect report --file app.json --path svc.port
-toolx-inspect render --file app.json --schema schema.json --width 100 --height 20
-toolx-inspect run --file app.json --schema schema.json
-```
-
-`toolx-inspect` uses `schema=toolx.inspect.result` and `schema_version=1`.
-Schema issues fail by default unless `--allow-issues` is set. It is a bounded
-config/schema inspector, not a config editor, live watcher, diff tool, or
-general TUI framework. The full CLI reference is in
-[docs/toolx-inspect.md](docs/toolx-inspect.md).
-
-## Quality Gates
-
-Release candidates should pass:
-
-```bash
-cmake -S . -B build-release-v030 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
-cmake --build build-release-v030 --target format-check
-cmake --build build-release-v030 --parallel
-ctest --test-dir build-release-v030 --output-on-failure
-cmake --install build-release-v030 --prefix build-release-v030-stage
-cmake -S examples/install_consumer -B build-release-v030-consumer -DCMAKE_PREFIX_PATH="$PWD/build-release-v030-stage"
-cmake --build build-release-v030-consumer --parallel
-cmake -DTOOLX_STAGE_PREFIX=build-release-v030-stage -P cmake/release_smoke.cmake
-cpack --config build-release-v030/CPackConfig.cmake
-cmake -DPACKAGE_DIR=build-release-v030/packages -P cmake/release_archive_smoke.cmake
-cpack --config build-release-v030/CPackSourceConfig.cmake
-```
-
-Maintainer workflow details are in [README.dev.md](README.dev.md).
+ToolX is available under the [MIT License](LICENSE).

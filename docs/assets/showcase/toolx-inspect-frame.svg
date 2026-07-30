@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="510" viewBox="0 0 1180 510" role="img" aria-labelledby="title desc">
+  <title id="title">ToolX inspect terminal frame</title>
+  <desc id="desc">Terminal rendering captured from the reproducible ToolX v0.3.2 release-candidate showcase.</desc>
+  <rect width="1180" height="510" rx="14" fill="#0d1117"/>
+  <rect width="1180" height="42" rx="14" fill="#21262d"/>
+  <rect y="28" width="1180" height="14" fill="#21262d"/>
+  <circle cx="22" cy="21" r="6" fill="#ff5f57"/>
+  <circle cx="42" cy="21" r="6" fill="#febc2e"/>
+  <circle cx="62" cy="21" r="6" fill="#28c840"/>
+  <text x="590" y="26" text-anchor="middle" fill="#8b949e" font-family="Consolas, 'Cascadia Mono', monospace" font-size="14">ToolX v0.3.2-rc · Windows · Clang 21.1.0</text>
+  <g fill="#c9d1d9" font-family="Consolas, 'Cascadia Mono', monospace" font-size="16">
+    <text x="20" y="70">toolx-inspect | file=resolved.json</text>
+    <text x="20" y="93">format=json root=object paths=12 matched=12 issues=0 focus=paths</text>
+    <text x="20" y="116" fill="#79c0ff">[paths]                                             [schema]</text>
+    <text x="20" y="139">&gt; $ = {...}                                             schema: ok</text>
+    <text x="20" y="162">  svc = {...}</text>
+    <text x="20" y="185">  svc.name = toolx-showcase</text>
+    <text x="20" y="208">  svc.host = 127.0.0.1</text>
+    <text x="20" y="231">  svc.port = 9090</text>
+    <text x="20" y="254">  svc.features = [...]</text>
+    <text x="20" y="277">  svc.features[0] = resolved</text>
+    <text x="20" y="300">  svc.features[1] = inspected</text>
+    <text x="20" y="323">  release = {...}</text>
+    <text x="20" y="346">  release.channel = candidate</text>
+    <text x="20" y="369">  release.version = 0.3.2</text>
+    <text x="20" y="392">  release.platform = showcase</text>
+    <text x="20" y="415" fill="#79c0ff">[value]</text>
+    <text x="20" y="438">$ (object) = {...}</text>
+    <text x="20" y="470" fill="#8b949e">Tab/Arrows navigate | Esc exits</text>
+  </g>
+</svg>

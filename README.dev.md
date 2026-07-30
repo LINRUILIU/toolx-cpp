@@ -1,247 +1,56 @@
-# ToolX Maintainer Guide
+# ToolX 开发日志
 
-This file is for repository maintainers. User-facing setup and examples live in
-[README.md](README.md). Stability commitments live in
-[docs/stability.md](docs/stability.md).
+> Audience: ToolX 维护者与贡献者
+> Status: Active development log
+> Applies to: `v0.3.2` release-candidate cycle
+> Source of truth for: 当前开发上下文与阶段性工程记录
 
-## Release Shape
+本文件只记录开发主线、阶段性结论和进一步阅读入口。稳定的用户说明位于
+[`README.md`](README.md) 和 [`docs/index.md`](docs/index.md)；构建、发布、
+质量门禁等维护流程已经迁入
+[`docs/development/maintaining.md`](docs/development/maintaining.md)。
 
-The `v0.3.0` release finalized the first ToolX CLI product chain. `v0.3.1` is
-the compatible maintenance release for filesystem recovery, archive extraction,
-download retry, logging, and Windows/MSVC configuration hardening. `v0.2.0`
-proved the single-tool product contract with `toolx-config`; the `0.2.x`
-development line admitted the bounded-stable CLI products now released together
-as the `0.3.x` product set:
+## 当前周期：v0.3.2 release candidate
 
-- ToolX C++ libraries with exported CMake package config.
-- `toolx-config` as the productized CLI entrypoint and primary compatibility contract.
-- `toolx-sync` as the bounded-stable composition and publish CLI.
-- `toolx-pack` as the bounded-stable local staging and deterministic tar CLI.
-- `toolx-http` as the bounded-stable runtime endpoint preflight CLI.
-- `toolx-log` as the bounded-stable offline runtime log diagnosis CLI.
-- `toolx-inspect` as the bounded-stable config/schema terminal inspection CLI.
-- `schemax` as an experimental schema MVP used by shipped CLIs.
-- Focused additive API growth in `asyncx`, `fsx`, `httpx`, `logsys`, and `tuix`.
-- GitHub release artifacts built from `cmake --install` output plus archive-level verification.
+最新已标记版本是 `v0.3.1`。当前分支在不改变 `0.3.x` 公共源码兼容边界的
+前提下完成三组可靠性加固：
 
-Do not expand the public API surface during release hardening unless the change
-is required to make an existing contract testable or usable.
+- `toolx-http` 与 `toolx-sync` 可显式关闭环境代理继承；
+- `fsx` 配置 journal 时使用同步的 FSXJ3 预写 undo 记录，并在恢复时保护
+  journal 之后新出现的目标；
+- Linux/OpenSSL CI 使用本机临时证书验证信任链与 hostname mismatch。
 
-## CMake Options
+当前开发工作转向文档体系收敛：建立唯一事实源、完整模块/CLI 指南、构建依赖
+兼容矩阵和可复现的产品链展示。
 
-Use the `TOOLX_*` options in new scripts and documentation:
+## 开发里程碑
 
-| Option | Default | Purpose |
+| 日期 | 里程碑 | 结果 |
 | --- | --- | --- |
-| `TOOLX_BUILD_TESTS` | `ON` | Build unit, integration, and CLI contract tests |
-| `TOOLX_BUILD_EXAMPLES` | `ON` | Build example binaries |
-| `TOOLX_BUILD_TOOLS` | `ON` | Build installable tools: `toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, `toolx-log`, `toolx-inspect` |
-| `TOOLX_BUILD_BENCHMARKS` | `ON` in direct CMake, `OFF` in presets/CI | Build benchmark examples |
-| `TOOLX_ENABLE_CLANG_TIDY` | `OFF` | Enable clang-tidy at compile time |
-| `TOOLX_ENABLE_COVERAGE` | `OFF` | Enable GCC/Clang coverage instrumentation |
+| 2026-03-31 | 初始工具库与公开/本地文档拆分 | 建立 C++20 模块化基线 |
+| 2026-05-31 | `v0.2.0` 能力扩展 | 增加 `schemax`、模块 cookbooks 和侧向 API |
+| 2026-06-10 | `v0.3.0` 产品化收口 | 六个 CLI 进入同一安装、合同测试和发布链 |
+| 2026-07-10 | `v0.3.1` | 文件系统、下载、日志和发布安全加固 |
+| 2026-07-11 | `v0.3.2` candidate | 代理控制、FSXJ3 和真实 OpenSSL TLS 覆盖 |
 
-Deprecated `COPILOT_*` aliases remain wired for one compatibility cycle. Do not
-add new documentation examples using those names.
+这些日期来自仓库 Git 历史；功能级变化以 [`CHANGELOG.md`](CHANGELOG.md)
+和 [`docs/releases/`](docs/releases/) 为准。
 
-## Local Gates
+## 当前工程约束
 
-Recommended fast local loop:
+- 0.3.x 只接受兼容修复、既有产品体验改进和文档/合同收敛。
+- 不新增 CLI，不扩张公共 API，除非现有契约无法安全使用或测试。
+- `schemax` 与 `tuix` 继续保持实验边界。
+- 默认发布包不选择 TLS 后端。
+- 第三方离线压缩包不等于受支持的自动构建输入；实际参与方式必须以
+  CMake 和依赖文档为准。
 
-```bash
-cmake --preset dev
-cmake --build --preset dev
-ctest --preset dev
-```
+## 开发资料入口
 
-Release-like local gate:
-
-```bash
-cmake -S . -B build-release-v030 -DTOOLX_BUILD_TESTS=ON -DTOOLX_BUILD_EXAMPLES=ON -DTOOLX_BUILD_TOOLS=ON -DTOOLX_BUILD_BENCHMARKS=OFF
-cmake --build build-release-v030 --target format-check
-cmake --build build-release-v030 --parallel
-ctest --test-dir build-release-v030 --output-on-failure
-cmake --install build-release-v030 --prefix build-release-v030-stage
-cmake -S examples/install_consumer -B build-release-v030-consumer -DCMAKE_PREFIX_PATH="$PWD/build-release-v030-stage"
-cmake --build build-release-v030-consumer --parallel
-cmake -DTOOLX_STAGE_PREFIX=build-release-v030-stage -P cmake/release_smoke.cmake
-cpack --config build-release-v030/CPackConfig.cmake
-cmake -DPACKAGE_DIR=build-release-v030/packages -P cmake/release_archive_smoke.cmake
-cpack --config build-release-v030/CPackSourceConfig.cmake
-```
-
-Optional quality gates:
-
-```bash
-cmake -S . -B build-tidy -DTOOLX_ENABLE_CLANG_TIDY=ON
-cmake --build build-tidy --target lint-check
-cmake -S . -B build-cov -DTOOLX_BUILD_TESTS=ON -DTOOLX_ENABLE_COVERAGE=ON
-cmake --build build-cov --target coverage
-```
-
-Coverage remains a GCC/Clang-only signal. It is not a release blocker on
-Windows or macOS.
-
-Do not reuse `build/dev` for release verification. Recreate only
-`build-release-v030`, `build-release-v030-stage`, and
-`build-release-v030-consumer` when rerunning the gate.
-
-## Windows MSVC Environment
-
-Do not add MSVC `bin` directories to the global `Path`. Use a Visual Studio
-Developer PowerShell or let the Visual Studio CMake generator select the
-installed toolset. A stale removed MSVC path can make MSBuild fail before
-compiler detection and surface as CMake's generic `No CMAKE_CXX_COMPILER could
-be found` error.
-
-To pin a local MSVC toolset explicitly:
-
-```powershell
-cmake -S . -B build-msvc-vs -G "Visual Studio 18 2026" -A x64 `
-  -T v145,version=14.51.36231 `
-  -DTOOLX_MSVC_ROOT="C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231"
-```
-
-For Ninja, first enter the VS developer environment, then configure a fresh
-build directory:
-
-```powershell
-& "C:/Program Files/Microsoft Visual Studio/18/Community/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
-cmake -S . -B build-msvc-ninja -G Ninja `
-  -DTOOLX_MSVC_ROOT="C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231"
-```
-
-## Packaging And Release Flow
-
-Binary release archives are generated by `CPack` directly from the install rules.
-Expected artifact names are:
-
-- `ToolX-v0.3.1-source.tar.gz`
-- `ToolX-v0.3.1-windows-x86_64.zip`
-- `ToolX-v0.3.1-linux-x86_64.tar.gz`
-- `ToolX-v0.3.1-macos-universal.tar.gz` or `ToolX-v0.3.1-macos-x86_64.tar.gz`
-- `SHA256SUMS`
-
-GitHub Actions responsibilities are split as follows:
-
-- `.github/workflows/ci.yml`: PR and branch gate for format, build, tests, install, consumer verify, install-tree smoke, archive packaging, and unpacked archive verification.
-- `.github/workflows/release.yml`: tag-driven release job that rebuilds, retests, packages, verifies, computes `SHA256SUMS`, and publishes the GitHub Release.
-
-Release notes are loaded from `docs/releases/<tag>.md`, falling back to
-`docs/releases/template.md`.
-
-## CLI Contracts
-
-The cross-CLI command matrix, API dependency list, file side effects, implicit
-defaults, and magic-risk checklist are maintained in
-[docs/product_cli_matrix.md](docs/product_cli_matrix.md).
-
-`toolx-config` is a release artifact, not just an example binary.
-
-Stable CLI commitments for `0.3.x`:
-
-- Exit codes: `0` success, `1` runtime error, `2` usage error, `3` not found, `4` validation failed.
-- JSON envelope: `schema=toolx.config.result`, `schema_version=1`, `ok`, `code`, `message`, `issues`, `data`.
-- Existing JSON fields are additive-only within `0.3.x`.
-- `doctor` and `validate` accept `--schema FILE`; schema failures use exit code
-  `4` and add `data.schema_issues`.
-- Help text should remain recognizable enough for black-box tests to catch accidental command removal.
-
-The `toolx_config_cli_contracts` test covers `load`, `adapters`, `snapshot-export`,
-`snapshot-restore`, `doctor`, `get`, `set`, `exists`, `merge`, `validate`, and
-`reload-dryrun` in plain and JSON modes.
-
-`toolx-sync` is a bounded-stable product CLI for config composition and publish.
-Its JSON envelope is intentionally separate: `schema=toolx.sync.result`,
-`schema_version=1`. It accepts `--schema FILE`, repeated `--overlay`, optional
-`--remote-url`, and `--dry-run`, and reports `schema_issues` additively.
-The `toolx_sync_cli_scenario` test covers publish, overlay composition,
-snapshot/log/journal outputs, dry-run reports, validation failure, and schema
-failure.
-
-`toolx-pack` is a bounded-stable product CLI for staging release trees and
-creating deterministic tar archives. Its JSON envelope is
-`schema=toolx.pack.result`, `schema_version=1`; its exit codes are `0`
-success/help/dry-run success, `1` runtime error, `2` usage or parse error, `3`
-source/stage/manifest path not found, and `4` manifest validation failure.
-The `toolx_pack_cli_contracts` test covers help, required options, missing
-paths, manifest schema rejection, dry-run plans, include/exclude/remove-extra
-behavior, stage archive creation, and archive-only creation.
-
-`toolx-http` is a bounded-stable product CLI for runtime endpoint preflight. Its
-JSON envelope is `schema=toolx.http.result`, `schema_version=1`; its exit codes
-are `0` success/help, `1` transport or runtime error, `2` usage or parse error,
-`3` manifest/body-file not found, and `4` status/body expectation failure. The
-`toolx_http_cli_contracts` test is a C++ black-box harness that starts loopback
-HTTP servers and executes the installed-style CLI process without external
-network access.
-
-`toolx-log` is a bounded-stable product CLI for offline runtime log diagnosis.
-Its JSON envelope is `schema=toolx.log.result`, `schema_version=1`; its exit
-codes are `0` success/help, `1` runtime or read error, `2` usage or parse error,
-`3` file/manifest not found, and `4` manifest validation or configured log gate
-failure. The `toolx_log_cli_contracts` test covers help, required inputs,
-manifest rejection, logsys text and JSON-lines parsing, filters, and gate
-failures.
-
-`toolx-inspect` is a bounded-stable product CLI for config/schema terminal
-inspection. Its JSON envelope is `schema=toolx.inspect.result`,
-`schema_version=1`; its exit codes are `0` success/help, `1` runtime/load/render
-error, `2` usage or parse error, `3` config/schema/manifest not found, and `4`
-manifest validation, schema compile, or schema issue failure. The
-`toolx_inspect_cli_contracts` test covers help, required inputs, manifest
-rejection, report JSON/plain output, schema pass/fail, `--allow-issues`, path
-selection, path filtering, deterministic render, scripted run, and CLI overrides.
-
-## Release Checklist
-
-Before tagging `v0.3.1`:
-
-- CI is green on Linux GCC, Linux Clang, Windows MSVC, and macOS Clang.
-- `format-check`, build, tests, install, exported package verification, install-tree smoke, packaging, and archive verification pass.
-- `toolx-config`, `toolx-sync`, `toolx-pack`, `toolx-http`, `toolx-log`, and `toolx-inspect` are present in installed `bin/` and packaged `bin/`.
-- `docs/stability.md`, [docs/toolx-config.md](docs/toolx-config.md), [docs/toolx-sync.md](docs/toolx-sync.md), [docs/toolx-pack.md](docs/toolx-pack.md), [docs/toolx-http.md](docs/toolx-http.md), [docs/toolx-log.md](docs/toolx-log.md), [docs/toolx-inspect.md](docs/toolx-inspect.md), and [README.md](README.md) still match the shipped contracts.
-- `docs/releases/v0.3.1.md` and [docs/productization-retro.md](docs/productization-retro.md)
-  state the stable versus experimental boundary, the CLI product admission
-  status, remaining risks, technical debt, and next development direction.
-
-## Productizing Future CLIs
-
-New tools should not enter the public release matrix until they satisfy the
-checklist in [docs/cli_productization.md](docs/cli_productization.md).
-The finalized `0.3.0` CLI product chain and boundaries are recorded in
-[docs/product_tools.md](docs/product_tools.md).
-
-The minimum bar is:
-
-- explicit stability classification
-- black-box CLI contract test
-- install-tree and archive smoke coverage
-- standalone user-facing CLI reference
-- at least one install-consumer or usage example
-
-## Module Boundaries
-
-Keep module dependencies narrow:
-
-- Core libraries should not depend on tools.
-- Tools may compose multiple modules.
-- `toolx-config` should remain a thin CLI facade over `cfgx` and `argtool`.
-- `schemax` may depend on `cfgx`; `cfgx` must not depend on `schemax`.
-- `toolx-sync` may compose `argtool`, `asyncx`, `cfgx`, `schemax`, `fsx`, `httpx`, and `logsys` because that composition is the point of the scenario.
-- `toolx-pack` may compose `argtool`, `cfgx`, `schemax`, `fsx`, and `logsys`, but it should not introduce a public `packx` API until a reusable library contract is needed.
-- `toolx-http` may compose `argtool`, `cfgx`, `schemax`, `httpx`, and `logsys`, but it should remain a preflight CLI rather than a general curl replacement.
-- `toolx-log` may compose `argtool`, `cfgx`, `schemax`, and `logsys`, but it should remain an offline analyzer until a concrete live-tail workflow is needed.
-- `toolx-inspect` may compose `argtool`, `cfgx`, `schemax`, `tuix`, and `logsys`, but it should remain a bounded config/schema inspector rather than a general TUI framework.
-- `tuix` remains a terminal UI foundation until a separate framework decision is made after the CLI release is stable.
-
-## HTTP/TLS Matrix
-
-HTTP-only tests are part of the default gate. TLS behavior depends on one
-selected backend:
-
-```bash
-cmake -S . -B build-ossl -DHTTPX_ENABLE_OPENSSL=ON
-cmake -S . -B build-mbedtls -DHTTPX_ENABLE_MBEDTLS=ON -DMBEDTLS_ROOT=/path/to/mbedtls/install
-```
-
-`HTTPX_ENABLE_OPENSSL` and `HTTPX_ENABLE_MBEDTLS` are mutually exclusive.
+- [维护、构建与发布流程](docs/development/maintaining.md)
+- [开发资料索引](docs/development/index.md)
+- [API 与产品审计](docs/development/audits/)
+- [历史设计材料](docs/development/design/)
+- [产品化复盘](docs/development/retrospectives/)
+- [公开路线图](docs/roadmap.md)
+- [稳定性事实源](docs/stability.md)

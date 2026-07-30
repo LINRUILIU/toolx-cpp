@@ -1,258 +1,80 @@
 # ToolX Stability Boundary
 
-This document defines the 0.3.x public stability boundary. ToolX does not
-promise ABI stability in 0.3.x. It does aim to preserve source compatibility for
-the stable core APIs unless a safety or correctness bug requires a breaking
-change.
+> Audience: C++ consumers, CLI integrators, and maintainers
+> Status: Normative specification
+> Applies to: the `0.3.x` line
+> Source of truth for: stability classification and compatibility promises
 
-## Stable Core
+## Stability terms
 
-The following modules are treated as stable enough for normal use in small
-tools and small-to-medium C++20 projects:
-
-| Module | Stable surface |
+| Level | Promise |
 | --- | --- |
-| `argtool` | Parser builders, subcommand roots, help layouts, validation constraints, JSON parse-result contract |
-| `cfgx` | `Node`, path API, JSON/INI load-save, validation rules, layering, polling reload, snapshots, parser adapter registry |
-| `asyncx` | `ThreadPool`, submit/post APIs, wait helpers, scheduling, metrics, priority, cooperative cancellation, `TaskGroup`, backpressure policy |
-| `fsx` | `BatchPlan`, `Run`, rollback reports, journal recovery, directory walk/sync, tar archive MVP, polling watcher, link/archive capability reporting |
-| `logsys` | Logger configuration, default/simple setup, sinks, structured context fields, trace spans, metrics snapshots, async queue, rolling, JSON config V2, fatal flush policy |
-| `resultx` | Result/status normalization helpers across ToolX modules |
-| `utils`, `sysx`, `hashx`, `textcodec` | Helper APIs used by the stable modules |
+| Stable core | Documented public source APIs remain compatible within `0.3.x` unless a safety/correctness issue requires a break. |
+| Stable support | Same source-compatibility intent, with a narrower helper-oriented role. |
+| Bounded stable | The documented subset is supported; behavior outside the stated backend/product boundary is not implied. |
+| Experimental MVP | Useful and tested, but API shape may change as the supported subset is proven. |
+| Experimental foundation | Building blocks are available without a framework-level compatibility promise. |
 
-Stable means:
+ToolX does not promise ABI compatibility across compilers, standard libraries,
+runtime linkage, build types, architectures, or TLS backend selections.
 
-- Existing public names should remain callable through 0.3.x.
-- Existing JSON/CLI fields should remain additive-only through 0.3.x.
-- Behavior documented in README and covered by tests should not regress without
-  release notes and migration guidance.
+## Library classification
 
-## Experimental MVP
+| Module | Level | Stable boundary |
+| --- | --- | --- |
+| `argtool` | Stable core | Parser builder, typed values, constraints, help, trace and JSON diagnostics |
+| `cfgx` | Stable core | Node/path model, parsing, layering, validation, reload, snapshots and file adapters |
+| `asyncx` | Stable core | Thread pool, scheduling, cancellation, task groups, wait helpers and metrics |
+| `fsx` | Stable core | Batch plans, atomic writes, journals/recovery, directory sync, tar and watcher basics |
+| `logsys` | Stable core | Logger, sinks, formatters, context, spans, profiles and metrics |
+| `utils`, `sysx`, `hashx`, `textcodec` | Stable support | Documented helper and platform surfaces |
+| `resultx` | Stable support | Inline normalization adapters; underlying modules retain their own contracts |
+| `httpx` | Bounded stable | HTTP client behavior; HTTPS depends on the selected build-time backend |
+| `schemax` | Experimental MVP | Compiled subset validation on top of `cfgx`; not full JSON Schema |
+| `tuix` | Experimental foundation | Terminal primitives and MVP widgets; not a general application framework |
 
-`schemax` is an experimental MVP layered on top of `cfgx`. It intentionally
-supports a practical schema subset first: `type`, `required`, `properties`,
-`items`, `minimum`, `maximum`, `enum`, `minLength`, `maxLength`, and
-`additionalProperties`.
+The module guides define the exact supported capability and non-goal for each
+target.
 
-Stable enough to use:
+## Product CLI classification
 
-- `Schema`, `Options`, `Issue`, `Compile`, `Validate`, and `ToCfgxIssues`.
-- Schema-backed validation in `toolx-config validate`, `toolx-config doctor`, and
-  `toolx-sync` through `--schema`.
+`toolx-config` is the primary stable CLI compatibility contract. The other five
+installed tools are bounded-stable products with explicit workflow limits:
 
-Not yet promised:
+- `toolx-sync`: config composition and atomic publish;
+- `toolx-pack`: local staging and deterministic tar creation;
+- `toolx-http`: simple endpoint preflight;
+- `toolx-log`: offline logsys-format diagnosis;
+- `toolx-inspect`: bounded config/schema report and terminal view.
 
-- Full JSON Schema compliance.
-- `$ref`, combinators, formats, pattern validation, or schema draft selection.
-- Long-term issue code taxonomy beyond the tested MVP codes.
+For tested commands, exit codes, JSON fields, side effects, and precedence, use
+the [cross-CLI matrix](cli/matrix.md) and individual
+[CLI references](cli/). Those documents—not library `Status` types—define CLI
+compatibility.
 
-## Bounded Stable
+Existing tested JSON envelope fields are additive-only within `0.3.x`. A field
+may be added, but removing or redefining an existing field requires an explicit
+compatibility decision and migration note.
 
-`httpx` is usable, but its stability is bounded by backend configuration.
+## Correctness exceptions
 
-Stable in default builds:
+A source-compatible implementation change may still alter unsafe or incorrect
+behavior. When a safety or correctness fix requires a visible behavior change:
 
-- HTTP request/response model.
-- Convenience methods for common HTTP verbs.
-- Redirect, cookie jar, retry hook/policy, circuit breaker, download/upload
-  helpers, proxy option parsing, connection pooling.
-- Error classification covered by tests.
-
-Backend-dependent:
-
-- HTTPS requires `HTTPX_ENABLE_OPENSSL` or `HTTPX_ENABLE_MBEDTLS`.
-- Only one TLS backend can be enabled at a time.
-- Custom CA and verification behavior depends on the selected backend.
-- mbedTLS peer verification currently requires a configured CA file.
-
-## Experimental Foundation
-
-`tuix` is a terminal UI foundation, not yet a formal TUI application framework.
-
-Stable enough to use:
-
-- Terminal clear/move/color/print primitives.
-- Frame buffer diff rendering.
-- Poll-only input abstraction.
-- Theme and styled frame cells.
-- Basic gap/padding/flex layout controls.
-- `Panel`, `TextInput`, and `ListView` MVP widgets used by tests and examples.
-
-Not yet promised:
-
-- Full retained UI tree.
-- Advanced widgets.
-- Long-term event model.
-- Framework-level API compatibility.
-
-`TeeBack` input consume mode remains explicitly experimental and may degrade to
-exclusive consume depending on platform/input source.
-
-## Future Work
-
-The following are intentionally outside the 0.3.x stable surface:
-
-- `fsx` zip archive creation. `QueryCapabilities()` reports `tar_archive=true`
-  for the deterministic tar MVP and `zip_archive=false`.
-- Cryptographic hash guarantees. `hashx`/`utils::hash` are non-cryptographic.
-- Full UTF-8/UTF-16/GBK conversion suite in `textcodec`.
-- Full YAML/TOML parser compliance. `cfgx` supports practical subsets unless a
-  third-party parser adapter is supplied.
-- Production-grade authenticated encryption for secrets. `cfgx` encrypted
-  persistence is lightweight local protection only.
-- ABI compatibility across compiler versions, standard libraries, or build
-  configurations.
-
-## CLI Contracts
-
-This section summarizes the stable CLI contracts. The detailed cross-CLI
-command matrix, file side effects, API dependencies, implicit defaults, and
-magic-risk checklist live in [product_cli_matrix.md](product_cli_matrix.md).
-
-`toolx-config` was introduced as the first product CLI and remains the primary
-0.3.x command-line contract. Stable subcommands currently include
-`load`, `adapters`, `adapter-activate`, `doctor`, `snapshot-export`,
-`snapshot-restore`, `get`, `set`, `exists`, `merge`, `validate`, and
-`reload-dryrun`.
-
-Exit codes:
-
-| Code | Meaning |
-| --- | --- |
-| `0` | Success or help |
-| `1` | Runtime error |
-| `2` | Usage or parse error |
-| `3` | Not found |
-| `4` | Validation failed |
-
-JSON envelope:
-
-```json
-{
-  "schema": "toolx.config.result",
-  "schema_version": 1,
-  "ok": true,
-  "code": 0,
-  "message": "ok",
-  "issues": [],
-  "data": {}
-}
-```
-
-`toolx-config validate` and `toolx-config doctor` accept `--schema FILE`. Schema
-validation failures return exit code `4` and add `schema_issues` in JSON mode
-without removing existing fields.
-
-`toolx-sync` is a bounded-stable product CLI for config composition and publish.
-It supports base config, repeated `--overlay` local layers, optional
-`--remote-url`, validation, `--dry-run` publish reports, atomic output,
-snapshots, journals, and audit logs. Its output contract starts at
-`schema=toolx.sync.result`, `schema_version=1` and may evolve more quickly than
-`toolx-config`.
-
-`toolx-sync` exit codes are `0` for success/help/dry-run success, `1` for
-runtime errors, `2` for usage or parse errors, and `4` for validation failures.
-It accepts `--schema FILE` and reports `schema_issues` additively in JSON mode.
-
-`toolx-pack` is a bounded-stable product CLI for staging release trees and
-creating deterministic tar archives. Stable commands are:
-
-```bash
-toolx-pack stage --src DIR --out DIR [--archive FILE]
-toolx-pack archive --src DIR --archive FILE
-toolx-pack plan --src DIR --out DIR [--archive FILE]
-```
-
-Its output contract starts at `schema=toolx.pack.result`,
-`schema_version=1`. JSON `data` includes `command`, `source`, `stage`,
-`archive`, `manifest`, `dry_run`, `remove_extra`, `entries`, `bytes`,
-`planned_steps`, `completed_steps`, `archive_format`, `capabilities`, and
-`warnings`.
-
-`toolx-pack` exit codes are `0` for success/help/dry-run success, `1` for
-runtime errors, `2` for usage or parse errors, `3` for source/stage/manifest
-path not found, and `4` for manifest validation failures. Manifests accept
-`name`, `version`, `source`, `stage`, `archive`, `include`, `exclude`, and
-`remove_extra`; unknown top-level fields are rejected through `schemax`. The MVP
-supports deterministic tar only, not zip, compression, signing, remote publish,
-or dependency discovery.
-
-`toolx-http` is a bounded-stable product CLI for runtime endpoint preflight.
-Stable commands are:
-
-```bash
-toolx-http check --url URL [options]
-toolx-http check --manifest FILE [options]
-```
-
-Its output contract starts at `schema=toolx.http.result`,
-`schema_version=1`. JSON `data` includes `command`, `manifest`, `checked`,
-`passed`, `failed`, `duration_ms`, `checks`, and `warnings`; each check reports
-`name`, `url`, `method`, `ok`, `status`, `duration_ms`, `error_kind`,
-`message`, `expect_status`, and `body_matched`.
-
-`toolx-http` exit codes are `0` for success/help, `1` for transport or runtime
-errors, `2` for usage or parse errors, `3` for manifest/body-file not found,
-and `4` for status/body expectation failures. Manifests accept `checks`,
-runtime defaults, and header defaults; unknown top-level and check fields are
-rejected through `schemax`. The MVP is endpoint preflight only, not a general
-curl replacement, load tester, credential flow, or body assertion DSL.
-
-`toolx-log` is a bounded-stable product CLI for offline runtime log diagnosis.
-Stable commands are:
-
-```bash
-toolx-log summarize --file FILE [--file FILE...] [options]
-toolx-log summarize --manifest FILE [options]
-```
-
-Its output contract starts at `schema=toolx.log.result`,
-`schema_version=1`. JSON `data` includes `command`, `manifest`, `files`,
-`file_count`, `format`, `filters`, `lines_read`, `blank_lines`, `parsed`,
-`matched`, `parse_failures`, `time_missing`, `by_level`, `first_time`,
-`last_time`, `samples`, `capabilities`, and `warnings`.
-
-`toolx-log` exit codes are `0` for success/help, `1` for runtime or read errors,
-`2` for usage or parse errors, `3` for file/manifest not found, and `4` for
-manifest validation failures or configured log gate failures. Manifests accept
-`files`, `format`, `level`, `min_level`, `contains`, `since`, `until`,
-`max_samples`, `fail_on_level`, and `max_parse_errors`; unknown top-level fields
-are rejected through `schemax`. The MVP supports offline logsys text and
-logsys JSON-lines analysis only, not live tailing, alerting, monitoring, or
-generic arbitrary-log parsing.
-
-`toolx-inspect` is a bounded-stable product CLI for config/schema terminal
-inspection. Stable commands are:
-
-```bash
-toolx-inspect report --file FILE [--schema FILE]
-toolx-inspect render --file FILE [--schema FILE]
-toolx-inspect run --file FILE [--schema FILE]
-```
-
-Its output contract starts at `schema=toolx.inspect.result`,
-`schema_version=1`. JSON `data` includes `command`, `file`, `schema_file`,
-`manifest`, `format`, `root_kind`, `path_count`, `matched_path_count`,
-`scalar_count`, `object_count`, `array_count`, `selected_path`,
-`selected_kind`, `selected_value`, `schema_issue_count`, `schema_issues`,
-`paths`, `frame`, `capabilities`, and `warnings`.
-
-`toolx-inspect` exit codes are `0` for success/help, `1` for runtime, load, or
-render errors, `2` for usage or parse errors, `3` for config/schema/manifest
-path not found, and `4` for manifest validation failures, schema compile
-failures, or schema validation issues unless `--allow-issues` is set.
-Manifests accept `file`, `schema`, `format`, `path`, `contains`, `max_paths`,
-`max_issues`, `focus`, `width`, `height`, and `allow_issues`; unknown top-level
-fields are rejected through `schemax`. The MVP is config/schema inspection
-only, not config editing, live watching, diffing, schema authoring, or a
-general TUI framework.
+1. preserve input/output shape where safe;
+2. add a regression or contract test;
+3. document the change in `CHANGELOG.md` and release notes;
+4. provide migration guidance when callers may have relied on the old behavior.
 
 ## Versioning
 
-Recommended current public tag: `v0.3.1`.
+- `0.3.x` promises documented source compatibility, not ABI stability.
+- Experimental modules may evolve within the minor line, but changes must be
+  called out in the changelog.
+- New CLI products do not enter the install set until they satisfy the internal
+  productization checklist.
+- The current repository snapshot is a `v0.3.2` release candidate; `v0.3.1` is
+  the latest tagged release.
 
-For 0.3.x:
-
-- Patch releases should be source-compatible for stable modules.
-- Minor version increments may add APIs or promote experimental APIs.
-- Breaking changes require explicit release notes and migration examples.
+See [Architecture](architecture.md), [Build and compatibility](build-and-compatibility.md),
+and [Dependencies](dependencies.md) for boundaries outside API stability.

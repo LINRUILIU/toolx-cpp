@@ -1,11 +1,26 @@
-This release ships the current ToolX install set and uses GitHub Release
-archives produced from `cmake --install` output.
+# ToolX vX.Y.Z
 
-- Stable core modules remain the boundary described in `docs/stability.md`.
-- Shipped product CLIs keep additive JSON envelope compatibility within the
-  current minor line.
-- New CLI products must satisfy `docs/cli_productization.md` before entering the
-  public release matrix.
-- ToolX does not promise ABI compatibility across compiler, standard library,
-  or build configuration boundaries.
-- HTTPS behavior depends on the selected `httpx` TLS backend at build time.
+> Audience: ToolX users and package consumers
+> Status: Release-note template
+> Applies to: replace with the target version
+> Source of truth for: replace with the target release narrative
+
+## Highlights
+
+- Describe user-visible capabilities and correctness fixes.
+
+## Compatibility
+
+- State source, CLI, JSON, experimental and ABI impact explicitly.
+
+## Build and dependency impact
+
+- State target, option, toolchain, TLS, fetched/system dependency and package changes.
+
+## Migration
+
+- Provide exact actions, or state that none are required.
+
+## Known limitations
+
+- Record bounded behavior and intentionally deferred work.

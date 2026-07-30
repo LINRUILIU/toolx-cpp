@@ -57,6 +57,7 @@ struct HttpConfig
     std::size_t retry{0};
     std::uint64_t retry_delay_ms{0};
     bool follow_redirects{false};
+    bool use_proxy_from_environment{true};
     std::string log_file;
 };
 
@@ -384,6 +385,7 @@ cfgx::Node ManifestSchema()
         "retry": {"type": "integer"},
         "retry_delay_ms": {"type": "integer"},
         "follow_redirects": {"type": "boolean"},
+        "use_proxy_from_environment": {"type": "boolean"},
         "headers": {"type": "array", "items": {"type": "string"}}
       },
       "additionalProperties": false
@@ -519,6 +521,10 @@ cfgx::Result<HttpConfig> LoadManifestConfig(const std::string& path)
     {
         config.follow_redirects = follow->AsBool(false);
     }
+    if (const auto* use_proxy = loaded.value.Get("use_proxy_from_environment"); use_proxy != nullptr)
+    {
+        config.use_proxy_from_environment = use_proxy->AsBool(true);
+    }
 
     auto headers = ParseHeaders(ReadStringArrayField(loaded.value, "headers"));
     if (!headers.ok)
@@ -567,6 +573,10 @@ void ApplyCliOverrides(const argtool::ParseResult& parsed, HttpConfig* config)
     if (parsed.Has("follow-redirects"))
     {
         config->follow_redirects = parsed.GetBool("follow-redirects", false);
+    }
+    if (parsed.Has("no-proxy-from-env"))
+    {
+        config->use_proxy_from_environment = false;
     }
     if (parsed.Has("header"))
     {
@@ -723,6 +733,7 @@ httpx::ClientOptions BuildClientOptions(const HttpConfig& config)
     options.redirects.follow = config.follow_redirects;
     options.max_retry_attempts = config.retry;
     options.retry_policy.delay_ms = config.retry_delay_ms;
+    options.use_proxy_from_environment = config.use_proxy_from_environment;
     return options;
 }
 
@@ -765,6 +776,7 @@ cfgx::Node BuildData(const HttpConfig& config, const RunSummary& summary)
     return BuildDataObject({
         {"command", cfgx::Node(config.command)},
         {"manifest", cfgx::Node(config.manifest)},
+        {"proxy_from_environment", cfgx::Node(config.use_proxy_from_environment)},
         {"checked", cfgx::Node(static_cast<std::int64_t>(summary.checks.size()))},
         {"passed", cfgx::Node(static_cast<std::int64_t>(summary.passed))},
         {"failed", cfgx::Node(static_cast<std::int64_t>(summary.checks.size() - summary.passed))},
@@ -948,6 +960,7 @@ int main(int argc, const char* const argv[])
         .Done();
     parser.Option("log-file").String().ValueName("FILE").Description("Optional audit log file.").Done();
     parser.Flag("follow-redirects").Description("Follow HTTP redirects.").Done();
+    parser.Flag("no-proxy-from-env").Description("Disable HTTP(S)_PROXY and NO_PROXY environment handling.").Done();
     parser.Flag("json").Description("Emit machine-readable JSON envelope.").Done();
 
     const auto parsed = parser.Parse(argc, argv);

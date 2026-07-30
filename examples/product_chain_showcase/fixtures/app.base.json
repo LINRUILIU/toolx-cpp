@@ -1,0 +1,12 @@
+{
+  "svc": {
+    "name": "toolx-showcase",
+    "host": "127.0.0.1",
+    "port": 8080,
+    "features": ["config", "package"]
+  },
+  "release": {
+    "channel": "candidate",
+    "version": "0.3.2"
+  }
+}

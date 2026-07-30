@@ -292,6 +292,7 @@ TEST(FsxTests, CommittedJournalCannotBeRecoveredAndCanBeReused)
     first.AddAtomicWrite(target.string(), "first");
     ASSERT_TRUE(fsx::Run(first, options).ok);
     EXPECT_TRUE(std::filesystem::exists(journal));
+    EXPECT_NE(ReadText(journal).find("FSXJ3\n"), std::string::npos);
 
     const auto recovered = fsx::RecoverFromJournal(journal.string());
     EXPECT_FALSE(recovered.ok);
@@ -303,6 +304,84 @@ TEST(FsxTests, CommittedJournalCannotBeRecoveredAndCanBeReused)
     const auto rerun = fsx::Run(second, options);
     ASSERT_TRUE(rerun.ok) << rerun.error;
     EXPECT_EQ(ReadText(target), "second");
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, RecoverFromJournalMaintainsV1AndV2Compatibility)
+{
+    const auto root = TestRoot() / "recover_legacy_journals";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+
+    const auto v1_target = root / "v1-target.txt";
+    const auto v1_journal = root / "v1.journal";
+    WriteText(v1_target, "transient");
+    WriteText(v1_journal, "FSXJ1\nUNDO|REMOVE|" + v1_target.string() + "\n");
+
+    const auto v1_recovered = fsx::RecoverFromJournal(v1_journal.string());
+    ASSERT_TRUE(v1_recovered.ok) << v1_recovered.error;
+    EXPECT_FALSE(std::filesystem::exists(v1_target));
+    EXPECT_FALSE(std::filesystem::exists(v1_journal));
+
+    const auto v2_backup = root / "v2-backup.txt";
+    const auto v2_target = root / "v2-target.txt";
+    const auto v2_journal = root / "v2.journal";
+    WriteText(v2_backup, "original");
+    WriteText(v2_journal, "FSXJ2\nUNDO|MOVE|" + v2_backup.string() + "|" + v2_target.string() + "\n");
+
+    const auto v2_recovered = fsx::RecoverFromJournal(v2_journal.string());
+    ASSERT_TRUE(v2_recovered.ok) << v2_recovered.error;
+    EXPECT_FALSE(std::filesystem::exists(v2_backup));
+    EXPECT_EQ(ReadText(v2_target), "original");
+    EXPECT_FALSE(std::filesystem::exists(v2_journal));
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, RecoverFromJournalV3PreservesNewDestinationConflict)
+{
+    const auto root = TestRoot() / "recover_v3_conflict";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+
+    const auto backup = root / "old.tmp.1";
+    const auto target = root / "target.txt";
+    const auto journal = root / "run.journal";
+    WriteText(backup, "original");
+    WriteText(target, "appeared-during-recovery");
+    WriteText(journal, "FSXJ3\nUNDO|MOVE|" + backup.string() + "|" + target.string() + "\n");
+
+    const auto recovered = fsx::RecoverFromJournal(journal.string());
+    EXPECT_FALSE(recovered.ok);
+    EXPECT_NE(recovered.error.find("conflict"), std::string::npos);
+    EXPECT_EQ(ReadText(backup), "original");
+    EXPECT_EQ(ReadText(target), "appeared-during-recovery");
+    EXPECT_TRUE(std::filesystem::exists(journal));
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, RecoverFromJournalV3ManualMoveJournalIsCompatible)
+{
+    const auto root = TestRoot() / "recover_v3_manual";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+
+    const auto staging = root / "staging.tmp.1";
+    const auto target = root / "target.txt";
+    const auto journal = root / "run.journal";
+    WriteText(staging, "original");
+    WriteText(journal, "FSXJ3\nUNDO|MOVE|" + staging.string() + "|" + target.string() + "\n");
+
+    const auto recovered = fsx::RecoverFromJournal(journal.string());
+    ASSERT_TRUE(recovered.ok) << recovered.error;
+    EXPECT_FALSE(std::filesystem::exists(staging));
+    EXPECT_EQ(ReadText(target), "original");
+    EXPECT_FALSE(std::filesystem::exists(journal));
 
     std::filesystem::remove_all(root, ec);
 }

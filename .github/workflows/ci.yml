@@ -12,6 +12,41 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
+  httpx-openssl:
+    name: Ubuntu / OpenSSL httpx
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Documentation check
+        run: cmake -P cmake/docs_check.cmake
+
+      - name: Install OpenSSL test dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev
+
+      - name: Configure OpenSSL httpx tests
+        shell: bash
+        run: >
+          cmake -S . -B build-httpx-openssl -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DTOOLX_BUILD_TESTS=ON
+          -DTOOLX_BUILD_EXAMPLES=OFF
+          -DTOOLX_BUILD_TOOLS=OFF
+          -DTOOLX_BUILD_BENCHMARKS=OFF
+          -DHTTPX_ENABLE_OPENSSL=ON
+
+      - name: Build httpx tests
+        shell: bash
+        run: cmake --build build-httpx-openssl --target httpx_tests --parallel
+
+      - name: Run OpenSSL httpx tests
+        shell: bash
+        run: ctest --test-dir build-httpx-openssl --output-on-failure -R '^httpx_tests$'
+
   build-and-test:
     name: ${{ matrix.os }} / ${{ matrix.compiler }}
     runs-on: ${{ matrix.os }}
@@ -53,6 +88,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Documentation check
+        run: cmake -P cmake/docs_check.cmake
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -124,6 +162,16 @@ jobs:
       - name: Build
         shell: bash
         run: cmake --build "${BUILD_DIR}" --parallel
+
+      - name: Product-chain showcase (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash ./examples/product_chain_showcase/run.sh "${BUILD_DIR}" "${BUILD_DIR}/showcase"
+
+      - name: Product-chain showcase (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./examples/product_chain_showcase/run.ps1 -BinDir "$env:BUILD_DIR" -OutputDir "$env:BUILD_DIR/showcase"
 
       - name: Test
         shell: bash

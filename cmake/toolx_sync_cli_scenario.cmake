@@ -58,6 +58,7 @@ endfunction()
 
 run_toolx_sync(HELP 0 --help)
 assert_contains(HELP "${HELP_OUT}" "toolx-sync - validate and atomically publish composed config")
+assert_contains(HELP "${HELP_OUT}" "--no-proxy-from-env")
 
 run_toolx_sync(MISSING_BASE 2 --out "${out_json}" --json)
 toolx_assert_json_envelope(MISSING_BASE "${MISSING_BASE_OUT}" "toolx.sync.result" false 2)
@@ -86,6 +87,7 @@ assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"out\": \"${out_json}\"")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"overlays\"")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"append_arrays\": true")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"dry_run\": false")
+assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"proxy_from_environment\": true")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"planned_steps\"")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"source_trace\"")
 assert_contains(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "\"schema_issues\": []")
@@ -93,6 +95,7 @@ toolx_assert_json_envelope(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "toolx.sync.result
 toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "${base_json}" data base)
 toolx_assert_json_path(PUBLISH_JSON "${PUBLISH_JSON_OUT}" data overlays)
 toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "" data remote_url)
+toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" true data proxy_from_environment)
 toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "${out_json}" data out)
 toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "${snapshot_json}" data snapshot)
 toolx_assert_json_value(PUBLISH_JSON "${PUBLISH_JSON_OUT}" "${journal_path}" data journal)
@@ -159,6 +162,20 @@ if(NOT "${dry_run_snapshot_before}" STREQUAL "${dry_run_snapshot_after}")
 endif()
 if(NOT "${dry_run_journal_before}" STREQUAL "${dry_run_journal_after}")
     message(FATAL_ERROR "toolx-sync dry-run modified ${dry_run_journal_path}")
+endif()
+
+set(no_proxy_out_json "${test_root}/no-proxy-resolved.json")
+run_toolx_sync(NO_PROXY_DRY_RUN 0
+    --base "${base_json}"
+    --out "${no_proxy_out_json}"
+    --no-proxy-from-env
+    --dry-run
+    --json)
+toolx_assert_json_envelope(NO_PROXY_DRY_RUN "${NO_PROXY_DRY_RUN_OUT}" "toolx.sync.result" true 0)
+toolx_assert_json_value(NO_PROXY_DRY_RUN "${NO_PROXY_DRY_RUN_OUT}" false data proxy_from_environment)
+toolx_assert_json_value(NO_PROXY_DRY_RUN "${NO_PROXY_DRY_RUN_OUT}" true data dry_run)
+if(EXISTS "${no_proxy_out_json}")
+    message(FATAL_ERROR "toolx-sync --no-proxy-from-env without --remote-url wrote ${no_proxy_out_json}")
 endif()
 
 run_toolx_sync(VALIDATION_FAIL 4

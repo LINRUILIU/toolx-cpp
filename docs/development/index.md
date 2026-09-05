@@ -37,6 +37,8 @@
 
 ## 复盘
 
+- [v0.3.2 安全修复与验证记录](audits/security-v032.md)
+
 - [ToolX 0.3.0 产品化复盘](retrospectives/productization-retro.md)
 
 ## 语言与事实源规则

@@ -86,3 +86,17 @@ behavior remains unchanged when callers leave it enabled.
 - [Remote cfgx bridge](../../examples/cfgx_httpx_remote_example.cpp)
 - [Behavior and loopback tests](../../tests/httpx_tests.cpp)
 - [Dependencies and TLS](../dependencies.md)
+
+## Outgoing HTTP validation
+
+Before each transport call (including redirects), raw URL whitespace/control
+characters, invalid header names and header value controls are rejected. Horizontal
+tab remains allowed in header values. Multipart names, filenames and content types
+reject all controls. Binary bodies and multipart data remain byte-preserving.
+
+Request `Transfer-Encoding` is unsupported. A supplied `Content-Length` must be a
+single decimal value matching the body size; duplicate lengths are rejected. For
+multipart requests the client owns `Content-Length` and `Content-Type` (including
+the boundary), so caller overrides are rejected. Invalid metadata returns
+`InvalidArgument`; invalid URLs return `InvalidUrl`. Validation also applies to
+custom transports. Multipart boundaries are checked against part data.

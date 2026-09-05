@@ -74,3 +74,15 @@ toolx-pack archive --src dist/demo --archive dist/demo.tar --json
 
 Contract coverage lives in
 [`cmake/toolx_pack_cli_contracts.cmake`](../../cmake/toolx_pack_cli_contracts.cmake).
+
+## Safe staging boundaries
+
+Selected source entries and destination paths cannot traverse symbolic links or
+Windows junctions/reparse points below the configured roots, including explicit
+manifest includes. `--remove-extra` reports directory inspection/enumeration
+failures; it does not silently accept an incomplete plan.
+
+Names containing `.old.tmp.`, `.new.tmp.` or `.removed.tmp.` are ordinary user
+artifacts. Cleanup is limited to exact temporary paths owned by the fsx transaction.
+Keep source/stage trees under exclusive control during staging; filesystem path
+checks do not guarantee protection against concurrent directory replacement.

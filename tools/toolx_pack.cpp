@@ -1,3 +1,4 @@
+#include "../src/detail/path_safety.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -580,6 +581,10 @@ cfgx::Result<std::vector<SelectedFile>> SelectFiles(const PackConfig& config)
         {
             return cfgx::Status{true, ""};
         }
+        std::string boundary_error;
+        if (!toolx_detail::SafeChildPath(fs::path(config.source), fs::path(relative_path), &boundary_error) ||
+            !toolx_detail::SafeChildPath(fs::path(config.stage), fs::path(relative_path), &boundary_error))
+            return cfgx::Status{false, boundary_error};
         const fs::path source_file = JoinRelative(config.source, relative_path);
         std::error_code size_ec;
         const auto size = fs::file_size(source_file, size_ec);
@@ -618,6 +623,9 @@ cfgx::Result<std::vector<SelectedFile>> SelectFiles(const PackConfig& config)
     {
         for (const auto& include : config.includes)
         {
+            std::string boundary_error;
+            if (!toolx_detail::SafeChildPath(fs::path(config.source), fs::path(include), &boundary_error))
+                return cfgx::Result<std::vector<SelectedFile>>{false, {}, boundary_error};
             const fs::path source_path = JoinRelative(config.source, include);
             if (!fs::exists(source_path, ec) || ec)
             {
@@ -679,14 +687,15 @@ void AddTargetDirectories(const std::string& relative_path, std::set<std::string
     }
 }
 
-void AddRemoveExtraSteps(const PackConfig& config, const std::set<std::string>& target_files, fsx::BatchPlan* batch,
-                         std::vector<PlannedStep>* planned_steps)
+cfgx::Status AddRemoveExtraSteps(const PackConfig& config, const std::set<std::string>& target_files,
+                                 fsx::BatchPlan* batch, std::vector<PlannedStep>* planned_steps)
 {
     std::error_code ec;
-    if (!fs::exists(config.stage, ec) || ec)
-    {
-        return;
-    }
+    const bool exists = fs::exists(config.stage, ec);
+    if (ec)
+        return {false, "cannot inspect stage: " + ec.message()};
+    if (!exists)
+        return {true, ""};
 
     fsx::WalkOptions options;
     options.recursive = true;
@@ -696,7 +705,7 @@ void AddRemoveExtraSteps(const PackConfig& config, const std::set<std::string>& 
     const auto walked = fsx::WalkDirectory(config.stage, options);
     if (!walked.ok)
     {
-        return;
+        return {false, walked.error};
     }
 
     std::set<std::string> target_dirs;
@@ -740,6 +749,7 @@ void AddRemoveExtraSteps(const PackConfig& config, const std::set<std::string>& 
         batch->AddRemovePath(path);
         planned_steps->push_back(PlannedStep{"remove_path", "", path});
     }
+    return {true, ""};
 }
 
 cfgx::Result<PackPlan> BuildStagePlan(const PackConfig& config)
@@ -763,31 +773,15 @@ cfgx::Result<PackPlan> BuildStagePlan(const PackConfig& config)
 
     if (config.remove_extra)
     {
-        AddRemoveExtraSteps(config, target_files, &plan.batch, &plan.planned_steps);
+        const auto removed = AddRemoveExtraSteps(config, target_files, &plan.batch, &plan.planned_steps);
+        if (!removed.ok)
+            return {false, {}, removed.error};
     }
     if (!config.archive.empty())
     {
         plan.planned_steps.push_back(PlannedStep{"create_archive", config.stage, config.archive});
     }
     return cfgx::Result<PackPlan>{true, std::move(plan), ""};
-}
-
-void CleanupFsxTempBackups(const std::string& root)
-{
-    std::error_code ec;
-    if (!fs::exists(root, ec) || ec)
-    {
-        return;
-    }
-    for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec))
-    {
-        const std::string name = it->path().filename().string();
-        if (name.find(".removed.tmp.") != std::string::npos || name.find(".old.tmp.") != std::string::npos ||
-            name.find(".new.tmp.") != std::string::npos)
-        {
-            fs::remove_all(it->path(), ec);
-        }
-    }
 }
 
 cfgx::Node BuildData(const PackConfig& config, const PackPlan& plan, std::size_t completed_steps,
@@ -879,8 +873,6 @@ int RunStage(const PackConfig& config, bool json_mode)
     {
         return ExitError(json_mode, kExitRuntimeError, "failed to stage files: " + run.error);
     }
-
-    CleanupFsxTempBackups(config.stage);
 
     std::size_t completed_steps = run.completed_steps;
     if (!config.archive.empty())

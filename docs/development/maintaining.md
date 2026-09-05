@@ -144,3 +144,39 @@ cmake -S . -B build-mbedtls -DHTTPX_ENABLE_MBEDTLS=ON \
 - Linux GCC/Clang、Windows MSVC、macOS Clang 与 OpenSSL 专项 CI 通过。
 - release notes 明确稳定/实验边界、依赖影响、迁移与已知限制。
 - 不在候选加固阶段扩张产品/API 范围。
+
+## Security and release gates
+
+The normal CTest suite includes security_regression_tests, toolx_pack_security_contracts
+and release_preflight_tests. Linux must execute symbolic-link regressions; Windows
+also checks junctions without requiring symbolic-link privileges. HTTP loopback
+startup failures and clang-tidy findings fail the gate.
+
+TOOLX_ENABLE_SANITIZERS enables ASan/UBSan; TOOLX_BUILD_FUZZERS requires POSIX Clang.
+CI runs the full sanitizer suite and bounded cfgx/httpx/fsx fuzz smoke tests seeded
+from tests/fuzz/corpus. Mutated corpora belong in the build directory. Longer fuzz
+campaigns are separate from the bounded PR gate.
+
+Release builds run cmake/release_preflight.cmake with TOOLX_RELEASE_TAG (or the
+GITHUB_REF_NAME environment variable), checking CMake version, note heading/metadata
+and changelog. Missing notes fail; publication never substitutes the template.
+Generated source archives are verified with cmake/source_archive_check.cmake and
+TOOLX_SOURCE_ARCHIVE. Local references, dependency archives, build/stage/temp
+directories and root logs are excluded.
+
+The GCC CI coverage gate requires 70% lines and 40% branches. The local GCC 15
+security-hardening baseline measured 72.3% lines and 43.6% branches across src/include;
+the margin accounts for toolchain differences. Revisit thresholds from measured
+reports instead of lowering them to hide regressions.
+
+All enabled clang-tidy findings are errors. The easily-swappable-parameters design
+heuristic is excluded because the stable 0.3.x API deliberately accepts adjacent
+source/destination and min/max parameters. Narrow, commented suppressions preserve
+public by-value signatures and document intentional exception handling, bitmask
+enums and std::function ownership modeling. Other findings are fixed rather than
+suppressed globally.
+
+Compile-time clang-tidy gates production libraries and installed CLIs. The explicit
+lint-check target additionally checks its listed contracts and showcase server.
+Other tests/examples are built and exercised normally and under sanitizers; their
+GTest assertion macros are not treated as production static-analysis evidence.

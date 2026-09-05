@@ -1407,7 +1407,7 @@ TEST(HttpxClientTests, DefaultTransportCanRoundTripLocalHttp)
         StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
     if (!server.has_value())
     {
-        GTEST_SKIP() << "failed to start local loopback server";
+        FAIL() << "failed to start local loopback server";
     }
 
     httpx::ClientOptions options;
@@ -1430,7 +1430,7 @@ TEST(HttpxClientTests, DefaultTransportReadTimeoutWorks)
         StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 150);
     if (!server.has_value())
     {
-        GTEST_SKIP() << "failed to start local loopback server";
+        FAIL() << "failed to start local loopback server";
     }
 
     httpx::ClientOptions options;
@@ -1455,7 +1455,7 @@ TEST(HttpxClientTests, DefaultTransportDecodesChunkedResponse)
                                   "0\r\nX-Debug: ok\r\n\r\n");
     if (!server.has_value())
     {
-        GTEST_SKIP() << "failed to start local loopback server";
+        FAIL() << "failed to start local loopback server";
     }
 
     std::vector<std::string> streamed;
@@ -1493,7 +1493,7 @@ TEST(HttpxClientTests, ChunkedCallbackAbortReturnsInternalError)
                                   "0\r\n\r\n");
     if (!server.has_value())
     {
-        GTEST_SKIP() << "failed to start local loopback server";
+        FAIL() << "failed to start local loopback server";
     }
 
     httpx::ClientOptions options;
@@ -1522,7 +1522,7 @@ TEST(HttpxClientTests, MultipartEncodingAndUploadProgressWork)
             "HTTP/1.1 201 Created\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 0, captured);
         if (!server.has_value())
         {
-            GTEST_SKIP() << "failed to start local loopback server";
+            FAIL() << "failed to start local loopback server";
         }
 
         std::vector<std::pair<std::uint64_t, std::uint64_t>> progress;
@@ -1568,7 +1568,7 @@ TEST(HttpxClientTests, RedirectFollowStripsSensitiveHeadersOnCrossOrigin)
                                                   0, target_capture);
     if (!target.has_value())
     {
-        GTEST_SKIP() << "failed to start target server";
+        FAIL() << "failed to start target server";
     }
 
     const auto redirect =
@@ -1577,7 +1577,7 @@ TEST(HttpxClientTests, RedirectFollowStripsSensitiveHeadersOnCrossOrigin)
                                   0, redirected_capture);
     if (!redirect.has_value())
     {
-        GTEST_SKIP() << "failed to start redirect server";
+        FAIL() << "failed to start redirect server";
     }
 
     httpx::ClientOptions options;
@@ -1611,7 +1611,7 @@ TEST(HttpxClientTests, Redirect303ConvertsPostToGetAndDropsBodyHeaders)
                                                   0, target_capture);
     if (!target.has_value())
     {
-        GTEST_SKIP() << "failed to start target server";
+        FAIL() << "failed to start target server";
     }
 
     const auto redirect = StartSingleResponseServer(
@@ -1620,7 +1620,7 @@ TEST(HttpxClientTests, Redirect303ConvertsPostToGetAndDropsBodyHeaders)
         0, redirected_capture);
     if (!redirect.has_value())
     {
-        GTEST_SKIP() << "failed to start redirect server";
+        FAIL() << "failed to start redirect server";
     }
 
     httpx::ClientOptions options;
@@ -1659,7 +1659,7 @@ TEST(HttpxClientTests, CookieJarSendsStoredCookieOnNextRequest)
         captured);
     if (!server.has_value())
     {
-        GTEST_SKIP() << "failed to start scripted cookie server";
+        FAIL() << "failed to start scripted cookie server";
     }
 
     httpx::ClientOptions options;
@@ -1690,7 +1690,7 @@ TEST(HttpxClientTests, CookieJarRespectsCookiePathScope)
         captured);
     if (!server.has_value())
     {
-        GTEST_SKIP() << "failed to start scripted cookie server";
+        FAIL() << "failed to start scripted cookie server";
     }
 
     httpx::ClientOptions options;
@@ -1714,7 +1714,7 @@ TEST(HttpxClientTests, ConnectionPoolReusesKeepAliveSocket)
     const auto server = StartKeepAliveTwoRequestServer(captured, accepts);
     if (!server.has_value())
     {
-        GTEST_SKIP() << "failed to start keep-alive server";
+        FAIL() << "failed to start keep-alive server";
     }
 
     httpx::ClientOptions options;
@@ -1742,7 +1742,7 @@ TEST(HttpxClientTests, ProxyUsesAbsoluteFormTarget)
         StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 0, captured);
     if (!proxy.has_value())
     {
-        GTEST_SKIP() << "failed to start local proxy server";
+        FAIL() << "failed to start local proxy server";
     }
 
     httpx::ClientOptions options;
@@ -1768,7 +1768,7 @@ TEST(HttpxClientTests, ProxyInjectsBasicAuthorizationHeader)
         StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 0, captured);
     if (!proxy.has_value())
     {
-        GTEST_SKIP() << "failed to start local proxy server";
+        FAIL() << "failed to start local proxy server";
     }
 
     httpx::ClientOptions options;
@@ -1794,7 +1794,7 @@ TEST(HttpxClientTests, ProxyCanBeLoadedFromEnvironment)
         StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 0, captured);
     if (!proxy.has_value())
     {
-        GTEST_SKIP() << "failed to start local proxy server";
+        FAIL() << "failed to start local proxy server";
     }
 
     ScopedEnvVar http_proxy("HTTP_PROXY", "http://127.0.0.1:" + std::to_string(proxy->port));
@@ -1938,7 +1938,7 @@ TEST(HttpxClientTests, Socks5NoAuthProxyUsesOriginFormTarget)
         StartSocks5NoAuthProxy("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", captured);
     if (!proxy.has_value())
     {
-        GTEST_SKIP() << "failed to start local socks5 proxy server";
+        FAIL() << "failed to start local socks5 proxy server";
     }
 
     httpx::ClientOptions options;
@@ -1983,7 +1983,7 @@ TEST(HttpxClientTests, Socks5ProxyCanBeLoadedFromEnvironment)
         StartSocks5NoAuthProxy("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", captured);
     if (!proxy.has_value())
     {
-        GTEST_SKIP() << "failed to start local socks5 proxy server";
+        FAIL() << "failed to start local socks5 proxy server";
     }
 
     ScopedEnvVar http_proxy("HTTP_PROXY", "socks5://127.0.0.1:" + std::to_string(proxy->port));
@@ -2023,7 +2023,7 @@ TEST(HttpxClientTests, RedirectLoopIsDetected)
         "HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     if (!server.has_value())
     {
-        GTEST_SKIP() << "failed to start local loopback server";
+        FAIL() << "failed to start local loopback server";
     }
 
     httpx::ClientOptions options;
@@ -2045,7 +2045,7 @@ TEST(HttpxClientTests, MalformedChunkedResponseReturnsProtocolError)
                                   "0\r\n\r\n");
     if (!server.has_value())
     {
-        GTEST_SKIP() << "failed to start local loopback server";
+        FAIL() << "failed to start local loopback server";
     }
 
     httpx::ClientOptions options;
@@ -2089,7 +2089,7 @@ TEST(HttpxClientTests, SoakSequentialRequestsRemainStable)
     const auto server = StartScriptedServer(std::move(scripted), captured);
     if (!server.has_value())
     {
-        GTEST_SKIP() << "failed to start scripted server";
+        FAIL() << "failed to start scripted server";
     }
 
     httpx::ClientOptions options;

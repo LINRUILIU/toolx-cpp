@@ -99,6 +99,7 @@ set(TOOLX_INTERNAL_DOCUMENTS
     docs/development/audits/api_inventory.md
     docs/development/audits/api_product_gap_audit.md
     docs/development/audits/api_test_matrix.md
+    docs/development/audits/security-v032.md
     docs/development/design/toolx-http-design.md
     docs/development/design/toolx-pack-design.md
     docs/development/design/toolx-log-design.md

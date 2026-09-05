@@ -7,7 +7,7 @@
 
 ## Requirements
 
-- CMake 3.20 or newer
+- CMake 3.20 or newer for explicit `-S`/`-B` configuration; the presets require 3.21 or newer
 - A compiler and standard library with C++20 support
 - Git for normal source workflows
 - Network access on the first test-enabled configure unless GoogleTest is

@@ -64,6 +64,23 @@ toolx_bool_option(TOOLX_BUILD_BENCHMARKS COPILOT_BUILD_BENCHMARKS "Build benchma
 toolx_bool_option(TOOLX_ENABLE_CLANG_TIDY COPILOT_ENABLE_CLANG_TIDY "Enable clang-tidy during compilation" OFF)
 toolx_bool_option(TOOLX_ENABLE_COVERAGE COPILOT_ENABLE_COVERAGE "Enable compiler coverage instrumentation" OFF)
 option(TOOLX_BUILD_TOOLS "Build installable ToolX command-line tools" ON)
+option(TOOLX_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(TOOLX_BUILD_FUZZERS "Build Clang libFuzzer targets" OFF)
+set(TOOLX_COVERAGE_MIN_LINE "0" CACHE STRING "Minimum line coverage percentage; CI pins its measured baseline")
+set(TOOLX_COVERAGE_MIN_BRANCH "0" CACHE STRING "Minimum branch coverage percentage")
+if(TOOLX_BUILD_FUZZERS AND (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR WIN32))
+    message(FATAL_ERROR "Fuzz targets require Clang on a POSIX platform")
+endif()
+if(TOOLX_ENABLE_SANITIZERS OR TOOLX_BUILD_FUZZERS)
+    if(MSVC OR WIN32 OR NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR "ASan/UBSan configuration requires GCC/Clang on POSIX")
+    endif()
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+if(TOOLX_BUILD_FUZZERS)
+    add_compile_options(-fsanitize=fuzzer-no-link)
+endif()
 option(HTTPX_ENABLE_OPENSSL "Enable OpenSSL backend for httpx TLS" OFF)
 option(HTTPX_ENABLE_MBEDTLS "Enable mbedTLS backend for httpx TLS" OFF)
 
@@ -135,6 +152,7 @@ set(TOOLX_LINT_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_log.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/toolx_inspect.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/resultx_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/security_regression_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_integration_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_http_cli_contracts.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/examples/product_chain_showcase/server.cpp"
@@ -323,6 +341,13 @@ if(TOOLX_BUILD_TOOLS)
     target_link_libraries(toolx_inspect PRIVATE argtool cfgx logsys schemax tuix)
 endif()
 
+# Compile-time lint is a production library/CLI gate. Selected contracts and the
+# showcase server are also checked explicitly by lint-check above. GTest macros
+# and teaching examples are verified through builds, tests and sanitizers.
+if(TOOLX_ENABLE_CLANG_TIDY)
+    set(CMAKE_CXX_CLANG_TIDY "")
+endif()
+
 if(TOOLX_BUILD_EXAMPLES)
     function(toolx_add_example target)
         add_executable(${target} examples/${target}.cpp)
@@ -466,6 +491,14 @@ if(TOOLX_BUILD_TESTS)
     target_link_libraries(fsx_tests PRIVATE fsx GTest::gtest_main)
     add_test(NAME fsx_tests COMMAND fsx_tests)
 
+    add_executable(security_regression_tests tests/security_regression_tests.cpp)
+    target_link_libraries(security_regression_tests PRIVATE fsx httpx GTest::gtest_main)
+    add_test(NAME security_regression_tests COMMAND security_regression_tests)
+    add_test(NAME release_preflight_tests
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/release_preflight_tests.cmake")
+    add_test(NAME source_archive_check_tests
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/source_archive_check_tests.cmake")
+
     add_library(fsx_failpoint_test_support STATIC src/fsx.cpp)
     target_include_directories(fsx_failpoint_test_support PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
     target_compile_definitions(fsx_failpoint_test_support PRIVATE FSX_ENABLE_TEST_FAILPOINTS=1)
@@ -555,6 +588,9 @@ if(TOOLX_BUILD_TESTS)
     endif()
 
     if(TARGET toolx_pack)
+        add_test(NAME toolx_pack_security_contracts
+            COMMAND "${CMAKE_COMMAND}" -DTOOLX_PACK_EXE=$<TARGET_FILE:toolx_pack>
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolx_pack_security_contracts.cmake")
         add_test(
             NAME toolx_pack_cli_contracts
             COMMAND "${CMAKE_COMMAND}"
@@ -621,6 +657,7 @@ if(TOOLX_BUILD_TESTS)
             asyncx_tests
             cfgx_tests
             fsx_tests
+            security_regression_tests
             hashx_tests
             httpx_tests
             logsys_tests
@@ -661,6 +698,8 @@ if(TOOLX_BUILD_TESTS)
         add_custom_target(coverage
             COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
             COMMAND "${GCOVR_BIN}"
+                --fail-under-line "${TOOLX_COVERAGE_MIN_LINE}"
+                --fail-under-branch "${TOOLX_COVERAGE_MIN_BRANCH}"
                 --root "${CMAKE_CURRENT_SOURCE_DIR}"
                 --filter "${CMAKE_CURRENT_SOURCE_DIR}/src"
                 --filter "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -770,6 +809,8 @@ set(CPACK_PACKAGE_FILE_NAME "ToolX-v${PROJECT_VERSION}-${TOOLX_PACKAGE_PLATFORM}
 set(CPACK_SOURCE_GENERATOR "TGZ")
 set(CPACK_SOURCE_PACKAGE_FILE_NAME "ToolX-v${PROJECT_VERSION}-source")
 set(CPACK_SOURCE_IGNORE_FILES
+    "[\\\\/](reference|stage|[.]third_party)[\\\\/]"
+    "${CMAKE_CURRENT_SOURCE_DIR}/[^/]*[.]log$"
     "[\\\\/][.]git[\\\\/]"
     "[\\\\/][.]vscode[\\\\/]"
     "[\\\\/]temp[\\\\/]"
@@ -778,3 +819,11 @@ set(CPACK_SOURCE_IGNORE_FILES
 )
 
 include(CPack)
+
+if(TOOLX_BUILD_FUZZERS)
+    foreach(module IN ITEMS cfgx httpx fsx)
+        add_executable(${module}_fuzz tests/fuzz/${module}_fuzz.cpp)
+        target_link_libraries(${module}_fuzz PRIVATE ${module})
+        target_link_options(${module}_fuzz PRIVATE -fsanitize=fuzzer)
+    endforeach()
+endif()

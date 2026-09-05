@@ -138,7 +138,7 @@ bool CancellationSource::IsCancellationRequested() const noexcept
     return state_->load(std::memory_order_relaxed);
 }
 
-ThreadPool::ThreadPool(PoolOptions options) : options_(std::move(options))
+ThreadPool::ThreadPool(PoolOptions options) : options_(options)
 {
     options_.worker_count = ResolveWorkerCount(options_.worker_count);
     if (options_.queue_capacity == 0)
@@ -328,7 +328,7 @@ Status ThreadPool::Join()
 
 Status ThreadPool::StopAndJoin(StopMode mode)
 {
-    const Status stop_status = Stop(mode);
+    Status stop_status = Stop(mode);
     if (!stop_status.ok)
     {
         return stop_status;
@@ -484,6 +484,8 @@ Status ThreadPool::PostWithPriorityUntil(std::chrono::steady_clock::time_point d
     return EnqueueTask(std::move(task), deadline, true, priority);
 }
 
+// Preserve the published by-value signature in 0.3.x.
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 Status ThreadPool::PostWithOptions(TaskOptions options, std::function<void(CancellationToken)> task)
 {
     if (!task)
@@ -506,7 +508,7 @@ Status ThreadPool::PostWithOptions(TaskOptions options, std::function<void(Cance
 
     if (options.deadline.has_value())
     {
-        return EnqueueTask(std::move(wrapped), *options.deadline, true, options.priority);
+        return EnqueueTask(std::move(wrapped), options.deadline, true, options.priority);
     }
     return EnqueueTask(std::move(wrapped), std::nullopt, ShouldWaitOnBackpressure(), options.priority);
 }
@@ -810,7 +812,10 @@ void ThreadPool::SchedulerLoop()
             const auto now = sysx::time::SteadyNow();
             if (it->due > now)
             {
-                cv_scheduler_.wait_until(lock, it->due);
+                // wait_until releases mu_; cancellation or insertion may erase
+                // the entry or reallocate scheduled_tasks_ while we sleep.
+                const auto due = it->due;
+                cv_scheduler_.wait_until(lock, due);
                 continue;
             }
 
@@ -919,7 +924,7 @@ void ThreadPool::WorkerLoop()
         {
             task();
         }
-        catch (...)
+        catch (...) // NOLINT(bugprone-empty-catch): Post tasks cannot terminate the worker.
         {
             // Task exceptions are intentionally swallowed to keep workers alive.
         }
@@ -942,6 +947,9 @@ void ThreadPool::WorkerLoop()
 
 TaskGroup::TaskGroup(ThreadPool& pool) : pool_(&pool) {}
 
+// The queued std::function owns the captured task; the analyzer cannot model
+// its type-erased manager. ASan/LSan cover success, rejection and cancellation.
+// NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
 Status TaskGroup::Submit(TaskOptions options, std::function<void(CancellationToken)> task)
 {
     if (pool_ == nullptr)
@@ -969,7 +977,7 @@ Status TaskGroup::Submit(TaskOptions options, std::function<void(CancellationTok
     auto shared_promise = std::make_shared<std::promise<void>>(std::move(promise));
 
     auto wrapped =
-        [this, shared_promise, group_token, user_token, task = std::move(task)](CancellationToken token) mutable
+        [this, shared_promise, group_token, user_token, task = std::move(task)](const CancellationToken& token) mutable
     {
         const bool cancelled = group_token.IsCancellationRequested() || user_token.IsCancellationRequested() ||
                                token.IsCancellationRequested();
@@ -1014,6 +1022,8 @@ Status TaskGroup::Submit(TaskOptions options, std::function<void(CancellationTok
     return OkStatus();
 }
 
+// NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
+
 void TaskGroup::Cancel() noexcept
 {
     source_.Cancel();
@@ -1033,7 +1043,7 @@ Status TaskGroup::Wait()
         {
             future.get();
         }
-        catch (...)
+        catch (...) // NOLINT(bugprone-empty-catch): failure is recorded by the task wrapper.
         {
         }
     }
@@ -1067,7 +1077,7 @@ Status TaskGroup::WaitUntil(std::chrono::steady_clock::time_point deadline)
         {
             future.get();
         }
-        catch (...)
+        catch (...) // NOLINT(bugprone-empty-catch): failure is recorded by the task wrapper.
         {
         }
     }

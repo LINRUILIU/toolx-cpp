@@ -1,4 +1,5 @@
 #include "fsx.h"
+#include "detail/path_safety.h"
 
 #include "utils.h"
 
@@ -49,7 +50,7 @@ using Path = std::filesystem::path;
 
 struct UndoAction
 {
-    enum class Kind
+    enum class Kind : std::uint8_t
     {
         RemovePath,
         MovePath
@@ -884,6 +885,9 @@ bool copy_tree_tracked(const Path& src, const Path& dst, const RunOptions& optio
     bool any_skipped = false;
     for (const auto& entry : walked.entries)
     {
+        if (!toolx_detail::SafeChildPath(src, Path(entry.path), error) ||
+            !toolx_detail::SafeChildPath(dst, Path(entry.path), error))
+            return false;
         const Path child_src = src / Path(entry.path);
         const Path child_dst = dst / Path(entry.path);
         bool child_skipped = false;
@@ -1687,77 +1691,59 @@ WalkResult WalkDirectory(std::string_view root, const WalkOptions& options)
         return out;
     }
 
-    auto push_entry = [&](const Path& p, bool is_dir)
+    auto push_entry = [&](const Path& p) -> bool
     {
+        const auto relative = p.lexically_relative(root_path);
+        if (!toolx_detail::SafeChildPath(root_path, relative, &out.error))
+            return false;
+        const auto status = std::filesystem::symlink_status(p, ec);
+        if (ec)
+        {
+            out.error = utils::err::join_context("fsx", "walk", ec.message());
+            return false;
+        }
+        const bool is_dir = std::filesystem::is_directory(status);
+        if (!is_dir && !std::filesystem::is_regular_file(status))
+        {
+            out.error = utils::err::join_context("fsx", "walk", "unsupported file type");
+            return false;
+        }
+        if ((is_dir && !options.include_directories) || (!is_dir && !options.include_files))
+            return true;
         WalkEntry entry;
         entry.is_directory = is_dir;
-        if (options.relative_path)
-        {
-            entry.path = std::filesystem::relative(p, root_path, ec).generic_string();
-            if (ec)
-            {
-                entry.path = p.generic_string();
-                ec.clear();
-            }
-        }
-        else
-        {
-            entry.path = p.generic_string();
-        }
-
+        entry.path = options.relative_path ? relative.generic_string() : p.generic_string();
         if (!is_dir)
         {
             entry.size = std::filesystem::file_size(p, ec);
             if (ec)
             {
-                entry.size = 0;
-                ec.clear();
+                out.error = utils::err::join_context("fsx", "walk", ec.message());
+                return false;
             }
         }
         out.entries.push_back(std::move(entry));
+        return true;
     };
 
     if (options.recursive)
     {
         for (auto it = std::filesystem::recursive_directory_iterator(root_path, ec);
-             !ec && it != std::filesystem::recursive_directory_iterator(); ++it)
-        {
-            const bool is_dir = it->is_directory(ec);
-            if (ec)
-            {
-                out.error = utils::err::join_context("fsx", "walk", ec.message());
+             !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec))
+            if (!push_entry(it->path()))
                 return out;
-            }
-            if (is_dir && options.include_directories)
-            {
-                push_entry(it->path(), true);
-            }
-            if (!is_dir && options.include_files)
-            {
-                push_entry(it->path(), false);
-            }
-        }
     }
     else
     {
         for (auto it = std::filesystem::directory_iterator(root_path, ec);
-             !ec && it != std::filesystem::directory_iterator(); ++it)
-        {
-            const bool is_dir = it->is_directory(ec);
-            if (ec)
-            {
-                out.error = utils::err::join_context("fsx", "walk", ec.message());
+             !ec && it != std::filesystem::directory_iterator(); it.increment(ec))
+            if (!push_entry(it->path()))
                 return out;
-            }
-            if (is_dir && options.include_directories)
-            {
-                push_entry(it->path(), true);
-            }
-            if (!is_dir && options.include_files)
-            {
-                push_entry(it->path(), false);
-            }
-        }
+    }
+    if (ec)
+    {
+        out.error = utils::err::join_context("fsx", "walk", ec.message());
+        return out;
     }
 
     std::sort(out.entries.begin(), out.entries.end(),
@@ -1805,9 +1791,17 @@ DirectoryDiff BuildDirectoryDiff(std::string_view source_root, std::string_view 
         }
     }
 
+    if (ec)
+    {
+        diff.error = utils::err::join_context("fsx", "diff", ec.message());
+        return diff;
+    }
     const Path src_root{std::string(source_root)};
     for (const auto& [relative, source_entry] : source_entries)
     {
+        if (!toolx_detail::SafeChildPath(src_root, Path(relative), &diff.error) ||
+            !toolx_detail::SafeChildPath(dst_root, Path(relative), &diff.error))
+            return diff;
         const auto dst_it = destination_entries.find(relative);
         DirectoryDiffKind kind = DirectoryDiffKind::Added;
         if (dst_it != destination_entries.end())
@@ -1830,6 +1824,8 @@ DirectoryDiff BuildDirectoryDiff(std::string_view source_root, std::string_view 
         {
             if (source_entries.find(relative) == source_entries.end())
             {
+                if (!toolx_detail::SafeChildPath(dst_root, Path(relative), &diff.error))
+                    return diff;
                 (void)destination_entry;
                 diff.entries.push_back(
                     {DirectoryDiffKind::Removed, relative, "", (dst_root / Path(relative)).string()});
@@ -1903,9 +1899,9 @@ void write_tar_octal(char* field, std::size_t width, std::uintmax_t value)
 
 bool write_tar_header(std::ostream& out, std::string name, bool directory, std::uintmax_t size, std::string* error)
 {
-    if (name.empty())
+    if (!toolx_detail::SafeRelativePath(Path(name)))
     {
-        *error = utils::err::join_context("fsx", "tar", "empty archive entry name");
+        *error = utils::err::join_context("fsx", "tar", "unsafe archive entry name");
         return false;
     }
     if (name.size() > 100)
@@ -2064,10 +2060,12 @@ Status CreateArchive(std::string_view source_root, std::string_view archive_path
         }
         for (const auto& entry : walked.entries)
         {
+            if (!toolx_detail::SafeChildPath(root, Path(entry.path), &status.error))
+                return status;
             std::string name = entry.path;
             if (options.include_root_directory)
             {
-                name = root.filename().generic_string() + "/" + name;
+                name = (root.filename().generic_string() + "/").append(name);
             }
             if (!write_tar_header(out, name, entry.is_directory, entry.size, &status.error))
             {

@@ -118,7 +118,7 @@ std::string FormatTime(const std::chrono::system_clock::time_point tp)
 }
 
 // 对 JSON 字符串进行最小逃逸：处理引号、反斜线、换行等。
-std::string EscapeJson(std::string s)
+std::string EscapeJson(const std::string& s)
 {
     std::string out;
     out.reserve(s.size());
@@ -1879,7 +1879,7 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
                     {
                         return false;
                     }
-                    profile.module = *parsed;
+                    profile.module = parsed;
                 }
             }
             if (const auto token = ExtractJsonToken(obj, "text_field_mask"); token.has_value())
@@ -1898,7 +1898,7 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
                 {
                     return false;
                 }
-                profile.output_level = *parsed;
+                profile.output_level = parsed;
             }
             if (const auto token = ExtractJsonToken(obj, "record_level"); token.has_value())
             {
@@ -1907,7 +1907,7 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
                 {
                     return false;
                 }
-                profile.record_level = *parsed;
+                profile.record_level = parsed;
             }
             if (const auto token = ExtractJsonToken(obj, "enable_console"); token.has_value())
             {
@@ -1916,7 +1916,7 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
                 {
                     return false;
                 }
-                profile.enable_console = *parsed;
+                profile.enable_console = parsed;
             }
             if (const auto token = ExtractJsonToken(obj, "enable_file"); token.has_value())
             {
@@ -1925,7 +1925,7 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
                 {
                     return false;
                 }
-                profile.enable_file = *parsed;
+                profile.enable_file = parsed;
             }
             if (const auto token = ExtractJsonToken(obj, "enable_debugger"); token.has_value())
             {
@@ -1934,7 +1934,7 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
                 {
                     return false;
                 }
-                profile.enable_debugger = *parsed;
+                profile.enable_debugger = parsed;
             }
             if (const auto token = ExtractJsonToken(obj, "output_order"); token.has_value())
             {
@@ -1943,7 +1943,7 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
                 {
                     return false;
                 }
-                profile.output_order = *parsed;
+                profile.output_order = parsed;
             }
 
             cfg.profiles.push_back(std::move(profile));

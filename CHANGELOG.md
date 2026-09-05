@@ -7,6 +7,16 @@ narratives remain under [`docs/releases`](docs/releases/).
 
 Target: `v0.3.2` release candidate. The latest tagged release is `v0.3.1`.
 
+### Security hardening
+
+- Copy scheduler deadlines before unlocking to prevent use-after-free on task removal.
+
+- Reject linked filesystem descendants and unsafe relative archive/tree paths.
+- Validate outgoing HTTP metadata and reject ambiguous request body framing.
+- Preserve pack artifacts whose names resemble backups; fail incomplete enumeration.
+- Check release tag/version/notes and generated source archive contents.
+- Fail clang-tidy and loopback startup errors; add sanitizer and bounded fuzz gates.
+
 ### Added
 
 - `toolx-http check --no-proxy-from-env` and manifest-level

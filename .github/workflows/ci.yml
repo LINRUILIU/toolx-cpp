@@ -47,6 +47,34 @@ jobs:
         shell: bash
         run: ctest --test-dir build-httpx-openssl --output-on-failure -R '^httpx_tests$'
 
+  sanitizers-and-fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang ninja-build
+      - name: Configure ASan, UBSan and fuzz targets
+        run: >
+          cmake -S . -B build-sanitizers -G Ninja -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_BUILD_TYPE=Debug -DTOOLX_BUILD_BENCHMARKS=OFF
+          -DTOOLX_ENABLE_SANITIZERS=ON -DTOOLX_BUILD_FUZZERS=ON
+      - name: Build
+        run: cmake --build build-sanitizers --parallel 2
+      - name: Sanitizer tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-sanitizers --output-on-failure
+      - name: Bounded fuzz smoke
+        env:
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          for module in cfgx httpx fsx; do
+            mkdir -p "build-sanitizers/corpus-${module}"
+            cp "tests/fuzz/corpus/${module}/"* "build-sanitizers/corpus-${module}/"
+            "build-sanitizers/${module}_fuzz" "build-sanitizers/corpus-${module}" -max_total_time=20 -timeout=5 -max_len=4096
+          done
+
   build-and-test:
     name: ${{ matrix.os }} / ${{ matrix.compiler }}
     runs-on: ${{ matrix.os }}
@@ -134,6 +162,8 @@ jobs:
           -DTOOLX_BUILD_BENCHMARKS=OFF
           -DTOOLX_ENABLE_CLANG_TIDY=${{ matrix.enable_tidy }}
           -DTOOLX_ENABLE_COVERAGE=${{ matrix.enable_coverage }}
+          -DTOOLX_COVERAGE_MIN_LINE=70
+          -DTOOLX_COVERAGE_MIN_BRANCH=40
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
@@ -148,6 +178,8 @@ jobs:
           -DTOOLX_BUILD_BENCHMARKS=OFF
           -DTOOLX_ENABLE_CLANG_TIDY=${{ matrix.enable_tidy }}
           -DTOOLX_ENABLE_COVERAGE=${{ matrix.enable_coverage }}
+          -DTOOLX_COVERAGE_MIN_LINE=70
+          -DTOOLX_COVERAGE_MIN_BRANCH=40
 
       - name: Format check
         if: matrix.run_format_check == 'ON'
@@ -214,7 +246,10 @@ jobs:
       - name: Package source archive
         if: runner.os == 'Linux'
         shell: bash
-        run: cpack --config "${BUILD_DIR}/CPackSourceConfig.cmake"
+        run: |
+          cpack --config "${BUILD_DIR}/CPackSourceConfig.cmake"
+          archive=$(find "${BUILD_DIR}/packages" -name '*-source.tar.gz' -print -quit)
+          cmake -DTOOLX_SOURCE_ARCHIVE="$archive" -P cmake/source_archive_check.cmake
 
       - name: Generate coverage
         if: matrix.enable_coverage == 'ON'

@@ -72,3 +72,17 @@ supported; the public plan API is unchanged.
 - [Basic example](../../examples/fsx_example.cpp)
 - [Behavior tests](../../tests/fsx_tests.cpp)
 - [Crash-recovery tests](../../tests/fsx_journal_failpoint_tests.cpp)
+
+## Tree operation boundary
+
+Directory walks, directory diff/sync, tree copies and archive creation reject
+symbolic links (including dangling links), Windows junctions/reparse points and
+unsupported file types below the selected root. Relative entry names are lexical
+and cannot contain parent traversal, absolute roots or platform-ambiguous separators.
+Enumeration and metadata failures return errors instead of partial success.
+
+Roots are caller-selected locations. These checks do not provide a sandbox
+against another process replacing directories between validation and use. Keep
+source and destination trees under exclusive control while planning and executing
+operations. Direct `BatchPlan` file operations and recovery journals remain trusted
+caller inputs; they do not infer a containment root.

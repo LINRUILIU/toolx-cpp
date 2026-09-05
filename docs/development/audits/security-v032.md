@@ -63,3 +63,11 @@ sanitizer/fuzz job 必须在合并前完成；本轮不执行合并或发布 tag
 - 最终 GCC/gcovr 覆盖率：行 72.3%（8995/12437），分支 43.7%（8746/20032），超过 70%/40% 门槛。
 - 独立安装 consumer、安装 smoke、ZIP 解包消费、源码 tar 内容检查、preflight 和文档检查均通过。
 - 远端 CI 待分支推送后检查；保留草稿 PR，不执行合并。
+
+## 首轮远端 CI 回查
+
+提交 3fd12d6 的 Linux GCC/Clang、macOS、OpenSSL 和 sanitizer/fuzz 均通过。
+Windows 在安全回归测试清理阶段失败：哨兵文件的 ifstream 尚未析构，导致
+remove_all 遇到文件共享冲突。补丁将读取限制在独立作用域，保留全部安全断言。
+本地 Windows 安全/junction 两个 CTest 项目及 Linux ASan/UBSan 符号链接回归
+通过；等待补丁提交的远端 Windows CI 验证。

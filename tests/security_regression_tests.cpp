@@ -131,10 +131,13 @@ TEST(SecurityRegression, LinkedEntriesCannotEscapeWalkSyncCopyOrArchive)
     ASSERT_FALSE(ec) << ec.message();
     EXPECT_FALSE(fsx::Run(fsx::BuildSyncPlan((root / "src").string(), (root / "dst").string(), true)).ok);
     EXPECT_FALSE(fsx::Run(copy).ok);
-    std::ifstream in(root / "outside" / "sentinel");
-    std::string text;
-    in >> text;
-    EXPECT_EQ(text, "keep");
+    {
+        // Windows does not allow removal while the sentinel stream is open.
+        std::ifstream in(root / "outside" / "sentinel");
+        std::string text;
+        in >> text;
+        EXPECT_EQ(text, "keep");
+    }
     fs::remove_all(root);
 }
 } // namespace

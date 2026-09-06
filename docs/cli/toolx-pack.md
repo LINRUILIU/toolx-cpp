@@ -86,3 +86,9 @@ Names containing `.old.tmp.`, `.new.tmp.` or `.removed.tmp.` are ordinary user
 artifacts. Cleanup is limited to exact temporary paths owned by the fsx transaction.
 Keep source/stage trees under exclusive control during staging; filesystem path
 checks do not guarantee protection against concurrent directory replacement.
+
+Source and stage roots must be disjoint after canonicalization, including aliases.
+With `--remove-extra`, obsolete entries and file/directory type conflicts are removed
+transactionally before copies. Later copy failures roll back those changes. Planning
+and dry runs do not mutate either tree. Native POSIX filenames are preserved while
+staging; tar archives retain the stricter portable member-name rules.

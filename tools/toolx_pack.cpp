@@ -583,7 +583,8 @@ cfgx::Result<std::vector<SelectedFile>> SelectFiles(const PackConfig& config)
         }
         std::string boundary_error;
         if (!toolx_detail::SafeChildPath(fs::path(config.source), fs::path(relative_path), &boundary_error) ||
-            !toolx_detail::SafeChildPath(fs::path(config.stage), fs::path(relative_path), &boundary_error))
+            !toolx_detail::SafeChildPath(fs::path(config.stage), fs::path(relative_path), &boundary_error,
+                                         config.remove_extra))
             return cfgx::Status{false, boundary_error};
         const fs::path source_file = JoinRelative(config.source, relative_path);
         std::error_code size_ec;
@@ -612,7 +613,7 @@ cfgx::Result<std::vector<SelectedFile>> SelectFiles(const PackConfig& config)
         }
         for (const auto& entry : walked.entries)
         {
-            const auto status = add_file(NormalizeSlashes(entry.path));
+            const auto status = add_file(entry.path);
             if (!status.ok)
             {
                 return cfgx::Result<std::vector<SelectedFile>>{false, {}, status.error};
@@ -654,7 +655,7 @@ cfgx::Result<std::vector<SelectedFile>> SelectFiles(const PackConfig& config)
                 }
                 for (const auto& entry : walked.entries)
                 {
-                    const auto status = add_file(include + "/" + NormalizeSlashes(entry.path));
+                    const auto status = add_file(include + "/" + entry.path);
                     if (!status.ok)
                     {
                         return cfgx::Result<std::vector<SelectedFile>>{false, {}, status.error};
@@ -718,7 +719,7 @@ cfgx::Status AddRemoveExtraSteps(const PackConfig& config, const std::set<std::s
     std::vector<std::string> extra_dirs;
     for (const auto& entry : walked.entries)
     {
-        const std::string rel = NormalizeSlashes(entry.path);
+        const std::string rel = entry.path;
         if (entry.is_directory)
         {
             if (target_dirs.find(rel) == target_dirs.end())
@@ -754,6 +755,34 @@ cfgx::Status AddRemoveExtraSteps(const PackConfig& config, const std::set<std::s
 
 cfgx::Result<PackPlan> BuildStagePlan(const PackConfig& config)
 {
+    std::error_code ec;
+    auto source = fs::absolute(config.source, ec);
+    if (ec)
+        return {false, {}, "cannot resolve source root: " + ec.message()};
+    source = fs::weakly_canonical(source, ec);
+    if (ec)
+        return {false, {}, "cannot resolve source root: " + ec.message()};
+    auto stage = fs::absolute(config.stage, ec);
+    if (ec)
+        return {false, {}, "cannot resolve stage root: " + ec.message()};
+    stage = fs::weakly_canonical(stage, ec);
+    if (ec)
+        return {false, {}, "cannot resolve stage root: " + ec.message()};
+    auto src = source.begin();
+    auto dst = stage.begin();
+    for (; src != source.end() && dst != stage.end(); ++src, ++dst)
+    {
+#ifdef _WIN32
+        if (CompareStringOrdinal(src->c_str(), -1, dst->c_str(), -1, TRUE) != CSTR_EQUAL)
+            break;
+#else
+        if (*src != *dst)
+            break;
+#endif
+    }
+    if (src == source.end() || dst == stage.end())
+        return {false, {}, "source and stage roots must not overlap"};
+
     auto selected = SelectFiles(config);
     if (!selected.ok)
     {
@@ -767,15 +796,19 @@ cfgx::Result<PackPlan> BuildStagePlan(const PackConfig& config)
     {
         plan.bytes += file.size;
         target_files.insert(file.relative_path);
-        plan.batch.AddCopyFile(file.source_path, file.destination_path);
-        plan.planned_steps.push_back(PlannedStep{"copy_file", file.source_path, file.destination_path});
     }
-
     if (config.remove_extra)
     {
         const auto removed = AddRemoveExtraSteps(config, target_files, &plan.batch, &plan.planned_steps);
         if (!removed.ok)
             return {false, {}, removed.error};
+    }
+    // Remove obsolete entries and type conflicts before copying their replacements.
+    // These remain transactional BatchPlan operations, including on copy failure.
+    for (const auto& file : plan.files)
+    {
+        plan.batch.AddCopyFile(file.source_path, file.destination_path);
+        plan.planned_steps.push_back(PlannedStep{"copy_file", file.source_path, file.destination_path});
     }
     if (!config.archive.empty())
     {
@@ -943,15 +976,14 @@ int RunArchive(PackConfig config, bool json_mode)
     PackPlan plan;
     for (const auto& entry : walked.entries)
     {
-        const fs::path source_file = JoinRelative(config.source, NormalizeSlashes(entry.path));
+        const fs::path source_file = JoinRelative(config.source, entry.path);
         std::error_code size_ec;
         const auto size = fs::file_size(source_file, size_ec);
         if (!size_ec)
         {
             plan.bytes += size;
         }
-        plan.files.push_back(
-            SelectedFile{NormalizeSlashes(entry.path), PathString(source_file), NormalizeSlashes(entry.path), size});
+        plan.files.push_back(SelectedFile{entry.path, PathString(source_file), entry.path, size});
     }
     plan.planned_steps.push_back(PlannedStep{"create_archive", config.source, config.archive});
 

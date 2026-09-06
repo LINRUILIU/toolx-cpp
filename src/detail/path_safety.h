@@ -22,18 +22,29 @@ inline bool SafeRelativePath(const std::filesystem::path& path)
 {
     const auto text = path.generic_string();
     if (text.empty() || path.is_absolute() || path.has_root_name() || path.has_root_directory() ||
-        text.find(':') != std::string::npos || text.find('\\') != std::string::npos ||
         text.find('\0') != std::string::npos)
         return false;
+#ifdef _WIN32
+    if (text.find(':') != std::string::npos || text.find('\\') != std::string::npos)
+        return false;
+#endif
     for (const auto& component : path)
         if (component == ".." || component == "." || component.empty())
             return false;
     return true;
 }
 
+// Tar member names must remain unambiguous when extracted on another platform.
+inline bool SafeArchivePath(const std::filesystem::path& path)
+{
+    const auto text = path.generic_string();
+    return SafeRelativePath(path) && text.find(':') == std::string::npos && text.find('\\') == std::string::npos;
+}
+
 // The caller owns the root. Reject links/reparse points below it, including
 // dangling links. This is a static boundary check, not a race-free sandbox.
-inline bool SafeChildPath(const std::filesystem::path& root, const std::filesystem::path& relative, std::string* error)
+inline bool SafeChildPath(const std::filesystem::path& root, const std::filesystem::path& relative, std::string* error,
+                          bool replace_file_ancestors = false)
 {
     if (!SafeRelativePath(relative))
     {
@@ -61,6 +72,10 @@ inline bool SafeChildPath(const std::filesystem::path& root, const std::filesyst
             *error = "symbolic links and reparse points are not allowed below root: " + current.string();
             return false;
         }
+        // A staging plan may remove this verified ordinary file before creating
+        // its descendants. No descendant can currently exist through a file.
+        if (replace_file_ancestors && std::filesystem::is_regular_file(status))
+            return true;
     }
     return true;
 }

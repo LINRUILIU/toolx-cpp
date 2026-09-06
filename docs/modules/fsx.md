@@ -78,7 +78,9 @@ supported; the public plan API is unchanged.
 Directory walks, directory diff/sync, tree copies and archive creation reject
 symbolic links (including dangling links), Windows junctions/reparse points and
 unsupported file types below the selected root. Relative entry names are lexical
-and cannot contain parent traversal, absolute roots or platform-ambiguous separators.
+and cannot contain parent traversal or absolute roots. Native POSIX tree operations
+preserve literal colon and backslash filenames. Tar member names additionally reject
+colon and backslash so archives stay unambiguous across platforms.
 Enumeration and metadata failures return errors instead of partial success.
 
 Roots are caller-selected locations. These checks do not provide a sandbox
@@ -86,3 +88,7 @@ against another process replacing directories between validation and use. Keep
 source and destination trees under exclusive control while planning and executing
 operations. Direct `BatchPlan` file operations and recovery journals remain trusted
 caller inputs; they do not infer a containment root.
+
+Copy-file transactions record newly created parent directories in their undo journal.
+Rollback removes those directories only when empty, allowing an old file replaced
+by a directory to be restored after a later copy failure.

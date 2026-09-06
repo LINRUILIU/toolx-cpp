@@ -770,6 +770,40 @@ bool rename_file(const Path& src, const Path& dst, const RunOptions& options, Ex
     return move_path_without_overwrite(src, dst, "rename", error);
 }
 
+bool ensure_copy_parent_tracked(const Path& destination, ExecuteState* state, std::string* error)
+{
+    std::vector<Path> missing;
+    std::error_code ec;
+    for (auto parent = destination.parent_path(); !parent.empty(); parent = parent.parent_path())
+    {
+        const bool exists = std::filesystem::exists(parent, ec);
+        if (ec)
+        {
+            *error = utils::err::join_context("fsx", "copy_file", ec.message());
+            return false;
+        }
+        if (exists)
+            break;
+        missing.push_back(parent);
+        if (parent == parent.parent_path())
+            break;
+    }
+    for (auto it = missing.rbegin(); it != missing.rend(); ++it)
+    {
+        // Undo removes only an empty directory, never another writer's contents.
+        // Recording before creation also makes type transitions recoverable from a journal.
+        if (!record_undo(state, {UndoAction::Kind::RemovePath, *it, {}}, error, true))
+            return false;
+        std::filesystem::create_directory(*it, ec);
+        if (ec)
+        {
+            *error = utils::err::join_context("fsx", "copy_file", ec.message());
+            return false;
+        }
+    }
+    return true;
+}
+
 bool copy_file_tracked(const Path& src, const Path& dst, const RunOptions& options, ExecuteState* state,
                        std::string* error, bool* skipped)
 {
@@ -782,7 +816,7 @@ bool copy_file_tracked(const Path& src, const Path& dst, const RunOptions& optio
         *error = utils::err::join_context("fsx", "copy_file", "source file not found");
         return false;
     }
-    if (!ensure_parent(dst, error))
+    if (!ensure_copy_parent_tracked(dst, state, error))
     {
         return false;
     }
@@ -1899,7 +1933,7 @@ void write_tar_octal(char* field, std::size_t width, std::uintmax_t value)
 
 bool write_tar_header(std::ostream& out, std::string name, bool directory, std::uintmax_t size, std::string* error)
 {
-    if (!toolx_detail::SafeRelativePath(Path(name)))
+    if (!toolx_detail::SafeArchivePath(Path(name)))
     {
         *error = utils::err::join_context("fsx", "tar", "unsafe archive entry name");
         return false;

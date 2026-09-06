@@ -1,3 +1,5 @@
+#include "detail/multipart_boundary.h"
+#include <random>
 #include "httpx.h"
 
 #include <algorithm>
@@ -1002,8 +1004,10 @@ httpx::Result<ParsedUrl> ParseUrlInternal(std::string_view url)
     }
     else
     {
-        parsed.target = std::string(rest.substr(authority_end));
-        if (!parsed.target.empty() && parsed.target[0] != '/')
+        const auto fragment = rest.find('#', authority_end);
+        parsed.target = std::string(rest.substr(
+            authority_end, fragment == std::string_view::npos ? std::string_view::npos : fragment - authority_end));
+        if (parsed.target.empty() || parsed.target[0] != '/')
         {
             parsed.target.insert(parsed.target.begin(), '/');
         }
@@ -1724,7 +1728,7 @@ bool ValidateRequestMetadata(const httpx::Request& request, const httpx::ClientO
             return reject("request transfer-encoding is not supported");
         if (lower == "host")
         {
-            if (host_seen || value.empty())
+            if (host_seen || Trim(value).empty())
                 return reject("duplicate or empty host header");
             host_seen = true;
         }
@@ -1767,9 +1771,16 @@ std::string EscapeQuoted(std::string_view input)
 
 std::string BuildMultipartBoundary()
 {
-    static std::atomic<std::uint64_t> next_id{1};
-    const auto seed = next_id.fetch_add(1, std::memory_order_relaxed);
-    return "httpx-boundary-" + std::to_string(seed);
+    std::random_device entropy;
+    std::string boundary = "httpx-";
+    constexpr char hex[] = "0123456789abcdef";
+    for (int word = 0; word < 4; ++word)
+    {
+        const auto bits = static_cast<std::uint32_t>(entropy());
+        for (int shift = 28; shift >= 0; shift -= 4)
+            boundary.push_back(hex[(bits >> shift) & 15u]);
+    }
+    return boundary;
 }
 
 httpx::Result<std::string> BuildMultipartBody(const httpx::Request& request, std::string* boundary_out)
@@ -1795,11 +1806,19 @@ httpx::Result<std::string> BuildMultipartBody(const httpx::Request& request, std
     }
 
     std::string boundary;
-    do
+    try
     {
-        boundary = BuildMultipartBoundary();
-    } while (std::any_of(request.multipart.begin(), request.multipart.end(), [&](const httpx::MultipartPart& part)
-                         { return part.data.find(boundary) != std::string::npos; }));
+        if (!toolx_detail::SelectMultipartBoundary(request.multipart, BuildMultipartBoundary, &boundary))
+        {
+            out.error = MakeError(httpx::ErrorKind::Internal, "multipart boundary collision limit exceeded");
+            return out;
+        }
+    }
+    catch (const std::exception&)
+    {
+        out.error = MakeError(httpx::ErrorKind::Internal, "cannot generate multipart boundary");
+        return out;
+    }
     std::string body;
 
     for (const auto& part : request.multipart)

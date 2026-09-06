@@ -99,4 +99,9 @@ single decimal value matching the body size; duplicate lengths are rejected. For
 multipart requests the client owns `Content-Length` and `Content-Type` (including
 the boundary), so caller overrides are rejected. Invalid metadata returns
 `InvalidArgument`; invalid URLs return `InvalidUrl`. Validation also applies to
-custom transports. Multipart boundaries are checked against part data.
+custom transports. Whitespace-only Host values are rejected.
+
+URL fragments are omitted from direct, proxy and redirected request targets;
+percent-encoded hashes remain unchanged. Multipart boundaries use random candidates
+and at most eight collision checks against part data. Entropy failure or exhausted
+attempts return `Internal` instead of retrying without a bound.

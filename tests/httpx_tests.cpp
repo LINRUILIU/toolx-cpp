@@ -1735,6 +1735,64 @@ TEST(HttpxClientTests, ConnectionPoolReusesKeepAliveSocket)
     EXPECT_NE((*captured)[1].find("GET /pool/two HTTP/1.1"), std::string::npos);
 }
 
+TEST(HttpxClientTests, RequestTargetsOmitFragmentsAndPreserveEncodedHash)
+{
+    for (const bool use_proxy : {false, true})
+    {
+        for (const std::string suffix : {"/path?q=%23#secret", "#secret", "?q=1#secret"})
+        {
+            auto captured = std::make_shared<std::string>();
+            {
+                const auto server = StartSingleResponseServer(
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", 0, captured);
+                ASSERT_TRUE(server.has_value());
+                httpx::ClientOptions options;
+                options.use_proxy_from_environment = false;
+                options.timeout.total_ms = 3000;
+                std::string origin = "http://127.0.0.1:" + std::to_string(server->port);
+                if (use_proxy)
+                {
+                    options.proxy.enabled = true;
+                    options.proxy.scheme = "http";
+                    options.proxy.host = "127.0.0.1";
+                    options.proxy.port = server->port;
+                    origin = "http://nonexistent.invalid";
+                }
+                const auto result = httpx::Client(options).Get(origin + suffix);
+                ASSERT_TRUE(result.ok) << result.error.message;
+                std::string target = suffix.substr(0, suffix.find('#'));
+                if (target.empty() || target.front() != '/')
+                    target.insert(target.begin(), '/');
+                EXPECT_EQ(captured->find("GET " + (use_proxy ? origin : "") + target + " HTTP/1.1\r\n"), 0u);
+                EXPECT_EQ(captured->find("secret"), std::string::npos);
+            }
+        }
+    }
+}
+
+TEST(HttpxClientTests, RedirectTargetsOmitFragments)
+{
+    auto captured = std::make_shared<std::vector<std::string>>();
+    {
+        const auto server = StartScriptedServer(
+            {"HTTP/1.1 302 Found\r\nLocation: /final?q=%23#secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"},
+            captured);
+        ASSERT_TRUE(server.has_value());
+        httpx::ClientOptions options;
+        options.use_proxy_from_environment = false;
+        options.redirects.follow = true;
+        options.timeout.total_ms = 3000;
+        const auto result =
+            httpx::Client(options).Get("http://127.0.0.1:" + std::to_string(server->port) + "/jump#initial");
+        ASSERT_TRUE(result.ok) << result.error.message;
+    }
+    ASSERT_EQ(captured->size(), 2u);
+    EXPECT_EQ((*captured)[0].find("GET /jump HTTP/1.1\r\n"), 0u);
+    EXPECT_EQ((*captured)[1].find("GET /final?q=%23 HTTP/1.1\r\n"), 0u);
+    EXPECT_EQ((*captured)[1].find("secret"), std::string::npos);
+}
+
 TEST(HttpxClientTests, ProxyUsesAbsoluteFormTarget)
 {
     auto captured = std::make_shared<std::string>();

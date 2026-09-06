@@ -1,3 +1,4 @@
+#include "../../src/detail/multipart_boundary.h"
 #include "httpx.h"
 #include <cstddef>
 #include <cstdint>
@@ -19,7 +20,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     };
     httpx::Request request;
     request.url = "http://localhost/";
-    switch (data[0] % 5)
+    switch (data[0] % 6)
     {
     case 0:
         request.url += text;
@@ -33,9 +34,20 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     case 3:
         request.headers = {{"X-Input", text}};
         break;
-    default:
+    case 4:
         request.multipart = {{text, text, text, "data"}};
         break;
+    default:
+    {
+        request.multipart = {{"file", "input.bin", "application/octet-stream", text}};
+        std::string boundary;
+        // Exercise the production collision scan without requiring a network transport.
+        int attempt = 0;
+        (void)toolx_detail::SelectMultipartBoundary(
+            request.multipart, [&]() { return (data[0] & 1u) ? text : "httpx-boundary-" + std::to_string(++attempt); },
+            &boundary);
+        break;
+    }
     }
     (void)httpx::Client(options).Send(request);
     return 0;

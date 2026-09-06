@@ -76,6 +76,10 @@ jobs:
           done
 
   build-and-test:
+    # Codecov exchanges a short-lived GitHub identity token for upload authorization.
+    permissions:
+      contents: read
+      id-token: write
     name: ${{ matrix.os }} / ${{ matrix.compiler }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -272,5 +276,6 @@ jobs:
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: build-ci/coverage.xml
+          use_oidc: true
           disable_search: true
           fail_ci_if_error: true

@@ -119,3 +119,14 @@ remove_all 遇到文件共享冲突。补丁将读取限制在独立作用域，
 - 安装 smoke、ZIP 解包后的独立 consumer/smoke、源码包内容检查、发布预检与
   覆盖报告负例以及 66 篇文档检查通过。编译器覆盖率中间文件不进入源码包。
 - 等待本轮提交的远端 CI；按约 15 分钟定时回查，不合并、不发布。
+
+
+## 本地审查修复后的远端 CI 回查
+
+`556e6d4` 的 Windows、macOS、Linux Clang、OpenSSL 和 sanitizer/fuzz 均通过。
+两个 GCC job 的构建、测试、覆盖率生成和 GitHub artifact 上传也通过，但 Codecov
+拒绝无认证上传：`Token required - not valid tokenless upload`。仓库未配置 Codecov
+secret，因此改用当前固定版本 Action 已支持的 GitHub OIDC，通过 job 范围的
+`contents: read` / `id-token: write` 和 `use_oidc: true` 获取短期上传凭证。
+保持 `fail_ci_if_error: true`、显式 XML 和禁止回退搜索，不改变覆盖率门槛。
+此变更仅涉及 CI 认证；验证固定 Action 输入/文档和 workflow 配置后推送回查。

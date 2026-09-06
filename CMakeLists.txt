@@ -494,6 +494,8 @@ if(TOOLX_BUILD_TESTS)
     add_executable(security_regression_tests tests/security_regression_tests.cpp)
     target_link_libraries(security_regression_tests PRIVATE fsx httpx GTest::gtest_main)
     add_test(NAME security_regression_tests COMMAND security_regression_tests)
+    add_test(NAME coverage_report_check_tests
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/coverage_report_check_tests.cmake")
     add_test(NAME release_preflight_tests
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/release_preflight_tests.cmake")
     add_test(NAME source_archive_check_tests
@@ -669,6 +671,8 @@ if(TOOLX_BUILD_TESTS)
             utils_tests
             toolx_integration_tests)
         foreach(toolx_coverage_target IN ITEMS
+            fsx_journal_failpoint_tests
+            toolx_sync_proxy_contracts
             toolx_config
             toolx_sync
             toolx_pack
@@ -707,10 +711,12 @@ if(TOOLX_BUILD_TESTS)
                 --exclude "${CMAKE_CURRENT_SOURCE_DIR}/examples"
                 --gcov-ignore-parse-errors negative_hits.warn_once_per_file
                 --xml-pretty
-                --output "${CMAKE_BINARY_DIR}/coverage.xml"
-                --html-details
+                --xml "${CMAKE_BINARY_DIR}/coverage.xml"
+                --html-details "${CMAKE_BINARY_DIR}/coverage.html"
                 --html-title "ToolX Coverage"
-                --output "${CMAKE_BINARY_DIR}/coverage.html"
+                "${CMAKE_BINARY_DIR}"
+            COMMAND "${CMAKE_COMMAND}" "-DTOOLX_COVERAGE_DIR=${CMAKE_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/coverage_report_check.cmake"
             WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
             DEPENDS ${toolx_coverage_dependencies}
             COMMENT "Running tests and generating gcovr coverage reports"
@@ -809,6 +815,7 @@ set(CPACK_PACKAGE_FILE_NAME "ToolX-v${PROJECT_VERSION}-${TOOLX_PACKAGE_PLATFORM}
 set(CPACK_SOURCE_GENERATOR "TGZ")
 set(CPACK_SOURCE_PACKAGE_FILE_NAME "ToolX-v${PROJECT_VERSION}-source")
 set(CPACK_SOURCE_IGNORE_FILES
+    "[.]gc(ov|da|no)$"
     "[\\\\/](reference|stage|[.]third_party)[\\\\/]"
     "${CMAKE_CURRENT_SOURCE_DIR}/[^/]*[.]log$"
     "[\\\\/][.]git[\\\\/]"

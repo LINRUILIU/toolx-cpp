@@ -9,6 +9,12 @@ Target: `v0.3.2` release candidate. The latest tagged release is `v0.3.1`.
 
 ### Security hardening
 
+- Prevent overlapping pack roots and preserve replacements during remove-extra staging.
+- Restore type conflicts on rollback, including newly created copy parent directories.
+- Strip HTTP fragments, reject blank Host values and bound multipart collision work.
+- Preserve native POSIX tree filenames while retaining portable tar restrictions.
+- Reject candidate releases at publication and verify explicit coverage report artifacts.
+
 - Copy scheduler deadlines before unlocking to prevent use-after-free on task removal.
 
 - Reject linked filesystem descendants and unsafe relative archive/tree paths.

@@ -74,8 +74,7 @@ They are therefore:
 - not part of the default build;
 - not a fallback for `MBEDTLS_ROOT`;
 - not installed and therefore absent from binary release archives;
-- included in the current CPack source archive because `.third_party` is tracked
-  and is not on `CPACK_SOURCE_IGNORE_FILES`;
+- excluded from CPack source archives by the `.third_party` packaging rule;
 - not evidence that the mbedTLS backend is CI verified.
 
 A maintainer may prepare a separate mbedTLS installation from those sources and
@@ -87,8 +86,9 @@ build contract.
 Official default binary packages are generated with both TLS backends disabled.
 They contain ToolX headers, libraries, CMake exports, and the six selected tools,
 but not GoogleTest, OpenSSL, mbedTLS, clang tooling, gcovr, Ninja, or offline
-source archives. The separately generated ToolX source archive does contain the
-tracked `.third_party` files; their presence does not make them build inputs.
+source archives. The separately generated ToolX source archive also excludes
+`.third_party`; obtain those optional offline files from the Git repository if needed.
+They are not automatic build inputs.
 
 Licensing and redistribution obligations for a custom TLS-enabled package
 belong to the producer of that package; the default ToolX archive does not

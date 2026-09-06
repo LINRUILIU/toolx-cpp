@@ -159,7 +159,10 @@ campaigns are separate from the bounded PR gate.
 
 Release builds run cmake/release_preflight.cmake with TOOLX_RELEASE_TAG (or the
 GITHUB_REF_NAME environment variable), checking CMake version, note heading/metadata
-and changelog. Missing notes fail; publication never substitutes the template.
+and changelog. Formal publication requires an exact `## [MAJOR.MINOR.PATCH]`
+changelog heading and `> Status: Released` in the notes. Keep candidate notes marked
+as candidates until the release is approved; their formal preflight must fail.
+Missing notes fail; publication never substitutes the template.
 Generated source archives are verified with cmake/source_archive_check.cmake and
 TOOLX_SOURCE_ARCHIVE. Local references, dependency archives, build/stage/temp
 directories and root logs are excluded.
@@ -180,3 +183,7 @@ Compile-time clang-tidy gates production libraries and installed CLIs. The expli
 lint-check target additionally checks its listed contracts and showcase server.
 Other tests/examples are built and exercised normally and under sanitizers; their
 GTest assertion macros are not treated as production static-analysis evidence.
+
+Coverage emits separate XML and detailed HTML reports. The target verifies both
+artifacts, and Codecov receives only the explicit XML report with fallback discovery
+disabled. Missing artifacts or upload failures fail CI.

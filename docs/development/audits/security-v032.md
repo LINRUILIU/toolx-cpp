@@ -71,3 +71,51 @@ Windows 在安全回归测试清理阶段失败：哨兵文件的 ifstream 尚�
 remove_all 遇到文件共享冲突。补丁将读取限制在独立作用域，保留全部安全断言。
 本地 Windows 安全/junction 两个 CTest 项目及 Linux ASan/UBSan 符号链接回归
 通过；等待补丁提交的远端 Windows CI 验证。
+
+
+## 本地审查后续修复（2026-09-06）
+
+本轮从干净提交 `19422f0946402400007e24df97ac414042c5dd2e` 开始；完整 Git
+备份已验证，位于忽略目录 `temp/security-audit/pre-review-fixes.bundle`。
+此前该提交的远端 CI 已全部通过，但本地审查仍发现下列缺口，因此保持草稿 PR。
+
+| 本地评论 | 修复与回归证据 |
+| --- | --- |
+| remove-extra 删除新复制目标 | 删除多余项和类型冲突后再复制；黑盒覆盖文件/目录双向切换，以及 plan 不修改原内容 |
+| source/stage 重叠删除源 | 规范化并按路径组件拒绝相同、祖先、后代关系；Windows 比较忽略大小写；覆盖 junction/symlink 根别名及源哨兵保留 |
+| 候选文档通过正式预检 | 精确 release H1、Status: Released 和 changelog 版本标题；候选、缺失状态、近似版本均为负例，仓库当前候选仍禁止发布 |
+| URL fragment 上网 | 解析时剥离 fragment；直接/代理/重定向实际报文测试，保留 %23，覆盖没有路径及只有 query 的 URL |
+| multipart 碰撞反复扫描 | 随机 boundary 候选，最多八次扫描；私有生成器注入测试确定性验证碰撞和耗尽，fuzz 输入进入实际边界扫描函数 |
+| POSIX 文件名回归 | 本机边界与可移植 tar 规则分离；walk/copy/sync/stage 保留冒号和反斜杠，不再把枚举名称强制改成分隔符 |
+| 空白 Host | 校验去空白后的值，空格或 HTAB-only 在 transport 前失败 |
+| coverage 缺失产物 | gcovr 分别指定 XML/HTML 输出及当前 build 搜索目录；验证两份产物和 src/include 文件范围，Codecov 禁止回退搜索且上传失败使 CI 失败 |
+| 源码包与依赖文档矛盾 | 明确 .third_party 只在 Git 仓库保留、不进入源码包；归档合同增加依赖归档和编译器覆盖率中间文件负例 |
+| remove-extra 测试提前失败 | 空 source 直接进入 stage 枚举，断言 code 3 与 walk 错误；旧版二进制同场景返回 code 0，证明测试能识别原吞错行为 |
+
+额外回滚测试暴露了文件转目录后的新父目录没有撤销记录的问题。CopyFile 现在
+在创建父目录之前写入 RemovePath undo，回滚仅删除空目录，使旧普通文件能够恢复。
+测试在后续复制失败时检查旧文件、旧目录内容及 journal 成功清理。
+
+旧版 `99cc91c` 二进制在隔离夹具内再次复现两种“返回成功但误删”，记录见
+`temp/security-audit/review-reproduction.json`。新 HTTP/类型切换测试也在本轮
+修改前失败，记录见 `review-red-tests.log`。碰撞造成资源消耗的前提是上传数据
+受不可信输入控制；没有宣称所有上传均可远程触发攻击。
+
+本轮不新增公共 API，树的独占控制前提保持不变。POSIX 原生文件操作恢复合法
+名称，但 tar 名称仍拒绝跨平台歧义字符。候选发布说明不提前改成正式发布状态。
+
+
+本轮最终本地验证：
+
+- Windows MSVC Debug、Linux Clang 20 ASan/UBSan：各 42/42 CTest 通过。
+- Linux 实际执行符号链接及 POSIX 名称回归，Windows junction 合同通过。
+- clang-format 20、配置的全部 clang-tidy 文件及 httpx fuzz 文件通过。
+- cfgx/httpx/fsx fuzz 各完成约 20 秒运行，未发现崩溃。
+- 新建 GCC 15 构建目录直接运行 coverage 目标，42/42 测试通过；行覆盖率
+  72.54%（9056/12485），分支覆盖率 43.87%（8826/20118）。XML 可被标准解析器
+  读取，23 个 class 文件全部在 src/include；HTML 及 CMake 产物校验通过。
+- coverage 目标补齐 journal failpoint 和 sync proxy 测试构建依赖，避免旧对象数据
+  混入覆盖报告。未放宽 gcovr 的函数合并或最低覆盖率规则。
+- 安装 smoke、ZIP 解包后的独立 consumer/smoke、源码包内容检查、发布预检与
+  覆盖报告负例以及 66 篇文档检查通过。编译器覆盖率中间文件不进入源码包。
+- 等待本轮提交的远端 CI；按约 15 分钟定时回查，不合并、不发布。

@@ -10,7 +10,8 @@ endif()
 string(REPLACE "\n" ";" entries "${listing}")
 foreach(entry IN LISTS entries)
     string(STRIP "${entry}" entry)
-    if(entry MATCHES "^[^/]+/(reference|temp|build[^/]*|stage|[.]git|[.]vscode|[.]third_party)(/|$)" OR
+    if(entry MATCHES "[.]gc(ov|da|no)$" OR
+       entry MATCHES "^[^/]+/(reference|temp|build[^/]*|stage|[.]git|[.]vscode|[.]third_party)(/|$)" OR
        (entry MATCHES "[.]log$" AND NOT entry MATCHES "/examples/product_chain_showcase/fixtures/[^/]+[.]log$"))
         message(FATAL_ERROR "Unwanted source archive entry: ${entry}")
     endif()

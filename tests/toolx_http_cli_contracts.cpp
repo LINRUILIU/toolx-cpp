@@ -82,7 +82,7 @@ struct ScopedEnvVar
     std::string key;
     std::optional<std::string> original;
 
-    ScopedEnvVar(std::string name, std::string value) : key(std::move(name))
+    ScopedEnvVar(std::string name, const std::string& value) : key(std::move(name))
     {
         if (const char* current = std::getenv(key.c_str()))
         {
@@ -260,7 +260,7 @@ struct LocalHttpServer
 };
 
 std::optional<LocalHttpServer> StartSingleResponseServer(std::string response, std::uint64_t response_delay_ms = 0,
-                                                         std::shared_ptr<std::string> captured_request = nullptr)
+                                                         const std::shared_ptr<std::string>& captured_request = nullptr)
 {
     if (!EnsureTestNetworkReady())
     {

@@ -398,7 +398,7 @@ cfgx::Result<LogConfig> LoadManifestConfig(const std::string& path)
         {
             return cfgx::Result<LogConfig>{false, {}, "unsupported manifest min_level: " + min_level->AsString()};
         }
-        config.min_level = *parsed;
+        config.min_level = parsed;
     }
     if (const auto* contains = loaded.value.Get("contains"); contains != nullptr)
     {
@@ -427,7 +427,7 @@ cfgx::Result<LogConfig> LoadManifestConfig(const std::string& path)
         {
             return cfgx::Result<LogConfig>{false, {}, "unsupported manifest fail_on_level: " + fail_level->AsString()};
         }
-        config.fail_on_level = *parsed;
+        config.fail_on_level = parsed;
     }
     if (const auto* max_parse_errors = loaded.value.Get("max_parse_errors"); max_parse_errors != nullptr)
     {
@@ -496,7 +496,7 @@ cfgx::Result<LogConfig> ResolveConfig(const argtool::ParseResult& parsed, const 
         {
             return cfgx::Result<LogConfig>{false, {}, "unsupported min-level: " + parsed.GetString("min-level")};
         }
-        config.min_level = *level;
+        config.min_level = level;
     }
     if (parsed.Has("contains"))
     {
@@ -526,7 +526,7 @@ cfgx::Result<LogConfig> ResolveConfig(const argtool::ParseResult& parsed, const 
             return cfgx::Result<LogConfig>{
                 false, {}, "unsupported fail-on-level: " + parsed.GetString("fail-on-level")};
         }
-        config.fail_on_level = *level;
+        config.fail_on_level = level;
     }
     if (parsed.Has("max-parse-errors"))
     {

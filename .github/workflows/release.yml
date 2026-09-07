@@ -12,7 +12,19 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Validate tag, project version and release notes
+        run: cmake -P cmake/release_preflight.cmake
+
   build-release:
+    needs: preflight
+    permissions:
+      contents: read
     name: ${{ matrix.os }} / ${{ matrix.compiler }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -167,7 +179,9 @@ jobs:
       - name: Package source archive
         if: runner.os == 'Linux'
         shell: bash
-        run: cpack --config "${BUILD_DIR}/CPackSourceConfig.cmake"
+        run: |
+          cpack --config "${BUILD_DIR}/CPackSourceConfig.cmake"
+          cmake -DTOOLX_SOURCE_ARCHIVE="${BUILD_DIR}/packages/ToolX-${GITHUB_REF_NAME}-source.tar.gz" -P cmake/source_archive_check.cmake
 
       - name: Upload release packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -202,9 +216,8 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           NOTES_PATH="docs/releases/${TAG}.md"
-          if [ ! -f "${NOTES_PATH}" ]; then
-            NOTES_PATH="docs/releases/template.md"
-          fi
+          cmake -P cmake/release_preflight.cmake
+          test -f "${NOTES_PATH}"
           cp "${NOTES_PATH}" release-body.md
 
       - name: Publish release

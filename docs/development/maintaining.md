@@ -144,3 +144,66 @@ cmake -S . -B build-mbedtls -DHTTPX_ENABLE_MBEDTLS=ON \
 - Linux GCC/Clang、Windows MSVC、macOS Clang 与 OpenSSL 专项 CI 通过。
 - release notes 明确稳定/实验边界、依赖影响、迁移与已知限制。
 - 不在候选加固阶段扩张产品/API 范围。
+
+## Security and release gates
+
+The normal CTest suite includes security_regression_tests, toolx_pack_security_contracts
+and release_preflight_tests. Linux must execute symbolic-link regressions; Windows
+also checks junctions without requiring symbolic-link privileges. HTTP loopback
+startup failures and clang-tidy findings fail the gate.
+
+TOOLX_ENABLE_SANITIZERS enables ASan/UBSan; TOOLX_BUILD_FUZZERS requires POSIX Clang.
+CI runs the full sanitizer suite and bounded cfgx/httpx/fsx fuzz smoke tests seeded
+from tests/fuzz/corpus. Mutated corpora belong in the build directory. Longer fuzz
+campaigns are separate from the bounded PR gate.
+
+Release builds run cmake/release_preflight.cmake with TOOLX_RELEASE_TAG (or the
+GITHUB_REF_NAME environment variable), checking CMake version, note heading/metadata
+and changelog. Keep candidate notes marked as candidates until the release is
+approved; their formal preflight must fail. Missing documents fail; publication
+never substitutes the template. Released docs-check and tag publication invoke the
+same preflight, including these exact, case-sensitive metadata lines:
+
+| Document | Required Released contract |
+| --- | --- |
+| README.md | Exactly one `> Status: Released`, `> Applies to: vMAJOR.MINOR.PATCH`, and `> Latest release: vMAJOR.MINOR.PATCH` |
+| CHANGELOG.md | Exactly one `> Status: Released` and `> Applies to: vMAJOR.MINOR.PATCH` in the preamble/current entry; first H2 is `## [MAJOR.MINOR.PATCH] - YYYY-MM-DD`; later H2 entries identify older versions |
+| Current release note | Exact `# ToolX vMAJOR.MINOR.PATCH` H1; exactly one `> Status: Released`, `> Applies to: vMAJOR.MINOR.PATCH`, and `> Source of truth for: release narrative` |
+
+All versions above must equal the tag and CMake project version. The complete
+README/current release note, and the CHANGELOG preamble/current entry, reserve
+`candidate` and `unreleased` as forbidden status words (case-insensitive). Remove
+`Target:` lines, `not yet tagged`, and prose using `latest tagged release`; the
+README's explicit `Latest release` metadata replaces that status prose. Update
+candidate headings, narrative metadata and limitations as well as the status block.
+Older CHANGELOG entries may retain historical candidate descriptions. Duplicate
+current headings or unversioned H2 sections cannot hide text from this check.
+
+`release_docs_contracts` constructs a complete released positive fixture and tests
+residual state, missing/duplicate/mismatched metadata, and incomplete transitions
+through both docs-check and standalone preflight. It also checks the candidate
+state remains valid for development and invalid for publication.
+Generated source archives are verified with cmake/source_archive_check.cmake and
+TOOLX_SOURCE_ARCHIVE. Local references, dependency archives, build/stage/temp
+directories and root logs are excluded.
+
+The GCC CI coverage gate requires 70% lines and 40% branches. The local GCC 15
+security-hardening baseline measured 72.3% lines and 43.6% branches across src/include;
+the margin accounts for toolchain differences. Revisit thresholds from measured
+reports instead of lowering them to hide regressions.
+
+All enabled clang-tidy findings are errors. The easily-swappable-parameters design
+heuristic is excluded because the stable 0.3.x API deliberately accepts adjacent
+source/destination and min/max parameters. Narrow, commented suppressions preserve
+public by-value signatures and document intentional exception handling, bitmask
+enums and std::function ownership modeling. Other findings are fixed rather than
+suppressed globally.
+
+Compile-time clang-tidy gates production libraries and installed CLIs. The explicit
+lint-check target additionally checks its listed contracts and showcase server.
+Other tests/examples are built and exercised normally and under sanitizers; their
+GTest assertion macros are not treated as production static-analysis evidence.
+
+Coverage emits separate XML and detailed HTML reports. The target verifies both
+artifacts, and Codecov receives only the explicit XML report with fallback discovery
+disabled. Missing artifacts or upload failures fail CI.

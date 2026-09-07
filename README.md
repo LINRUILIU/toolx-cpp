@@ -112,7 +112,7 @@ compared in the [cross-CLI matrix](docs/cli/matrix.md).
 
 ## Build and compatibility snapshot
 
-- CMake 3.20 or newer and a C++20 compiler are required.
+- CMake 3.20 or newer and a C++20 compiler are required; presets need CMake 3.21 or newer.
 - CI verifies current Linux GCC, Linux Clang, Windows MSVC, and macOS Clang
   environments. ToolX does not infer older minimum compiler versions from that
   matrix.

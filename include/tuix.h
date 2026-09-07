@@ -84,6 +84,8 @@ enum class KeyModifier : std::uint8_t
 
 inline KeyModifier operator|(KeyModifier a, KeyModifier b)
 {
+    // Bitmask combinations (0..7) are intentional, even without named enumerators.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     return static_cast<KeyModifier>(static_cast<std::uint8_t>(a) | static_cast<std::uint8_t>(b));
 }
 

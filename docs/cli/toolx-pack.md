@@ -46,7 +46,10 @@ manifest arrays.
 Selection paths are source-relative. Absolute, empty, `?`, and `..` segments
 are rejected. Without includes, all regular files are selected. Excludes apply
 after includes and support exact paths, `subtree/**`, `**/*.suffix`, and segment
-wildcards such as `bin/*.dll`.
+wildcards such as `bin/*.dll`. Explicit includes and excludes preserve leading
+and trailing spaces. On POSIX, backslashes and colons (including a `C:` prefix)
+are literal filename characters; only `/` separates path components. On Windows,
+backslashes remain separators and drive-qualified paths remain rejected.
 
 `--remove-extra` deletes stage paths outside the selected source set. `plan` and
 `--dry-run` do not create or modify stage, archive, journal or log outputs.
@@ -74,3 +77,21 @@ toolx-pack archive --src dist/demo --archive dist/demo.tar --json
 
 Contract coverage lives in
 [`cmake/toolx_pack_cli_contracts.cmake`](../../cmake/toolx_pack_cli_contracts.cmake).
+
+## Safe staging boundaries
+
+Selected source entries and destination paths cannot traverse symbolic links or
+Windows junctions/reparse points below the configured roots, including explicit
+manifest includes. `--remove-extra` reports directory inspection/enumeration
+failures; it does not silently accept an incomplete plan.
+
+Names containing `.old.tmp.`, `.new.tmp.` or `.removed.tmp.` are ordinary user
+artifacts. Cleanup is limited to exact temporary paths owned by the fsx transaction.
+Keep source/stage trees under exclusive control during staging; filesystem path
+checks do not guarantee protection against concurrent directory replacement.
+
+Source and stage roots must be disjoint after canonicalization, including aliases.
+With `--remove-extra`, obsolete entries and file/directory type conflicts are removed
+transactionally before copies. Later copy failures roll back those changes. Planning
+and dry runs do not mutate either tree. Native POSIX filenames are preserved while
+staging; tar archives retain the stricter portable member-name rules.

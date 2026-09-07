@@ -1,9 +1,12 @@
+#include "detail/multipart_boundary.h"
+#include <random>
 #include "httpx.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <cctype>
 #include <ctime>
 #include <cstdlib>
@@ -118,7 +121,7 @@ using SocketHandle = int;
 constexpr SocketHandle kInvalidSocket = -1;
 #endif
 
-enum class WaitState
+enum class WaitState : std::uint8_t
 {
     Ready = 0,
     Timeout,
@@ -361,39 +364,98 @@ bool IsRedirectStatus(int status_code)
     return status_code == 301 || status_code == 302 || status_code == 303 || status_code == 307 || status_code == 308;
 }
 
-std::string ResolveRedirectUrl(const ParsedUrl& base, std::string_view location)
+// RFC 3986 section 5.2.4: only path components participate in dot removal.
+std::string RemoveDotSegments(std::string_view path)
 {
-    if (location.find("://") != std::string_view::npos)
+    std::string out;
+    out.reserve(path.size());
+    while (!path.empty())
     {
-        return std::string(location);
-    }
-
-    if (!location.empty() && location[0] == '/')
-    {
-        const bool default_port =
-            (base.scheme == "http" && base.port == 80) || (base.scheme == "https" && base.port == 443);
-        std::string out = base.scheme + "://";
-        if (base.host_is_ipv6_literal)
+        if (path.starts_with("../"))
+            path.remove_prefix(3);
+        else if (path.starts_with("./") || path.starts_with("/./"))
+            path.remove_prefix(2);
+        else if (path == "/.")
+            path = "/";
+        else if (path.starts_with("/../") || path == "/..")
         {
-            out.append("[").append(base.host).append("]");
+            path = path == "/.." ? std::string_view("/") : path.substr(3);
+            const auto slash = out.rfind('/');
+            out.resize(slash == std::string::npos ? 0 : slash);
         }
+        else if (path == "." || path == "..")
+            path = {};
         else
         {
-            out.append(base.host);
+            const auto slash = path.find('/', path.front() == '/' ? 1 : 0);
+            const auto count = slash == std::string_view::npos ? path.size() : slash;
+            out.append(path.substr(0, count));
+            path.remove_prefix(count);
         }
-        if (!default_port)
-        {
-            out.push_back(':');
-            out.append(std::to_string(base.port));
-        }
-        out.append(location);
-        return out;
+    }
+    return out;
+}
+
+std::string ResolveRedirectUrl(const ParsedUrl& base, std::string_view location)
+{
+    const auto fragment_at = location.find('#');
+    const auto fragment = fragment_at == std::string_view::npos ? std::string_view{} : location.substr(fragment_at);
+    auto reference = location.substr(0, fragment_at);
+    const auto query_at = reference.find('?');
+    const auto query = query_at == std::string_view::npos ? std::string_view{} : reference.substr(query_at);
+    reference = reference.substr(0, query_at);
+
+    std::string origin;
+    bool own_authority = false;
+    const auto colon = reference.find(':');
+    const auto slash = reference.find('/');
+    if (colon != std::string_view::npos && (slash == std::string_view::npos || colon < slash))
+    {
+        // Absolute references are still validated by ParseUrlInternal. A colon
+        // in a query or fragment cannot turn a relative reference into a scheme.
+        if (!reference.substr(colon + 1).starts_with("//"))
+            return std::string(location);
+        origin = std::string(reference.substr(0, colon + 1));
+        reference.remove_prefix(colon + 1);
+        own_authority = true;
+    }
+    else if (reference.starts_with("//"))
+    {
+        origin = base.scheme + ":";
+        own_authority = true;
     }
 
-    std::string base_path = RequestPathFromTarget(base.target);
-    const auto slash = base_path.rfind('/');
-    const std::string dir = (slash == std::string::npos) ? "/" : base_path.substr(0, slash + 1);
-    return ResolveRedirectUrl(base, dir + std::string(location));
+    if (own_authority)
+    {
+        const auto authority_end = reference.find('/', 2);
+        origin.append(reference.substr(0, authority_end));
+        const auto path =
+            authority_end == std::string_view::npos ? std::string_view{} : reference.substr(authority_end);
+        return origin + RemoveDotSegments(path) + std::string(query) + std::string(fragment);
+    }
+
+    origin = base.scheme + "://";
+    origin += base.host_is_ipv6_literal ? "[" + base.host + "]" : base.host;
+    const bool default_port =
+        (base.scheme == "http" && base.port == 80) || (base.scheme == "https" && base.port == 443);
+    if (!default_port)
+        origin += ":" + std::to_string(base.port);
+
+    const auto base_path = RequestPathFromTarget(base.target);
+    if (reference.empty())
+    {
+        const auto base_query_at = base.target.find('?');
+        const auto inherited_query =
+            base_query_at == std::string::npos ? std::string{} : base.target.substr(base_query_at);
+        return origin + base_path + (query_at == std::string_view::npos ? inherited_query : std::string(query)) +
+               std::string(fragment);
+    }
+    const auto base_slash = base_path.rfind('/');
+    const auto merged =
+        reference.front() == '/'
+            ? std::string(reference)
+            : base_path.substr(0, base_slash == std::string::npos ? 0 : base_slash + 1) + std::string(reference);
+    return origin + RemoveDotSegments(merged) + std::string(query) + std::string(fragment);
 }
 
 void PruneExpiredCookies(std::vector<CookieEntry>* jar)
@@ -972,6 +1034,11 @@ WaitState WaitSocketReady(SocketHandle socket, bool want_read, std::uint64_t tim
 httpx::Result<ParsedUrl> ParseUrlInternal(std::string_view url)
 {
     httpx::Result<ParsedUrl> out;
+    if (std::any_of(url.begin(), url.end(), [](unsigned char c) { return c <= 0x20 || c == 0x7f; }))
+    {
+        out.error = MakeError(httpx::ErrorKind::InvalidUrl, "url contains raw whitespace or control characters");
+        return out;
+    }
     const auto delimiter = url.find("://");
     if (delimiter == std::string_view::npos)
     {
@@ -996,8 +1063,10 @@ httpx::Result<ParsedUrl> ParseUrlInternal(std::string_view url)
     }
     else
     {
-        parsed.target = std::string(rest.substr(authority_end));
-        if (!parsed.target.empty() && parsed.target[0] != '/')
+        const auto fragment = rest.find('#', authority_end);
+        parsed.target = std::string(rest.substr(
+            authority_end, fragment == std::string_view::npos ? std::string_view::npos : fragment - authority_end));
+        if (parsed.target.empty() || parsed.target[0] != '/')
         {
             parsed.target.insert(parsed.target.begin(), '/');
         }
@@ -1511,7 +1580,7 @@ httpx::Status EstablishSocks5NoAuthTunnel(SocketHandle socket, const ParsedUrl& 
     };
 
     const std::string greeting("\x05\x01\x00", 3);
-    const auto greeting_status = SendRawBytes(socket, greeting, options, deadline);
+    auto greeting_status = SendRawBytes(socket, greeting, options, deadline);
     if (!greeting_status.ok)
     {
         return greeting_status;
@@ -1564,7 +1633,7 @@ httpx::Status EstablishSocks5NoAuthTunnel(SocketHandle socket, const ParsedUrl& 
     connect_request.push_back(static_cast<char>((destination.port >> 8) & 0xff));
     connect_request.push_back(static_cast<char>(destination.port & 0xff));
 
-    const auto connect_status = SendRawBytes(socket, connect_request, options, deadline);
+    auto connect_status = SendRawBytes(socket, connect_request, options, deadline);
     if (!connect_status.ok)
     {
         return connect_status;
@@ -1680,6 +1749,70 @@ void MaybeInjectProxyAuthorization(httpx::Request* request, const httpx::ProxyOp
     request->headers.push_back({"Proxy-Authorization", "Basic " + Base64Encode(token)});
 }
 
+bool ValidHeaderValue(std::string_view value, bool allow_tab = true)
+{
+    return std::none_of(value.begin(), value.end(),
+                        [=](unsigned char c) { return (c < 0x20 && (!allow_tab || c != '\t')) || c == 0x7f; });
+}
+
+bool ValidHeaderName(std::string_view name)
+{
+    constexpr std::string_view punctuation = "!#$%&'*+-.^_`|~";
+    return !name.empty() && std::all_of(name.begin(), name.end(),
+                                        [&](unsigned char c)
+                                        {
+                                            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                                   (c >= '0' && c <= '9') ||
+                                                   punctuation.find(static_cast<char>(c)) != std::string_view::npos;
+                                        });
+}
+
+bool ValidateRequestMetadata(const httpx::Request& request, const httpx::ClientOptions& options, httpx::Error* error)
+{
+    auto reject = [&](const char* message)
+    {
+        *error = MakeError(httpx::ErrorKind::InvalidArgument, message, false);
+        return false;
+    };
+    if (!ValidHeaderValue(options.user_agent))
+        return reject("invalid user-agent");
+    bool length_seen = false;
+    bool host_seen = false;
+    for (const auto& [name, value] : request.headers)
+    {
+        if (!ValidHeaderName(name) || !ValidHeaderValue(value))
+            return reject("invalid request header");
+        const auto lower = ToLower(name);
+        if (lower == "transfer-encoding")
+            return reject("request transfer-encoding is not supported");
+        if (lower == "host")
+        {
+            if (host_seen || Trim(value).empty())
+                return reject("duplicate or empty host header");
+            host_seen = true;
+        }
+        if (lower == "content-length")
+        {
+            if (length_seen || !request.multipart.empty())
+                return reject("duplicate or multipart content-length");
+            length_seen = true;
+            std::size_t length = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), length);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || length != request.body.size())
+                return reject("content-length must match the request body size");
+        }
+        if (lower == "content-type" && !request.multipart.empty())
+            return reject("multipart content-type is generated by the client");
+    }
+    if (!request.multipart.empty() && !request.body.empty())
+        return reject("body and multipart cannot be combined");
+    for (const auto& part : request.multipart)
+        if (part.name.empty() || !ValidHeaderValue(part.name, false) || !ValidHeaderValue(part.filename, false) ||
+            !ValidHeaderValue(part.content_type, false))
+            return reject("invalid multipart metadata");
+    return true;
+}
+
 std::string EscapeQuoted(std::string_view input)
 {
     std::string out;
@@ -1697,9 +1830,16 @@ std::string EscapeQuoted(std::string_view input)
 
 std::string BuildMultipartBoundary()
 {
-    static std::atomic<std::uint64_t> next_id{1};
-    const auto seed = next_id.fetch_add(1, std::memory_order_relaxed);
-    return "httpx-boundary-" + std::to_string(seed);
+    std::random_device entropy;
+    std::string boundary = "httpx-";
+    constexpr char hex[] = "0123456789abcdef";
+    for (int word = 0; word < 4; ++word)
+    {
+        const auto bits = static_cast<std::uint32_t>(entropy());
+        for (int shift = 28; shift >= 0; shift -= 4)
+            boundary.push_back(hex[(bits >> shift) & 15u]);
+    }
+    return boundary;
 }
 
 httpx::Result<std::string> BuildMultipartBody(const httpx::Request& request, std::string* boundary_out)
@@ -1724,7 +1864,20 @@ httpx::Result<std::string> BuildMultipartBody(const httpx::Request& request, std
         return out;
     }
 
-    const std::string boundary = BuildMultipartBoundary();
+    std::string boundary;
+    try
+    {
+        if (!toolx_detail::SelectMultipartBoundary(request.multipart, BuildMultipartBoundary, &boundary))
+        {
+            out.error = MakeError(httpx::ErrorKind::Internal, "multipart boundary collision limit exceeded");
+            return out;
+        }
+    }
+    catch (const std::exception&)
+    {
+        out.error = MakeError(httpx::ErrorKind::Internal, "cannot generate multipart boundary");
+        return out;
+    }
     std::string body;
 
     for (const auto& part : request.multipart)
@@ -1814,6 +1967,9 @@ httpx::Result<std::string> BuildRequestPayload(const httpx::Request& request, co
 {
     httpx::Result<std::string> out;
 
+    if (!ValidateRequestMetadata(request, options, &out.error))
+        return out;
+
     std::string request_body = request.body;
     std::string multipart_boundary;
     if (!request.multipart.empty())
@@ -1887,7 +2043,8 @@ httpx::Result<std::string> BuildRequestPayload(const httpx::Request& request, co
     payload.append("\r\n");
     payload.append(request_body);
 
-    if (payload.size() > options.limits.max_body_bytes + options.limits.max_header_bytes)
+    if (request_body.size() > options.limits.max_body_bytes ||
+        payload.size() - request_body.size() > options.limits.max_header_bytes)
     {
         out.error = MakeError(httpx::ErrorKind::InvalidArgument, "request payload exceeds configured limit", false);
         return out;
@@ -2276,7 +2433,7 @@ httpx::Result<httpx::Response> ReadHttpResponse(SocketHandle socket, const httpx
             }
             cursor += need;
 
-            if (cursor > 64u * 1024u)
+            if (cursor > std::size_t{64} * 1024u)
             {
                 chunk_wire.erase(0, cursor);
                 cursor = 0;
@@ -2521,7 +2678,7 @@ httpx::Result<httpx::Response> ReadHttpResponseWithCustomRecv(const httpx::Reque
             }
             cursor += need;
 
-            if (cursor > 64u * 1024u)
+            if (cursor > std::size_t{64} * 1024u)
             {
                 chunk_wire.erase(0, cursor);
                 cursor = 0;
@@ -3487,7 +3644,7 @@ httpx::Result<httpx::Response> SendByDefaultTransport(const httpx::Client* owner
         return out;
     }
 
-    const auto response = ReadHttpResponse(socket, wire_request, options, deadline);
+    auto response = ReadHttpResponse(socket, wire_request, options, deadline);
     if (!response.ok)
     {
         out = response;
@@ -4697,6 +4854,8 @@ Result<Response> Client::Patch(std::string url, std::string body, HeaderList hea
     return Send(req);
 }
 
+// Preserve the published by-value signature in 0.3.x.
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 Status Client::DownloadFile(std::string url, std::string output_path, DownloadOptions options)
 {
     Status status;
@@ -4908,6 +5067,8 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
     return status;
 }
 
+// Preserve the published by-value signature in 0.3.x.
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 Result<Response> Client::UploadFile(std::string url, std::string field_name, std::string file_path, HeaderList headers)
 {
     Result<Response> out;
@@ -5025,6 +5186,8 @@ Result<Response> Client::SendOnce(const Request& request, const ClientOptions& e
         }
 
         Result<Response> out;
+        if (!ValidateRequestMetadata(normalized, effective_options, &out.error))
+            return out;
         if (effective_options.transport)
         {
             out = effective_options.transport(normalized, effective_options);

@@ -641,6 +641,8 @@ void SubcommandTree::RegisterRoot(std::string name, std::string description)
     roots_.push_back({std::move(name), std::move(description), {}});
 }
 
+// Preserve the published by-value signature in 0.3.x.
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 void SubcommandTree::RegisterLeaf(std::string root, std::string leaf, std::string description)
 {
     if (root.empty() || leaf.empty())
@@ -2395,7 +2397,7 @@ ParseResult Parser::Parse(int argc, const char* const argv[]) const
             while (token_index < positional_tokens.size())
             {
                 std::string normalized;
-                const std::string raw = positional_tokens[token_index++];
+                const std::string& raw = positional_tokens[token_index++];
                 if (auto err =
                         validate_typed_value(raw, positional.value_type, positional.name, raw, positional.min_value,
                                              positional.max_value, positional.choices, positional.range_policy,
@@ -2421,7 +2423,7 @@ ParseResult Parser::Parse(int argc, const char* const argv[]) const
         if (token_index < positional_tokens.size())
         {
             std::string normalized;
-            const std::string raw = positional_tokens[token_index++];
+            const std::string& raw = positional_tokens[token_index++];
             if (auto err = validate_typed_value(raw, positional.value_type, positional.name, raw, positional.min_value,
                                                 positional.max_value, positional.choices, positional.range_policy,
                                                 positional.default_value, positional.converter, &normalized, result);

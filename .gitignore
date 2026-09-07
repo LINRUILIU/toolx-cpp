@@ -24,3 +24,8 @@ Testing/
 
 # reference 本地实验/临时工具，不进入仓库
 /reference/
+
+# Compiler coverage intermediates
+*.gcov
+*.gcda
+*.gcno

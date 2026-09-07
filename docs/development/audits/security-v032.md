@@ -173,3 +173,30 @@ secret，因此改用当前固定版本 Action 已支持的 GitHub OIDC，通过
   两处重复/布尔表达式告警修正后，HTTP 与 fuzz 定向 clang-tidy 复验通过。
   failpoint 子进程及 runner 的补充 lint 通过。最终 HTTP 修改后，两平台 HTTP
   测试再次通过，GCC 完整 coverage 测试与报告重新生成。
+
+
+## Released 最终态合同补充（2026-09-08）
+
+基线 `fb6576b0cf2ab07934458cb9fcea8a555f698f37` 的 12 项远端检查已通过，
+但本地审查指出正式夹具仍含候选正文。完整 Git 备份
+`temp/security-audit/review3-baseline.bundle` 已验证。
+
+校验统一放在 release preflight，docs-check 和 GitHub Release 正文生成前均调用
+同一入口。README、CHANGELOG 前言/当前条目及当前 release note 必须具有唯一、
+精确匹配 tag 的 Released 元数据；README 还声明 Latest release，release note
+声明正式 release narrative。校验同时拒绝保留的候选/未发布状态词、Target 行及
+陈旧的 latest tagged release 说明。具体合同见 maintaining.md。
+
+正例改为完整正式文档，分别注入三个文件的残留文案、缺失/重复/近似版本元数据，
+共 48 个独立负例，每个都要求 docs-check 和独立 preflight 拒绝。CHANGELOG
+历史候选文字有正例；重复当前标题和非版本标题不能把当前状态伪装成历史。
+新测试在修复前明确复现 README 保留候选 Target 时独立 preflight 仍返回成功，
+记录见 `temp/security-audit/review3-red.log`。
+
+本轮仅修改 CMake 门禁、合同测试与维护文档，不改变 C++/CLI API。实际仓库保持
+候选状态，继续禁止正式发布；不执行合并或创建 tag。
+
+
+验证：Windows 和 Linux 的 release_docs_contracts / release_preflight_tests 均
+2/2 通过；完整正式状态源树中的合同测试也通过。66 篇文档检查通过。此次没有
+修改生产 C++，因此采用门禁合同定向回归；运行库完整测试沿用基线验证记录。

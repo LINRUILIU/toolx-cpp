@@ -159,14 +159,30 @@ campaigns are separate from the bounded PR gate.
 
 Release builds run cmake/release_preflight.cmake with TOOLX_RELEASE_TAG (or the
 GITHUB_REF_NAME environment variable), checking CMake version, note heading/metadata
-and changelog. Formal publication requires an exact `## [MAJOR.MINOR.PATCH]`
-changelog heading and `> Status: Released` in the notes. Keep candidate notes marked
-as candidates until the release is approved; their formal preflight must fail.
-Missing notes fail; publication never substitutes the template. The docs check
-accepts a consistent candidate state or a consistent released state. Released
-documentation must pass the same preflight and remove candidate wording from the
-README. `release_docs_contracts` exercises both states and rejects incomplete
-transitions and unknown status metadata.
+and changelog. Keep candidate notes marked as candidates until the release is
+approved; their formal preflight must fail. Missing documents fail; publication
+never substitutes the template. Released docs-check and tag publication invoke the
+same preflight, including these exact, case-sensitive metadata lines:
+
+| Document | Required Released contract |
+| --- | --- |
+| README.md | Exactly one `> Status: Released`, `> Applies to: vMAJOR.MINOR.PATCH`, and `> Latest release: vMAJOR.MINOR.PATCH` |
+| CHANGELOG.md | Exactly one `> Status: Released` and `> Applies to: vMAJOR.MINOR.PATCH` in the preamble/current entry; first H2 is `## [MAJOR.MINOR.PATCH] - YYYY-MM-DD`; later H2 entries identify older versions |
+| Current release note | Exact `# ToolX vMAJOR.MINOR.PATCH` H1; exactly one `> Status: Released`, `> Applies to: vMAJOR.MINOR.PATCH`, and `> Source of truth for: release narrative` |
+
+All versions above must equal the tag and CMake project version. The complete
+README/current release note, and the CHANGELOG preamble/current entry, reserve
+`candidate` and `unreleased` as forbidden status words (case-insensitive). Remove
+`Target:` lines, `not yet tagged`, and prose using `latest tagged release`; the
+README's explicit `Latest release` metadata replaces that status prose. Update
+candidate headings, narrative metadata and limitations as well as the status block.
+Older CHANGELOG entries may retain historical candidate descriptions. Duplicate
+current headings or unversioned H2 sections cannot hide text from this check.
+
+`release_docs_contracts` constructs a complete released positive fixture and tests
+residual state, missing/duplicate/mismatched metadata, and incomplete transitions
+through both docs-check and standalone preflight. It also checks the candidate
+state remains valid for development and invalid for publication.
 Generated source archives are verified with cmake/source_archive_check.cmake and
 TOOLX_SOURCE_ARCHIVE. Local references, dependency archives, build/stage/temp
 directories and root logs are excluded.

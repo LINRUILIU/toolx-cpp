@@ -9,6 +9,8 @@ Target: `v0.3.2` release candidate. The latest tagged release is `v0.3.1`.
 
 ### Security hardening
 
+- Require complete Released metadata and reject residual candidate prose before publishing.
+
 - Recover newly created copy parents after interruption using valid FSXJ3 staging records.
 - Allow consistent released documentation through docs-check while blocking candidate publication.
 - Resolve relative HTTP redirects with the full base path and correct query inheritance.

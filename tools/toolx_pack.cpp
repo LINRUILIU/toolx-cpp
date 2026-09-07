@@ -159,26 +159,11 @@ int ExitError(bool json_mode, int code, std::string_view message, const cfgx::No
     return code;
 }
 
-std::string TrimCopy(std::string_view input)
-{
-    std::size_t begin = 0;
-    while (begin < input.size() && std::isspace(static_cast<unsigned char>(input[begin])) != 0)
-    {
-        ++begin;
-    }
-
-    std::size_t end = input.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(input[end - 1])) != 0)
-    {
-        --end;
-    }
-
-    return std::string(input.substr(begin, end - begin));
-}
-
 std::string NormalizeSlashes(std::string text)
 {
+#ifdef _WIN32
     std::replace(text.begin(), text.end(), '\\', '/');
+#endif
     return text;
 }
 
@@ -210,16 +195,18 @@ bool IsLikelyAbsolutePath(std::string_view text)
     {
         return false;
     }
+#ifdef _WIN32
     if (text.front() == '/' || text.front() == '\\')
-    {
         return true;
-    }
     return text.size() >= 2 && std::isalpha(static_cast<unsigned char>(text[0])) != 0 && text[1] == ':';
+#else
+    return text.front() == '/';
+#endif
 }
 
 bool NormalizeRelativePath(std::string_view raw, bool allow_wildcards, std::string* normalized, std::string* error)
 {
-    std::string text = NormalizeSlashes(TrimCopy(raw));
+    std::string text = NormalizeSlashes(std::string(raw));
     while (text.rfind("./", 0) == 0)
     {
         text.erase(0, 2);

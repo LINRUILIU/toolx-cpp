@@ -44,8 +44,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         // Exercise the production collision scan without requiring a network transport.
         int attempt = 0;
         (void)toolx_detail::SelectMultipartBoundary(
-            request.multipart, [&]() { return (data[0] & 1u) ? text : "httpx-boundary-" + std::to_string(++attempt); },
-            &boundary);
+            request.multipart,
+            [&]() { return ((data[0] / 6u) & 1u) ? text : "httpx-boundary-" + std::to_string(++attempt); }, &boundary);
         break;
     }
     }

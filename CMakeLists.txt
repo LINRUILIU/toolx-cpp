@@ -496,6 +496,8 @@ if(TOOLX_BUILD_TESTS)
     add_test(NAME security_regression_tests COMMAND security_regression_tests)
     add_test(NAME coverage_report_check_tests
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/coverage_report_check_tests.cmake")
+    add_test(NAME release_docs_contracts
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/release_docs_contracts.cmake")
     add_test(NAME release_preflight_tests
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/release_preflight_tests.cmake")
     add_test(NAME source_archive_check_tests

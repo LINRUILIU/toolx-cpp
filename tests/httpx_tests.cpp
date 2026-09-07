@@ -1793,6 +1793,70 @@ TEST(HttpxClientTests, RedirectTargetsOmitFragments)
     EXPECT_EQ((*captured)[1].find("secret"), std::string::npos);
 }
 
+TEST(HttpxClientTests, RelativeRedirectComponentsFollowUriResolutionRules)
+{
+    const std::string base = "http://example.test/a/b/c?old=1";
+    for (const auto& [location, expected] : std::vector<std::pair<std::string, std::string>>{
+             {"?new=2", "http://example.test/a/b/c?new=2"},
+             {"#frag", "http://example.test/a/b/c?old=1#frag"},
+             {"?#frag", "http://example.test/a/b/c?#frag"},
+             {"../d", "http://example.test/a/d"},
+             {"./d/../e?x=/../#frag", "http://example.test/a/b/e?x=/../#frag"},
+             {"../../../../d", "http://example.test/d"},
+             {"/x/./y/../z", "http://example.test/x/z"},
+             {"//other.test/x/../z?q=2", "http://other.test/z?q=2"},
+             {"https://other.test/x/../z", "https://other.test/z"},
+             {"%2e%2e/d", "http://example.test/a/b/%2e%2e/d"}})
+    {
+        std::vector<std::string> urls;
+        httpx::ClientOptions options;
+        options.use_proxy_from_environment = false;
+        options.redirects.follow = true;
+        options.transport = [&](const httpx::Request& request, const httpx::ClientOptions&)
+        {
+            urls.push_back(request.url);
+            httpx::Result<httpx::Response> out;
+            out.ok = true;
+            out.value.status_code = urls.size() == 1 ? 302 : 200;
+            if (urls.size() == 1)
+                out.value.headers = {{"Location", location}};
+            return out;
+        };
+        const auto result = httpx::Client(options).Get(base);
+        ASSERT_TRUE(result.ok) << location << ": " << result.error.message;
+        ASSERT_EQ(urls.size(), 2u);
+        EXPECT_EQ(urls.back(), expected) << location;
+    }
+}
+
+TEST(HttpxClientTests, QueryAndFragmentRedirectsPreserveTheBasePath)
+{
+    for (const auto& [location, target] : std::vector<std::pair<std::string, std::string>>{
+             {"?new=2", "/dir/page?new=2"},
+             {"?", "/dir/page?"},
+             {"#section", "/dir/page?old=1"},
+             {"?next=http://example.invalid/a#fragment", "/dir/page?next=http://example.invalid/a"}})
+    {
+        auto captured = std::make_shared<std::vector<std::string>>();
+        {
+            const auto server = StartScriptedServer(
+                {"HTTP/1.1 302 Found\r\nLocation: " + location + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                 "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"},
+                captured);
+            ASSERT_TRUE(server.has_value());
+            httpx::ClientOptions options;
+            options.use_proxy_from_environment = false;
+            options.redirects.follow = true;
+            options.timeout.total_ms = 3000;
+            const auto result =
+                httpx::Client(options).Get("http://127.0.0.1:" + std::to_string(server->port) + "/dir/page?old=1");
+            EXPECT_TRUE(result.ok) << result.error.message;
+        }
+        ASSERT_EQ(captured->size(), 2u);
+        EXPECT_EQ((*captured)[1].find("GET " + target + " HTTP/1.1\r\n"), 0u) << location;
+    }
+}
+
 TEST(HttpxClientTests, ProxyUsesAbsoluteFormTarget)
 {
     auto captured = std::make_shared<std::string>();

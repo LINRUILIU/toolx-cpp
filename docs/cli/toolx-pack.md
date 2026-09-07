@@ -46,7 +46,10 @@ manifest arrays.
 Selection paths are source-relative. Absolute, empty, `?`, and `..` segments
 are rejected. Without includes, all regular files are selected. Excludes apply
 after includes and support exact paths, `subtree/**`, `**/*.suffix`, and segment
-wildcards such as `bin/*.dll`.
+wildcards such as `bin/*.dll`. Explicit includes and excludes preserve leading
+and trailing spaces. On POSIX, backslashes and colons (including a `C:` prefix)
+are literal filename characters; only `/` separates path components. On Windows,
+backslashes remain separators and drive-qualified paths remain rejected.
 
 `--remove-extra` deletes stage paths outside the selected source set. `plan` and
 `--dry-run` do not create or modify stage, archive, journal or log outputs.

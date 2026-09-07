@@ -130,3 +130,46 @@ secret，因此改用当前固定版本 Action 已支持的 GitHub OIDC，通过
 `contents: read` / `id-token: write` 和 `use_oidc: true` 获取短期上传凭证。
 保持 `fail_ci_if_error: true`、显式 XML 和禁止回退搜索，不改变覆盖率门槛。
 此变更仅涉及 CI 认证；验证固定 Action 输入/文档和 workflow 配置后推送回查。
+
+
+## 第二轮本地审查修复（2026-09-07）
+
+本轮基线为干净提交 `828210abbf716b2ebbca9cab4b0100af5957a1d3`；完整 Git
+备份 `temp/security-audit/review2-baseline.bundle` 已验证。该提交远端 12 项检查
+已通过，但本地评论仍发现两个 P1、两个 P2 和一个 P3 测试缺口。
+
+- **FSXJ3 新父目录恢复：** 上轮普通父目录 RemovePath 记录可用于同进程回滚，
+  却被 FSXJ3 恢复的非 staging 路径保护拒绝。本轮通过临时目录创建父目录，使用
+  既有 staging REMOVE 与逆向 MOVE 记录；不更改格式，也不放宽恢复保护。
+  子进程回归覆盖首次创建前后、嵌套父目录创建后和目标被外部文件占用的冲突，
+  并要求子进程准确以 failpoint 退出码 86 结束。修复前测试明确报出
+  `FSXJ3 refuses to remove a non-staging path while recovering`。
+- **正式发布文档：** docs-check 根据当前版本与状态检查候选/正式文档，正式状态
+  复用 release preflight。独立夹具验证完整候选、完整正式、未完成转换、未知状态。
+  相同正式夹具在基线 docs-check 上失败，在修复后通过。实际仓库仍保持候选状态，不能通过正式发布预检。
+- **相对重定向：** 按 RFC 3986 分离 authority、path、query、fragment，保留
+  query-only / fragment-only 引用的完整原路径，正确继承或清空 query，仅对路径
+  去除点段。覆盖真实 loopback 报文、跨主机引用和百分号编码点段。
+- **显式 pack 选择：** include/exclude 使用本机路径语义且不裁剪空格。Linux
+  黑盒覆盖反斜杠、冒号、`C:` 前缀、前导反斜杠及首尾空格的精确选择和排除。
+  Windows 分隔符与根路径限制、tar 可移植成员名限制保持有效。
+- **multipart fuzz：** 分支选择使用除去主 switch 编号后的位，两个生成器均可达，
+  并增加耗尽种子；生产 boundary 选择仍最多扫描八次。
+
+本轮无公共 API 变更。继续保留草稿 PR，不合并、不打发布 tag。
+
+
+本轮验证结果：
+
+- Windows MSVC Debug、Linux Clang 20 ASan/UBSan 各 43/43 CTest 通过。
+  收紧退出码断言后，两平台再次通过进程中断恢复回归。
+- GCC 15 coverage 目标完成 43/43 测试；行覆盖率 72.65%（9109/12538），
+  分支覆盖率 44.06%（8938/20288），高于 70%/40% 门槛。XML 可解析，全部
+  23 个 class 在 src/include 范围，HTML 与产物校验通过。
+- cfgx/httpx/fsx libFuzzer 分别完成 203491、210502、102674 次输入执行，
+  每项约 20 秒，未发现崩溃。
+- 安装 smoke、ZIP 独立 consumer/smoke、源码包内容和 66 篇文档检查通过。
+- clang-format 20 全量检查通过。全部配置 lint 文件已检查；HTTP 新代码的
+  两处重复/布尔表达式告警修正后，HTTP 与 fuzz 定向 clang-tidy 复验通过。
+  failpoint 子进程及 runner 的补充 lint 通过。最终 HTTP 修改后，两平台 HTTP
+  测试再次通过，GCC 完整 coverage 测试与报告重新生成。

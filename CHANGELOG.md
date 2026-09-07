@@ -9,6 +9,12 @@ Target: `v0.3.2` release candidate. The latest tagged release is `v0.3.1`.
 
 ### Security hardening
 
+- Recover newly created copy parents after interruption using valid FSXJ3 staging records.
+- Allow consistent released documentation through docs-check while blocking candidate publication.
+- Resolve relative HTTP redirects with the full base path and correct query inheritance.
+- Preserve literal POSIX names in explicit pack include/exclude selections.
+- Exercise both multipart boundary collision and exhaustion fuzz branches.
+
 - Prevent overlapping pack roots and preserve replacements during remove-extra staging.
 - Restore type conflicts on rollback, including newly created copy parent directories.
 - Strip HTTP fragments, reject blank Host values and bound multipart collision work.

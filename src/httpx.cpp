@@ -364,39 +364,98 @@ bool IsRedirectStatus(int status_code)
     return status_code == 301 || status_code == 302 || status_code == 303 || status_code == 307 || status_code == 308;
 }
 
-std::string ResolveRedirectUrl(const ParsedUrl& base, std::string_view location)
+// RFC 3986 section 5.2.4: only path components participate in dot removal.
+std::string RemoveDotSegments(std::string_view path)
 {
-    if (location.find("://") != std::string_view::npos)
+    std::string out;
+    out.reserve(path.size());
+    while (!path.empty())
     {
-        return std::string(location);
-    }
-
-    if (!location.empty() && location[0] == '/')
-    {
-        const bool default_port =
-            (base.scheme == "http" && base.port == 80) || (base.scheme == "https" && base.port == 443);
-        std::string out = base.scheme + "://";
-        if (base.host_is_ipv6_literal)
+        if (path.starts_with("../"))
+            path.remove_prefix(3);
+        else if (path.starts_with("./") || path.starts_with("/./"))
+            path.remove_prefix(2);
+        else if (path == "/.")
+            path = "/";
+        else if (path.starts_with("/../") || path == "/..")
         {
-            out.append("[").append(base.host).append("]");
+            path = path == "/.." ? std::string_view("/") : path.substr(3);
+            const auto slash = out.rfind('/');
+            out.resize(slash == std::string::npos ? 0 : slash);
         }
+        else if (path == "." || path == "..")
+            path = {};
         else
         {
-            out.append(base.host);
+            const auto slash = path.find('/', path.front() == '/' ? 1 : 0);
+            const auto count = slash == std::string_view::npos ? path.size() : slash;
+            out.append(path.substr(0, count));
+            path.remove_prefix(count);
         }
-        if (!default_port)
-        {
-            out.push_back(':');
-            out.append(std::to_string(base.port));
-        }
-        out.append(location);
-        return out;
+    }
+    return out;
+}
+
+std::string ResolveRedirectUrl(const ParsedUrl& base, std::string_view location)
+{
+    const auto fragment_at = location.find('#');
+    const auto fragment = fragment_at == std::string_view::npos ? std::string_view{} : location.substr(fragment_at);
+    auto reference = location.substr(0, fragment_at);
+    const auto query_at = reference.find('?');
+    const auto query = query_at == std::string_view::npos ? std::string_view{} : reference.substr(query_at);
+    reference = reference.substr(0, query_at);
+
+    std::string origin;
+    bool own_authority = false;
+    const auto colon = reference.find(':');
+    const auto slash = reference.find('/');
+    if (colon != std::string_view::npos && (slash == std::string_view::npos || colon < slash))
+    {
+        // Absolute references are still validated by ParseUrlInternal. A colon
+        // in a query or fragment cannot turn a relative reference into a scheme.
+        if (!reference.substr(colon + 1).starts_with("//"))
+            return std::string(location);
+        origin = std::string(reference.substr(0, colon + 1));
+        reference.remove_prefix(colon + 1);
+        own_authority = true;
+    }
+    else if (reference.starts_with("//"))
+    {
+        origin = base.scheme + ":";
+        own_authority = true;
     }
 
-    std::string base_path = RequestPathFromTarget(base.target);
-    const auto slash = base_path.rfind('/');
-    const std::string dir = (slash == std::string::npos) ? "/" : base_path.substr(0, slash + 1);
-    return ResolveRedirectUrl(base, dir + std::string(location));
+    if (own_authority)
+    {
+        const auto authority_end = reference.find('/', 2);
+        origin.append(reference.substr(0, authority_end));
+        const auto path =
+            authority_end == std::string_view::npos ? std::string_view{} : reference.substr(authority_end);
+        return origin + RemoveDotSegments(path) + std::string(query) + std::string(fragment);
+    }
+
+    origin = base.scheme + "://";
+    origin += base.host_is_ipv6_literal ? "[" + base.host + "]" : base.host;
+    const bool default_port =
+        (base.scheme == "http" && base.port == 80) || (base.scheme == "https" && base.port == 443);
+    if (!default_port)
+        origin += ":" + std::to_string(base.port);
+
+    const auto base_path = RequestPathFromTarget(base.target);
+    if (reference.empty())
+    {
+        const auto base_query_at = base.target.find('?');
+        const auto inherited_query =
+            base_query_at == std::string::npos ? std::string{} : base.target.substr(base_query_at);
+        return origin + base_path + (query_at == std::string_view::npos ? inherited_query : std::string(query)) +
+               std::string(fragment);
+    }
+    const auto base_slash = base_path.rfind('/');
+    const auto merged =
+        reference.front() == '/'
+            ? std::string(reference)
+            : base_path.substr(0, base_slash == std::string::npos ? 0 : base_slash + 1) + std::string(reference);
+    return origin + RemoveDotSegments(merged) + std::string(query) + std::string(fragment);
 }
 
 void PruneExpiredCookies(std::vector<CookieEntry>* jar)

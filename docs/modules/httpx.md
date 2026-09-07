@@ -102,6 +102,11 @@ the boundary), so caller overrides are rejected. Invalid metadata returns
 custom transports. Whitespace-only Host values are rejected.
 
 URL fragments are omitted from direct, proxy and redirected request targets;
-percent-encoded hashes remain unchanged. Multipart boundaries use random candidates
+percent-encoded hashes remain unchanged. Relative redirects follow
+[RFC 3986 section 5.2](https://www.rfc-editor.org/rfc/rfc3986.html#section-5.2):
+a query-only reference retains the full base path, and a fragment-only reference
+also retains its query. An explicit empty query clears the previous query. Dot
+segments are resolved only in the path; percent-encoded dots remain unchanged.
+Multipart boundaries use random candidates
 and at most eight collision checks against part data. Entropy failure or exhausted
 attempts return `Internal` instead of retrying without a bound.

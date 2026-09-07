@@ -89,6 +89,8 @@ source and destination trees under exclusive control while planning and executin
 operations. Direct `BatchPlan` file operations and recovery journals remain trusted
 caller inputs; they do not infer a containment root.
 
-Copy-file transactions record newly created parent directories in their undo journal.
-Rollback removes those directories only when empty, allowing an old file replaced
-by a directory to be restored after a later copy failure.
+Copy-file transactions create missing parents through staging directories and record
+staging REMOVE plus inverse MOVE entries using the existing FSXJ3 format. Both
+rollback and crash recovery remove those directories only when empty, allowing an
+old file replaced by a directory to be restored. A conflicting path preserves the
+journal for inspection; ordinary parent paths are never recorded as REMOVE entries.

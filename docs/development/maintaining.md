@@ -162,7 +162,11 @@ GITHUB_REF_NAME environment variable), checking CMake version, note heading/meta
 and changelog. Formal publication requires an exact `## [MAJOR.MINOR.PATCH]`
 changelog heading and `> Status: Released` in the notes. Keep candidate notes marked
 as candidates until the release is approved; their formal preflight must fail.
-Missing notes fail; publication never substitutes the template.
+Missing notes fail; publication never substitutes the template. The docs check
+accepts a consistent candidate state or a consistent released state. Released
+documentation must pass the same preflight and remove candidate wording from the
+README. `release_docs_contracts` exercises both states and rejects incomplete
+transitions and unknown status metadata.
 Generated source archives are verified with cmake/source_archive_check.cmake and
 TOOLX_SOURCE_ARCHIVE. Local references, dependency archives, build/stage/temp
 directories and root logs are excluded.

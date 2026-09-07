@@ -484,7 +484,11 @@ void trigger_journal_failpoint_after_sync(const ExecuteState& state)
     const char* value = std::getenv("TOOLX_FSX_TEST_FAILPOINT");
     if (value != nullptr && std::strcmp(value, "after-journal-sync-before-mutation") == 0)
     {
-        std::_Exit(86);
+        static unsigned hits = 0;
+        const char* stop_at = std::getenv("TOOLX_FSX_TEST_FAILPOINT_HIT");
+        const unsigned requested = stop_at == nullptr ? 1u : static_cast<unsigned>(std::strtoul(stop_at, nullptr, 10));
+        if (++hits == requested)
+            std::_Exit(86);
     }
 #else
     (void)state;
@@ -790,16 +794,20 @@ bool ensure_copy_parent_tracked(const Path& destination, ExecuteState* state, st
     }
     for (auto it = missing.rbegin(); it != missing.rend(); ++it)
     {
-        // Undo removes only an empty directory, never another writer's contents.
-        // Recording before creation also makes type transitions recoverable from a journal.
-        if (!record_undo(state, {UndoAction::Kind::RemovePath, *it, {}}, error, true))
+        // Use existing FSXJ3 staging REMOVE + inverse MOVE records. A normal
+        // parent path must never be encoded as REMOVE (recovery rejects that).
+        const Path staging = make_temp_path(*it, "mkdir");
+        if (!record_undo(state, {UndoAction::Kind::RemovePath, staging, {}}, error, true))
             return false;
-        std::filesystem::create_directory(*it, ec);
+        std::filesystem::create_directory(staging, ec);
         if (ec)
         {
             *error = utils::err::join_context("fsx", "copy_file", ec.message());
             return false;
         }
+        if (!record_undo(state, {UndoAction::Kind::MovePath, *it, staging}, error, true) ||
+            !move_path_without_overwrite(staging, *it, "copy_file", error))
+            return false;
     }
     return true;
 }

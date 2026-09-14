@@ -2,17 +2,15 @@
 
 > Audience: users and maintainers
 > Status: Active direction, not a release promise
-> Applies to: post-`v0.3.1` and the `v0.3.2` release-candidate cycle
+> Applies to: `v0.3.2` and subsequent maintenance
 > Source of truth for: current product direction and deferred scope
 
-## Now — finish the v0.3.2 candidate
+## Now — maintain v0.3.2
 
-- Verify deterministic proxy opt-out in `toolx-http` and `toolx-sync`.
-- Validate FSXJ3 write-ahead recovery behavior without overstating power-loss
-  atomicity.
-- Keep real OpenSSL loopback TLS coverage green.
-- Consolidate public documentation, dependency claims, examples and release
-  narrative into a single navigable system.
+The release completes deterministic proxy control, FSXJ3 recovery, filesystem/HTTP/
+pack hardening and the documentation system. Keep the cross-platform test matrix,
+OpenSSL loopback coverage, sanitizers/fuzz and release checks green as fixes arrive.
+Track reproducible user reports within the documented `0.3.x` compatibility boundary.
 
 ## Next — consolidate the existing product line
 

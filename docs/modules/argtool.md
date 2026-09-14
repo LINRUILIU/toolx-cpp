@@ -2,7 +2,7 @@
 
 > Audience: C++ CLI authors
 > Status: Stable core module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: intended `argtool` use and public API grouping
 
 ## Role and boundary

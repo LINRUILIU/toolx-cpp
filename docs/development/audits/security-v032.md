@@ -200,3 +200,18 @@ secret，因此改用当前固定版本 Action 已支持的 GitHub OIDC，通过
 验证：Windows 和 Linux 的 release_docs_contracts / release_preflight_tests 均
 2/2 通过；完整正式状态源树中的合同测试也通过。66 篇文档检查通过。此次没有
 修改生产 C++，因此采用门禁合同定向回归；运行库完整测试沿用基线验证记录。
+
+
+## 正式发布文档冻结（2026-09-14）
+
+在 `07aedd5` 全部远端检查通过后，维护者授权进入开发日志审核、正式文档冻结及
+发布流程。基线备份 `temp/security-audit/release-freeze-baseline.bundle` 已验证。
+README.dev.md 改为周期总结并补齐 PR #4 加固内容；README、CHANGELOG 和当前
+release note 切换到 Released 合同，更新版本比较链接与当前公开指南适用版本。
+历史 candidate 里程碑、审计和示例采集信息仍保留原始语境。
+
+文档检查、正式 `v0.3.2` preflight 均通过；维护者指定的
+`build/pr4-review-msvc` 通过 43/43 CTest，Linux 发布合同 2/2 通过。本次只调整
+文档。最终文档提交仍须等待 PR 与当前 main 合并结果的 CI 全绿，再取消 Draft
+并合并；同步 main、确认工作树干净和 HEAD 等于 origin/main 后，创建 annotated
+`v0.3.2` tag。GitHub Release 由现有 tag workflow 构建和发布。

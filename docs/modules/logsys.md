@@ -2,7 +2,7 @@
 
 > Audience: C++ tools and services requiring structured diagnostics
 > Status: Stable core module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: intended `logsys` use and public API grouping
 
 ## Role and boundary

@@ -2,7 +2,7 @@
 
 > Audience: C++ tools needing deterministic terminal primitives
 > Status: Experimental-foundation module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: current terminal building blocks and non-goals
 
 ## Role and boundary

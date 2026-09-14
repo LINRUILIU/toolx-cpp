@@ -2,7 +2,7 @@
 
 > Audience: C++ consumers needing small non-cryptographic hashes
 > Status: Stable support module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: `hashx` algorithms and safety boundary
 
 ## Role and boundary

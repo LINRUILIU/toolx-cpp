@@ -2,7 +2,7 @@
 
 > Audience: ToolX 维护者与发布负责人
 > Status: Canonical maintainer guide
-> Applies to: `v0.3.2` release-candidate cycle
+> Applies to: `v0.3.2` maintenance cycle
 > Source of truth for: 本地质量门禁、打包、发布与维护流程
 
 公开构建要求位于
@@ -136,7 +136,7 @@ cmake -S . -B build-mbedtls -DHTTPX_ENABLE_MBEDTLS=ON \
 
 ## 发布检查表
 
-- 版本在 `CMakeLists.txt`、README、CHANGELOG 与 candidate release note 中一致。
+- 版本在 `CMakeLists.txt`、README、CHANGELOG 与对应版本的 release note 中一致。
 - 所有公开规范通过 `docs-check`，不存在孤儿文档和断链。
 - 六个 CLI 同时存在于 install tree 与归档 `bin/`。
 - standalone consumer 能通过 `find_package(ToolX CONFIG REQUIRED)` 构建。

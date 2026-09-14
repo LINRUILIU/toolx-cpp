@@ -2,7 +2,7 @@
 
 > Audience: C++ applications needing a small cfgx schema subset
 > Status: Experimental MVP module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: supported schema subset and validation behavior
 
 ## Role and boundary

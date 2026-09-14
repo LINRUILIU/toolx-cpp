@@ -2,7 +2,7 @@
 
 > Audience: C++ clients requiring bounded HTTP workflows
 > Status: Bounded-stable module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: supported HTTP behavior and backend boundary
 
 ## Role and boundary

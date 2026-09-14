@@ -73,8 +73,8 @@ behavior. When a safety or correctness fix requires a visible behavior change:
   called out in the changelog.
 - New CLI products do not enter the install set until they satisfy the internal
   productization checklist.
-- The current repository snapshot is a `v0.3.2` release candidate; `v0.3.1` is
-  the latest tagged release.
+- The current release is `v0.3.2`; its compatibility and behavior changes are
+  recorded in the version-specific release notes.
 
 See [Architecture](architecture.md), [Build and compatibility](build-and-compatibility.md),
 and [Dependencies](dependencies.md) for boundaries outside API stability.

@@ -2,7 +2,7 @@
 
 > Audience: C++ consumers requiring a narrow platform abstraction
 > Status: Stable support module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: intended `sysx` use and public API grouping
 
 ## Role and boundary

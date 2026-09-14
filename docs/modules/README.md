@@ -2,7 +2,7 @@
 
 > Audience: C++ consumers and maintainers
 > Status: Canonical module index
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: module guide ownership and comparison
 
 Each exported target is independently consumable through `find_package(ToolX)`.

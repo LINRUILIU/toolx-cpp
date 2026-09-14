@@ -2,7 +2,7 @@
 
 > Audience: C++ consumers encoding small text/binary values
 > Status: Stable support module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: codec options and decode-error behavior
 
 ## Role and boundary

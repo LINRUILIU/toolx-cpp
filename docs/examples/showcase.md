@@ -2,7 +2,7 @@
 
 > Audience: evaluators, CLI users, and C++ consumers
 > Status: Verified example portal
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: example learning order and evidence ownership
 
 This showcase connects the 13 focused C++ cookbooks to one reproducible,

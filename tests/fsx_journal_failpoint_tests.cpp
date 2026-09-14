@@ -16,6 +16,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <sys/wait.h>
 #endif
 
 namespace
@@ -119,7 +121,7 @@ int RunFailpointChild(const std::string& child, const std::string& scenario, con
     {
         *error = "failed to start child process";
     }
-    return code;
+    return code != -1 && WIFEXITED(code) ? WEXITSTATUS(code) : -1;
 #endif
 }
 
@@ -159,6 +161,10 @@ int main(int argc, char** argv)
     const std::vector<Scenario> scenarios = {
         {"atomic_write", {{"target.txt", "old"}}},
         {"copy_overwrite", {{"source.txt", "source"}, {"destination.txt", "old"}}},
+        {"copy_new_parent", {{"source.txt", "source"}}},
+        {"copy_new_parent_after", {{"source.txt", "source"}}},
+        {"copy_new_parent_nested", {{"source.txt", "source"}}},
+        {"copy_new_parent_conflict", {{"source.txt", "source"}}},
         {"safe_replace", {{"source.txt", "source"}, {"destination.txt", "old"}}},
         {"rename", {{"source.txt", "source"}, {"destination.txt", "old"}}},
         {"remove", {{"target.txt", "old"}}},
@@ -180,9 +186,10 @@ int main(int argc, char** argv)
         {
             Fail("failed to launch failpoint child for " + scenario.name + ": " + child_error);
         }
-        if (child_exit == 0)
+        if (child_exit != 86)
         {
-            Fail("failpoint child unexpectedly succeeded for " + scenario.name);
+            Fail("failpoint child missed the requested crash point for " + scenario.name + ": " +
+                 std::to_string(child_exit));
         }
 
         const fs::path journal = root / "run.journal";
@@ -191,6 +198,14 @@ int main(int argc, char** argv)
             Fail("failpoint child did not leave a journal for " + scenario.name);
         }
 
+        if (scenario.name == "copy_new_parent_conflict")
+        {
+            std::ofstream(root / "new-parent", std::ios::binary) << "foreign file";
+            const auto conflict = fsx::RecoverFromJournal(journal.string());
+            if (conflict.ok || !fs::exists(journal) || ReadText(root / "new-parent") != "foreign file")
+                Fail("parent creation recovery failed to preserve conflict evidence");
+            continue;
+        }
         const auto recovered = fsx::RecoverFromJournal(journal.string());
         if (!recovered.ok)
         {
@@ -213,6 +228,8 @@ int main(int argc, char** argv)
                 Fail("recovery changed original content for " + scenario.name + ": " + path.string());
             }
         }
+        if (scenario.name.rfind("copy_new_parent", 0) == 0 && fs::exists(root / "new-parent"))
+            Fail("recovery left newly created parents");
         VerifyNoStagingFiles(root);
     }
 

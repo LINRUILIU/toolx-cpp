@@ -2,7 +2,7 @@
 
 > Audience: CLI users, release reviewers, and maintainers
 > Status: Verified executable report
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: the config → sync → pack → HTTP → log → inspect demonstration
 
 This report is backed by `examples/product_chain_showcase`. The runner creates

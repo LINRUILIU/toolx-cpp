@@ -27,7 +27,7 @@ constexpr int kExitUsageError = 2;
 constexpr int kExitNotFound = 3;
 constexpr int kExitValidationFailed = 4;
 
-enum class Focus
+enum class Focus : std::uint8_t
 {
     Paths,
     Issues,
@@ -962,6 +962,7 @@ int RunInteractive(const InspectConfig& config, const InspectReport& report)
     main_row->SetFlexWeights({1, 1});
 
     std::vector<std::string> path_lines;
+    path_lines.reserve(report.paths.size());
     for (const auto& path : report.paths)
     {
         path_lines.push_back(path.path + " = " + path.preview);
@@ -1014,7 +1015,7 @@ int RunInteractive(const InspectConfig& config, const InspectReport& report)
     return app.Run(max_ticks, 0);
 }
 
-int RunCommand(InspectConfig config, bool json_mode)
+int RunCommand(const InspectConfig& config, bool json_mode)
 {
     ConfigureLogging(config.log_file);
     auto report_result = BuildReport(config);
@@ -1176,5 +1177,5 @@ int main(int argc, const char* const argv[])
         return ExitError(json_mode, code, config.error);
     }
 
-    return RunCommand(std::move(config.value), json_mode);
+    return RunCommand(config.value, json_mode);
 }

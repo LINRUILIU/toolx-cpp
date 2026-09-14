@@ -2,7 +2,7 @@
 
 > Audience: C++ applications requiring bounded asynchronous work
 > Status: Stable core module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: intended `asyncx` use and public API grouping
 
 ## Role and boundary

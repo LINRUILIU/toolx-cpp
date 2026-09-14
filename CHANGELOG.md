@@ -3,9 +3,32 @@
 All notable user-visible changes to ToolX are recorded here. Detailed release
 narratives remain under [`docs/releases`](docs/releases/).
 
-## [Unreleased]
+> Status: Released
+> Applies to: v0.3.2
 
-Target: `v0.3.2` release candidate. The latest tagged release is `v0.3.1`.
+## [0.3.2] - 2026-09-14
+
+### Security hardening
+
+- Reject linked filesystem descendants and paths escaping archive/tree roots.
+- Restore file/directory type changes on rollback and recover newly created copy
+  parents after interruption using valid FSXJ3 staging records.
+- Reject overlapping pack roots, preserve replacements during remove-extra staging,
+  retain legitimate backup-like filenames, and fail incomplete enumeration.
+- Preserve native POSIX filenames in tree operations and explicit pack include/exclude
+  selections while retaining portable tar member restrictions.
+- Validate outgoing HTTP targets, headers and multipart metadata; reject blank Host
+  values and ambiguous request body framing.
+- Strip fragments from wire targets and resolve relative redirects with the full
+  base path, correct query inheritance and path-only dot-segment removal.
+- Bound multipart collision work and exercise collision/exhaustion fuzz branches.
+- Copy scheduler deadlines before unlocking to prevent use-after-free on task removal.
+- Require consistent Released metadata across README, CHANGELOG and release notes;
+  check release tag/version agreement and generated source archive contents.
+- Verify explicit coverage XML/HTML artifacts and authenticate Codecov uploads with
+  OIDC. Retain the 70% line and 40% branch coverage floors.
+- Fail clang-tidy findings and loopback startup errors; add sanitizer and bounded
+  cfgx/httpx/fsx fuzz gates.
 
 ### Added
 
@@ -76,7 +99,8 @@ Target: `v0.3.2` release candidate. The latest tagged release is `v0.3.1`.
 - Initial bounded `httpx`, experimental `tuix`, and scenario-oriented
   `toolx-sync` surface.
 
-[Unreleased]: https://github.com/LINRUILIU/toolx-cpp/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/LINRUILIU/toolx-cpp/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/LINRUILIU/toolx-cpp/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/LINRUILIU/toolx-cpp/releases/tag/v0.3.1
 [0.3.0]: https://github.com/LINRUILIU/toolx-cpp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/LINRUILIU/toolx-cpp/releases/tag/v0.2.0

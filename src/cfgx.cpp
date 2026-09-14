@@ -3339,7 +3339,7 @@ Result<Node> ParseIniText(std::string_view text)
             return Result<Node>{false, Node{}, err.str()};
         }
 
-        const std::string path = section.empty() ? key : (section + "." + key);
+        const std::string path = section.empty() ? key : (section + ".").append(key);
         const auto st = SetNode(root, path, ParseScalar(value_text));
         if (!st.ok)
         {
@@ -3488,7 +3488,7 @@ Result<Node> ParseTomlText(std::string_view text)
             key = EscapePathSegment(key);
         }
 
-        const std::string path = section.empty() ? key : (section + "." + key);
+        const std::string path = section.empty() ? key : (section + ".").append(key);
         const auto st = SetNode(root, path, ParseScalar(value_text));
         if (!st.ok)
         {
@@ -4023,11 +4023,7 @@ void CollectLeafEntries(const Node& node, const std::string& path, std::vector<F
 std::vector<FlatLeafEntry> BuildLeafEntries(const Node& root)
 {
     std::vector<FlatLeafEntry> out;
-    if (root.Kind() == NodeKind::Object)
-    {
-        CollectLeafEntries(root, "", out);
-    }
-    else if (root.Kind() == NodeKind::Array)
+    if (root.Kind() == NodeKind::Object || root.Kind() == NodeKind::Array)
     {
         CollectLeafEntries(root, "", out);
     }
@@ -4393,7 +4389,7 @@ std::optional<std::string> TryRenderYamlWithCommentPreserve(const Node& root, st
 
         const std::string value_tail = TrimCopy(std::string_view(payload).substr(split + 1));
         const std::string parent = stack.empty() ? "" : stack.back().path;
-        const std::string path = parent.empty() ? key : (parent + "." + key);
+        const std::string path = parent.empty() ? key : (parent + ".").append(key);
 
         if (value_tail.empty())
         {

@@ -18,12 +18,14 @@ void WriteText(const fs::path& path, const std::string& text)
     out << text;
 }
 
-bool SetFailpoint()
+bool SetFailpoint(const std::string& hit)
 {
 #if defined(_WIN32)
-    return _putenv_s("TOOLX_FSX_TEST_FAILPOINT", "after-journal-sync-before-mutation") == 0;
+    return _putenv_s("TOOLX_FSX_TEST_FAILPOINT_HIT", hit.c_str()) == 0 &&
+           _putenv_s("TOOLX_FSX_TEST_FAILPOINT", "after-journal-sync-before-mutation") == 0;
 #else
-    return setenv("TOOLX_FSX_TEST_FAILPOINT", "after-journal-sync-before-mutation", 1) == 0;
+    return setenv("TOOLX_FSX_TEST_FAILPOINT_HIT", hit.c_str(), 1) == 0 &&
+           setenv("TOOLX_FSX_TEST_FAILPOINT", "after-journal-sync-before-mutation", 1) == 0;
 #endif
 }
 
@@ -57,6 +59,11 @@ int main(int argc, char** argv)
         WriteText(source, "source");
         WriteText(destination, "old");
         plan.AddCopyFile(source.string(), destination.string());
+    }
+    else if (scenario.rfind("copy_new_parent", 0) == 0)
+    {
+        WriteText(root / "source.txt", "source");
+        plan.AddCopyFile((root / "source.txt").string(), (root / "new-parent" / "nested" / "item.txt").string());
     }
     else if (scenario == "safe_replace")
     {
@@ -95,7 +102,11 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    if (!SetFailpoint())
+    const std::string hit = scenario == "copy_new_parent_after"      ? "3"
+                            : scenario == "copy_new_parent_nested"   ? "5"
+                            : scenario == "copy_new_parent_conflict" ? "2"
+                                                                     : "1";
+    if (!SetFailpoint(hit))
     {
         std::cerr << "failed to set failpoint\n";
         return 2;

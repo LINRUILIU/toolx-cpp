@@ -6,10 +6,12 @@ configuration, concurrency, filesystem transactions, HTTP, logging, terminal
 rendering, schemas, codecs, hashes, and platform utilities. Six installable CLIs
 compose those libraries into a practical release workflow.
 
-> **Repository status:** this branch is the `v0.3.2` release candidate. The
-> latest tagged release is `v0.3.1`. The candidate preserves the public `0.3.x`
-> source-compatibility boundary while hardening proxy control, filesystem
-> recovery ordering, and TLS verification coverage.
+> Status: Released
+> Applies to: v0.3.2
+> Latest release: v0.3.2
+
+This release preserves the public `0.3.x` source-compatibility boundary while
+hardening filesystem transactions, HTTP requests, pack staging and release gates.
 
 ## Understand ToolX in one minute
 
@@ -112,7 +114,7 @@ compared in the [cross-CLI matrix](docs/cli/matrix.md).
 
 ## Build and compatibility snapshot
 
-- CMake 3.20 or newer and a C++20 compiler are required.
+- CMake 3.20 or newer and a C++20 compiler are required; presets need CMake 3.21 or newer.
 - CI verifies current Linux GCC, Linux Clang, Windows MSVC, and macOS Clang
   environments. ToolX does not infer older minimum compiler versions from that
   matrix.
@@ -127,17 +129,21 @@ compared in the [cross-CLI matrix](docs/cli/matrix.md).
 See [Build and compatibility](docs/build-and-compatibility.md) and
 [Dependencies](docs/dependencies.md) before choosing a TLS or test configuration.
 
-## What changed in the `v0.3.2` candidate
+## What changed in `v0.3.2`
 
 - `toolx-http` and `toolx-sync` expose deterministic opt-out from environment
-  proxy routing.
-- configured filesystem journals use synchronized FSXJ3 write-ahead undo
-  records and conflict-aware recovery.
-- CI adds real loopback TLS trust and hostname-mismatch checks for the OpenSSL
-  backend.
+  proxy routing; OpenSSL loopback tests cover trust and hostname validation.
+- Filesystem tree operations enforce path boundaries, and FSXJ3 journals recover
+  new copy parents and preserve conflicts after interruption.
+- HTTP validates request framing and metadata, resolves relative redirects, and
+  bounds multipart collision work.
+- Pack staging rejects overlapping roots, preserves replacements and literal POSIX
+  names, and reports incomplete enumeration.
+- Release metadata, source archives, coverage artifacts, clang-tidy, sanitizers and
+  fuzz smoke runs are enforced by automated checks.
 
 User-visible history is maintained in [CHANGELOG.md](CHANGELOG.md); detailed
-candidate notes are in [the v0.3.2 release notes](docs/releases/v0.3.2.md).
+release notes are in [the v0.3.2 release notes](docs/releases/v0.3.2.md).
 
 ## Repository map
 

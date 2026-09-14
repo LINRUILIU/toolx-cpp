@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
-get_filename_component(TOOLX_REPOSITORY_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+if(NOT DEFINED TOOLX_REPOSITORY_ROOT)
+    get_filename_component(TOOLX_REPOSITORY_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+endif()
 file(TO_CMAKE_PATH "${TOOLX_REPOSITORY_ROOT}" TOOLX_REPOSITORY_ROOT)
 
 function(toolx_docs_error message_text)
@@ -99,6 +101,7 @@ set(TOOLX_INTERNAL_DOCUMENTS
     docs/development/audits/api_inventory.md
     docs/development/audits/api_product_gap_audit.md
     docs/development/audits/api_test_matrix.md
+    docs/development/audits/security-v032.md
     docs/development/design/toolx-http-design.md
     docs/development/design/toolx-pack-design.md
     docs/development/design/toolx-log-design.md
@@ -208,13 +211,34 @@ toolx_require_contains("docs/examples/product-chain.md" "../assets/showcase/tool
 toolx_require_contains("examples/product_chain_showcase/run.ps1" "--no-proxy-from-env")
 toolx_require_contains("examples/product_chain_showcase/run.sh" "--no-proxy-from-env")
 
-toolx_require_contains("CMakeLists.txt" "project(ToolX VERSION 0.3.2")
-toolx_require_contains("README.md" "v0.3.2")
-toolx_require_contains("README.md" "release candidate")
-toolx_require_contains("README.md" "v0.3.1")
-toolx_require_contains("CHANGELOG.md" "## [Unreleased]")
-toolx_require_contains("CHANGELOG.md" "Target: `v0.3.2` release candidate")
-toolx_require_contains("docs/releases/v0.3.2.md" "Status: Candidate; not yet tagged")
+file(READ "${TOOLX_REPOSITORY_ROOT}/CMakeLists.txt" project_text)
+string(REGEX MATCH "project\\(ToolX VERSION ([0-9]+[.][0-9]+[.][0-9]+)" project_version "${project_text}")
+if(NOT project_version)
+    toolx_docs_error("missing ToolX project version")
+endif()
+set(release_version "${CMAKE_MATCH_1}")
+set(release_note "docs/releases/v${release_version}.md")
+toolx_require_contains("README.md" "v${release_version}")
+file(READ "${TOOLX_REPOSITORY_ROOT}/${release_note}" release_text)
+string(REGEX MATCH "(^|[\r\n])> Status: ([^\r\n]+)" release_status "${release_text}")
+set(release_status "${CMAKE_MATCH_2}")
+if(release_status STREQUAL "Candidate; not yet tagged")
+    toolx_require_contains("README.md" "release candidate")
+    toolx_require_contains("CHANGELOG.md" "## [Unreleased]")
+    toolx_require_contains("CHANGELOG.md" "Target: `v${release_version}` release candidate")
+elseif(release_status STREQUAL "Released")
+    # Formal documentation and publication share the same version/status contract.
+    execute_process(COMMAND "${CMAKE_COMMAND}"
+        "-DTOOLX_SOURCE_ROOT=${TOOLX_REPOSITORY_ROOT}" "-DTOOLX_RELEASE_TAG=v${release_version}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/release_preflight.cmake"
+        RESULT_VARIABLE preflight_result OUTPUT_VARIABLE preflight_output ERROR_VARIABLE preflight_error)
+    if(NOT preflight_result EQUAL 0)
+        toolx_docs_error("released documentation fails preflight: ${preflight_error}")
+    endif()
+
+else()
+    toolx_docs_error("${release_note} must declare Candidate; not yet tagged or Released status")
+endif()
 foreach(release_note IN ITEMS
         docs/releases/template.md
         docs/releases/v0.1.0.md

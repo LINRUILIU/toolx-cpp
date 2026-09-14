@@ -753,6 +753,22 @@ TEST(AsyncxTests, StopCancelPendingClearsScheduledTasks)
     EXPECT_GE(snapshot.scheduler.cancelled, 2U);
 }
 
+TEST(AsyncxTests, SchedulerDeadlineSurvivesConcurrentTaskRemoval)
+{
+    asyncx::PoolOptions options;
+    options.worker_count = 1;
+    asyncx::ThreadPool pool(options);
+    for (int round = 0; round < 32; ++round)
+    {
+        const auto delayed = pool.PostDelayedFor(std::chrono::seconds(60), []() {});
+        ASSERT_TRUE(delayed.ok);
+        // Give the scheduler a chance to enter its timed wait before erasure.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ASSERT_TRUE(pool.CancelScheduled(delayed.value).ok);
+    }
+    EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::CancelPending).ok);
+}
+
 TEST(AsyncxTests, CancellationSourceAndTaskGroupTrackOutcomes)
 {
     asyncx::PoolOptions options;

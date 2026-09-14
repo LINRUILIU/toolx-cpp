@@ -2,7 +2,7 @@
 
 > Audience: C++ applications and configuration-tool authors
 > Status: Stable core module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: intended `cfgx` use and public API grouping
 
 ## Role and boundary
@@ -58,7 +58,7 @@ The node/path model, JSON and INI behavior, composition, validation, reload,
 snapshots and adapter contracts are stable. Do not infer full YAML, TOML, schema,
 encryption-at-rest, or remote-service semantics.
 
-No `cfgx`-specific public API change is recorded for `v0.3.2`; the candidate's
+No `cfgx`-specific public API change is recorded for `v0.3.2`; this release's
 proxy opt-out is implemented by the `httpx`-backed product workflows.
 
 - [Annotated cookbook](../../examples/cfgx_cookbook.cpp)

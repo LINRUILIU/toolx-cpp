@@ -338,9 +338,10 @@ TEST(ToolxIntegrationTests, HttpxLoggerCanForwardIntoLogsys)
         out.value.body = request.url;
         return out;
     };
-    options.logger = [&logger](const httpx::LogEvent& event)
+    const char* caller = __func__;
+    options.logger = [&logger, caller](const httpx::LogEvent& event)
     {
-        logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, __func__, "httpx %s %s status=%d", event.method.c_str(),
+        logger.LogDefaultf(LogLevel::Info, __FILE__, __LINE__, caller, "httpx %s %s status=%d", event.method.c_str(),
                            event.url.c_str(), event.status_code);
     };
 

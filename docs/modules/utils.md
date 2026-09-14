@@ -2,7 +2,7 @@
 
 > Audience: C++ consumers needing small common helpers
 > Status: Stable support module guide
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: intended `utils` use and public API grouping
 
 ## Role and boundary

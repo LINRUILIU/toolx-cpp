@@ -2,7 +2,7 @@
 
 > Audience: C++ consumers and reviewers
 > Status: Verified example report
-> Applies to: `v0.3.2` release candidate
+> Applies to: `v0.3.2` release
 > Source of truth for: cookbook scenario inventory and observed sample output
 
 The 13 `examples/*_cookbook.cpp` programs contain 59 annotated scenarios. They

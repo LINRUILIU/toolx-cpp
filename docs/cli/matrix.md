@@ -67,3 +67,10 @@
 
 The API-to-product audit that supports this matrix is maintained as internal
 evidence under [development audits](../development/audits/).
+
+### Tree boundary failures
+
+Toolx-pack rejects linked source/stage descendants, including explicit includes.
+Failed remove-extra enumeration fails planning rather than reporting partial success.
+Artifact names resembling fsx temporary paths are preserved; cleanup only removes
+transaction-owned paths.

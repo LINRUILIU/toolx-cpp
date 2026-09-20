@@ -1,0 +1,2 @@
+// MinGW embeds the same process manifest through the resource compiler.
+1 24 "utf8.manifest"

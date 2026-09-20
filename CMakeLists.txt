@@ -339,6 +339,23 @@ if(TOOLX_BUILD_TOOLS)
     add_executable(toolx_inspect tools/toolx_inspect.cpp)
     set_target_properties(toolx_inspect PROPERTIES OUTPUT_NAME "toolx-inspect")
     target_link_libraries(toolx_inspect PRIVATE argtool cfgx logsys schemax tuix)
+
+    if(WIN32)
+        # Set the process code page before CRT startup so argv, narrow filesystem
+        # paths and JSON strings all use UTF-8. Do not impose this on library users.
+        if(MINGW)
+            enable_language(RC)
+            set(toolx_utf8_manifest tools/windows/utf8.rc)
+        else()
+            set(toolx_utf8_manifest tools/windows/utf8.manifest)
+        endif()
+        foreach(toolx_cli IN ITEMS toolx_config toolx_sync toolx_pack toolx_http toolx_log toolx_inspect)
+            target_sources(${toolx_cli} PRIVATE ${toolx_utf8_manifest})
+            if(MINGW)
+                target_include_directories(${toolx_cli} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools/windows")
+            endif()
+        endforeach()
+    endif()
 endif()
 
 # Compile-time lint is a production library/CLI gate. Selected contracts and the
@@ -456,6 +473,16 @@ if(TOOLX_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 
     enable_testing()
+
+    if(WIN32 AND TOOLX_BUILD_TOOLS)
+        find_program(TOOLX_POWERSHELL NAMES powershell pwsh REQUIRED)
+        add_test(NAME toolx_windows_utf8_contracts
+            COMMAND "${TOOLX_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolx_windows_utf8_contracts.ps1"
+                -BinDir $<TARGET_FILE_DIR:toolx_config>
+                -WorkDir "${CMAKE_CURRENT_BINARY_DIR}/toolx-windows-utf8")
+        set_tests_properties(toolx_windows_utf8_contracts PROPERTIES TIMEOUT 90)
+    endif()
 
     add_executable(argtool_tests tests/argtool_tests.cpp)
     target_link_libraries(argtool_tests PRIVATE argtool GTest::gtest_main)

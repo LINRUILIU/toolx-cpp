@@ -1,14 +1,29 @@
 # ToolX 开发日志
 
 > Audience: ToolX 维护者与贡献者
-> Status: Release cycle summary
-> Applies to: `v0.3.2` release
-> Source of truth for: v0.3.2 周期总结与阶段性工程记录
+> Status: Current development and retained release-cycle summary
+> Applies to: v0.3.3 维护候选与 `v0.3.2` 已发布周期
+> Source of truth for: 维护候选入口、v0.3.2 周期总结与阶段性工程记录
 
 本文件只记录开发主线、阶段性结论和进一步阅读入口。稳定的用户说明位于
 [`README.md`](README.md) 和 [`docs/index.md`](docs/index.md)；构建、发布、
 质量门禁等维护流程已经迁入
 [`docs/development/maintaining.md`](docs/development/maintaining.md)。
+
+## 当前开发
+
+当前按 [v0.3.3 维护候选](docs/releases/v0.3.3.md)准备：按风险修复既有契约，
+整理兼容迁移与短自动化资料，尚未发布。历史 v0.4 研究标签、审计正文和冻结证据
+保留原样；最终发行候选另收集门禁证据，不能将旧验证重标。
+
+已有[契约审查与本地验证](docs/development/audits/v0.4-contract-update.md)和
+[Caddy AI 使用观察](docs/development/audits/v0.4-caddy-ai-observation.md)没有证明
+新的产品收益：Caddy 三个有效条件均未调用 ToolX，修复后的核验/修复降本未测得。
+本轮不新增能力或 runner，不承诺 v0.4.0/v0.4.1 产品交付。
+
+降低 AI 采用与信任成本仍为方向；仅在重复真实职责、公平成熟基线和留出任务中
+显著省事时再立项，否则继续维护。具体职责与停止条件见
+[维护收口与 v0.4 立项条件](docs/development/design/v0.4.x-mainline.md)。
 
 ## v0.3.2 周期总结
 

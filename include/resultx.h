@@ -141,7 +141,8 @@ inline Result<fsx::RunResult> FromFsx(const fsx::RunResult& result, ErrorKind ki
         return Result<fsx::RunResult>{true, result, {}};
     }
 
-    return Result<fsx::RunResult>{false, {}, MakeError(kind, result.error, domain)};
+    // Failed filesystem runs still carry completed steps and recovery facts.
+    return Result<fsx::RunResult>{false, result, MakeError(kind, result.error, domain)};
 }
 
 inline Status FromAsyncx(const asyncx::Status& status)

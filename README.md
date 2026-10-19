@@ -6,12 +6,13 @@ configuration, concurrency, filesystem transactions, HTTP, logging, terminal
 rendering, schemas, codecs, hashes, and platform utilities. Six installable CLIs
 compose those libraries into a practical release workflow.
 
-> Status: Released
-> Applies to: v0.3.2
+> Status: Candidate; not yet tagged
+> Applies to: v0.3.3
 > Latest release: v0.3.2
 
-This release preserves the public `0.3.x` source-compatibility boundary while
-hardening filesystem transactions, HTTP requests, pack staging and release gates.
+This snapshot is the `v0.3.3` release candidate for correctness and contract
+repairs within the `0.3.x` maintenance line. Review the compatibility and migration
+notes before upgrading, especially if you retain filesystem recovery journals.
 
 ## Understand ToolX in one minute
 
@@ -129,21 +130,23 @@ compared in the [cross-CLI matrix](docs/cli/matrix.md).
 See [Build and compatibility](docs/build-and-compatibility.md) and
 [Dependencies](docs/dependencies.md) before choosing a TLS or test configuration.
 
-## What changed in `v0.3.2`
+## What changed in `v0.3.3`
 
-- `toolx-http` and `toolx-sync` expose deterministic opt-out from environment
-  proxy routing; OpenSSL loopback tests cover trust and hostname validation.
-- Filesystem tree operations enforce path boundaries, and FSXJ3 journals recover
-  new copy parents and preserve conflicts after interruption.
-- HTTP validates request framing and metadata, resolves relative redirects, and
-  bounds multipart collision work.
-- Pack staging rejects overlapping roots, preserves replacements and literal POSIX
-  names, and reports incomplete enumeration.
-- Release metadata, source archives, coverage artifacts, clang-tidy, sanitizers and
-  fuzz smoke runs are enforced by automated checks.
+- Configuration layers apply in the documented order; numeric parsing and JSON
+  serialization reject invalid values and preserve finite double precision.
+- Filesystem recovery writes FSXJ4 journals with checked replacement witnesses.
+  Older binaries cannot recover FSXJ4; recovery files and witnesses must stay
+  together until recovery completes.
+- `toolx-sync` rejects log paths that could alias or overlap protected inputs,
+  outputs, journals or backups, including rotation archives and Windows streams.
+- Trace, rollback and result reporting have regression coverage for corrected
+  behavior; source packages exclude generated test fixtures and Python caches.
+- Automation guidance and the roadmap distinguish tested maintenance fixes from
+  product hypotheses. `v0.4.0` awaits evidence from repeated real use.
 
 User-visible history is maintained in [CHANGELOG.md](CHANGELOG.md); detailed
-release notes are in [the v0.3.2 release notes](docs/releases/v0.3.2.md).
+candidate notes are in [the v0.3.3 release notes](docs/releases/v0.3.3.md).
+The latest tagged release remains [v0.3.2](docs/releases/v0.3.2.md).
 
 ## Repository map
 

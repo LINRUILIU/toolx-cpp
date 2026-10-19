@@ -66,3 +66,29 @@ TEST(ResultxTests, FormatErrorIncludesDomainKindAndMessage)
     EXPECT_NE(text.find("bridge failed"), std::string::npos);
     EXPECT_NE(text.find("17"), std::string::npos);
 }
+
+TEST(ResultxTests, FailedFsxRunPreservesPartialExecutionReport)
+{
+    fsx::RunResult source;
+    source.error = "second write failed";
+    source.completed_steps = 1;
+    fsx::StepReport first;
+    first.dst = "current.json";
+    first.ok = true;
+    first.rolled_back = true;
+    source.steps.push_back(first);
+    fsx::StepReport second;
+    second.step = 1;
+    second.dst = "blocked/snapshot.json";
+    second.error = source.error;
+    source.steps.push_back(second);
+
+    const auto result = resultx::FromFsx(source, resultx::ErrorKind::PermissionDenied);
+    ASSERT_FALSE(result.ok);
+    EXPECT_EQ(result.error.message, source.error);
+    EXPECT_EQ(result.value.completed_steps, 1U);
+    ASSERT_EQ(result.value.steps.size(), 2U);
+    EXPECT_EQ(result.value.steps[0].dst, "current.json");
+    EXPECT_TRUE(result.value.steps[0].rolled_back);
+    EXPECT_EQ(result.value.steps[1].error, source.error);
+}

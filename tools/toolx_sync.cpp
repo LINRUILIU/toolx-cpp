@@ -1,10 +1,14 @@
+#include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <future>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -19,12 +23,50 @@
 #include "logsys.h"
 #include "schemax.h"
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#ifdef CopyFile
+#undef CopyFile
+#endif
+#endif
+
 namespace
 {
 constexpr int kExitSuccess = 0;
 constexpr int kExitRuntimeError = 1;
 constexpr int kExitUsageError = 2;
 constexpr int kExitValidationFailed = 4;
+
+bool WantsJsonOutput(int argc, const char* const argv[], const std::vector<std::string>& value_options,
+                     const std::vector<char>& short_value_options)
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string_view token(argv[i]);
+        if (token == "--")
+            break;
+        if (token == "--json")
+            return true;
+        if (token.size() > 2 && token.substr(0, 2) == "--" && token.find('=') == std::string_view::npos)
+        {
+            if (std::find(value_options.begin(), value_options.end(), token.substr(2)) != value_options.end())
+                ++i;
+        }
+        else if (token.size() == 2 && token.front() == '-' &&
+                 std::find(short_value_options.begin(), short_value_options.end(), token[1]) !=
+                     short_value_options.end())
+        {
+            ++i;
+        }
+    }
+    return false;
+}
 
 std::string TrimCopy(std::string_view input)
 {
@@ -159,6 +201,36 @@ cfgx::Node BuildPlanActionsArray(const fsx::BatchPlan& plan)
     return cfgx::Node(std::move(arr));
 }
 
+cfgx::Node BuildExecutionData(const fsx::RunResult& run)
+{
+    cfgx::Node::Array steps;
+    steps.reserve(run.steps.size());
+    for (const auto& step : run.steps)
+    {
+        steps.emplace_back(BuildDataObject({
+            {"step", cfgx::Node(static_cast<std::int64_t>(step.step))},
+            {"src", cfgx::Node(step.src)},
+            {"dst", cfgx::Node(step.dst)},
+            {"ok", cfgx::Node(step.ok)},
+            {"skipped", cfgx::Node(step.skipped)},
+            {"error", cfgx::Node(step.error)},
+            {"recovery_source", cfgx::Node(step.recovery_source)},
+            {"rollback_attempted", cfgx::Node(step.rollback_attempted)},
+            {"rolled_back", cfgx::Node(step.rolled_back)},
+            {"rollback_error", cfgx::Node(step.rollback_error)},
+        }));
+    }
+    return BuildDataObject({
+        {"completed_steps", cfgx::Node(static_cast<std::int64_t>(run.completed_steps))},
+        {"skipped_steps", cfgx::Node(static_cast<std::int64_t>(run.skipped_steps))},
+        {"rolled_back_steps", cfgx::Node(static_cast<std::int64_t>(run.rolled_back_steps))},
+        {"rollback_attempted", cfgx::Node(run.rollback_attempted)},
+        {"rollback_complete", cfgx::Node(run.rollback_complete)},
+        {"rollback_error", cfgx::Node(run.rollback_error)},
+        {"steps", cfgx::Node(std::move(steps))},
+    });
+}
+
 void PrintJsonEnvelope(bool ok, int code, std::string_view message, const cfgx::Node& data,
                        const std::vector<cfgx::ValidationIssue>& issues = {})
 {
@@ -252,16 +324,18 @@ bool BuildValidationRules(const argtool::ParseResult& result, std::vector<cfgx::
         }
 
         char* min_end = nullptr;
+        errno = 0;
         const double min_value = std::strtod(min_text.c_str(), &min_end);
-        if (min_end == nullptr || *min_end != '\0')
+        if (min_end == min_text.c_str() || *min_end != '\0' || errno == ERANGE || !std::isfinite(min_value))
         {
             *error = "invalid --range min value: " + min_text;
             return false;
         }
 
         char* max_end = nullptr;
+        errno = 0;
         const double max_value = std::strtod(max_text.c_str(), &max_end);
-        if (max_end == nullptr || *max_end != '\0')
+        if (max_end == max_text.c_str() || *max_end != '\0' || errno == ERANGE || !std::isfinite(max_value))
         {
             *error = "invalid --range max value: " + max_text;
             return false;
@@ -279,43 +353,180 @@ bool BuildValidationRules(const argtool::ParseResult& result, std::vector<cfgx::
     return true;
 }
 
-cfgx::Result<std::optional<cfgx::Node>> LoadOverlayLayer(const std::vector<std::string>& overlay_paths,
-                                                         bool append_arrays)
+cfgx::Result<cfgx::Node> ComposeInputLayers(const cfgx::Node& base, const std::optional<cfgx::Node>& remote,
+                                            const std::vector<std::string>& overlay_paths,
+                                            const cfgx::ComposeOptions& options,
+                                            std::vector<cfgx::SourceAttribution>* source_trace)
 {
-    if (overlay_paths.empty())
+    auto composed = cfgx::ComposeLayers(base, std::nullopt, std::nullopt, nullptr, options, source_trace, remote);
+    if (!composed.ok)
+        return composed;
+    for (const auto& overlay_path : overlay_paths)
     {
-        return cfgx::Result<std::optional<cfgx::Node>>{true, std::nullopt, ""};
-    }
-
-    auto first = cfgx::LoadFromFile(overlay_paths.front());
-    if (!first.ok)
-    {
-        return cfgx::Result<std::optional<cfgx::Node>>{false, std::nullopt,
-                                                       "failed to load overlay config: " + first.error};
-    }
-
-    cfgx::Node local_layer = std::move(first.value);
-    for (std::size_t i = 1; i < overlay_paths.size(); ++i)
-    {
-        auto next = cfgx::LoadFromFile(overlay_paths[i]);
+        const auto overlay = cfgx::LoadFromFile(overlay_path);
+        if (!overlay.ok)
+        {
+            return cfgx::Result<cfgx::Node>{false, {}, "failed to load overlay config: " + overlay.error};
+        }
+        std::map<std::string, cfgx::SourceLayer> previous_trace;
+        for (const auto& entry : *source_trace)
+            previous_trace.emplace(entry.path, entry.layer);
+        std::vector<cfgx::SourceAttribution> next_trace;
+        auto next = cfgx::ComposeLayers(composed.value, std::nullopt, overlay.value, nullptr, options, &next_trace);
         if (!next.ok)
         {
-            return cfgx::Result<std::optional<cfgx::Node>>{false, std::nullopt,
-                                                           "failed to load overlay config: " + next.error};
+            return cfgx::Result<cfgx::Node>{false, {}, "failed to merge overlay config: " + next.error};
         }
-
-        const auto merged = cfgx::Merge(local_layer, next.value, append_arrays);
-        if (!merged.ok)
+        for (auto& entry : next_trace)
         {
-            return cfgx::Result<std::optional<cfgx::Node>>{false, std::nullopt,
-                                                           "failed to merge overlay config: " + merged.error};
+            if (entry.layer == cfgx::SourceLayer::Base)
+            {
+                const auto prior = previous_trace.find(entry.path);
+                if (prior != previous_trace.end())
+                    entry.layer = prior->second;
+            }
+        }
+        composed = std::move(next);
+        *source_trace = std::move(next_trace);
+    }
+    return composed;
+}
+
+bool LoggingPathsOverlap(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+{
+    auto left = lhs.begin();
+    auto right = rhs.begin();
+    for (; left != lhs.end() && right != rhs.end(); ++left, ++right)
+    {
+#if defined(_WIN32)
+        if (CompareStringOrdinal(left->native().c_str(), -1, right->native().c_str(), -1, TRUE) != CSTR_EQUAL)
+#else
+        if (*left != *right)
+#endif
+            return false;
+    }
+    return true;
+}
+
+bool ResolveLoggingBoundaryPath(const std::filesystem::path& path, std::filesystem::path* resolved, std::string* error)
+{
+    std::error_code ec;
+    const auto absolute = std::filesystem::absolute(path, ec);
+    if (ec)
+    {
+        *error = ec.message();
+        return false;
+    }
+
+    // weakly_canonical leaves dangling links in its nonexistent suffix. Do not
+    // treat those as ordinary new paths that logging could later follow.
+    auto prefix = absolute.root_path();
+    bool missing_component = false;
+#if defined(_WIN32)
+    const bool extended_root = absolute.root_name().native() == L"\\\\?";
+    bool first_component = true;
+#endif
+    for (const auto& component : absolute.relative_path())
+    {
+#if defined(_WIN32)
+        const auto& native = component.native();
+        const bool extended_drive =
+            first_component && extended_root && native.size() == 2 && native[1] == L':' &&
+            ((native[0] >= L'A' && native[0] <= L'Z') || (native[0] >= L'a' && native[0] <= L'z'));
+        first_component = false;
+        if (extended_drive)
+        {
+            // MSVC exposes this designator as a relative component. Append it
+            // literally: operator/= would replace the extended root with D:.
+            prefix += native;
+            prefix += std::filesystem::path::preferred_separator;
+            continue;
+        }
+        // A stream spelling can alias a file before either entry exists.
+        if (native.find(L':') != std::filesystem::path::string_type::npos)
+        {
+            *error = "Windows stream paths are unsupported with --log-file: " + path.string();
+            return false;
+        }
+#endif
+        if (missing_component && component == "..")
+        {
+            // Publishing may create the missing directory before FileSink
+            // retries opening its original path, exposing a previously hidden link.
+            *error = "cannot confirm parent traversal after a missing path component: " + path.string();
+            return false;
+        }
+        prefix /= component;
+        const auto link_status = std::filesystem::symlink_status(prefix, ec);
+        if (ec == std::errc::no_such_file_or_directory ||
+            (!ec && link_status.type() == std::filesystem::file_type::not_found))
+        {
+            missing_component = true;
+            ec.clear();
+            continue;
+        }
+        if (ec)
+        {
+            *error = "cannot inspect path component " + prefix.string() + ": " + ec.message();
+            return false;
+        }
+        if (std::filesystem::is_symlink(link_status))
+        {
+            const auto target_status = std::filesystem::status(prefix, ec);
+            if (ec || !std::filesystem::exists(target_status) ||
+                target_status.type() == std::filesystem::file_type::unknown)
+            {
+                *error = "cannot confirm symbolic link target: " + prefix.string();
+                return false;
+            }
         }
     }
 
-    return cfgx::Result<std::optional<cfgx::Node>>{true, std::move(local_layer), ""};
+    *resolved = std::filesystem::weakly_canonical(absolute, ec).lexically_normal();
+    if (ec)
+    {
+        *error = ec.message();
+        return false;
+    }
+    return true;
 }
 
-void ConfigureLogging(bool json_mode, const std::string& log_file)
+bool ValidateLogFilePath(const std::string& log_file, const std::vector<std::string>& protected_paths,
+                         std::string* error)
+{
+    if (log_file.empty())
+        return true;
+    const std::filesystem::path log_path(log_file);
+    std::filesystem::path resolved_log;
+    if (!ResolveLoggingBoundaryPath(log_path, &resolved_log, error))
+    {
+        *error = "cannot resolve --log-file path: " + *error;
+        return false;
+    }
+    for (const auto& name : protected_paths)
+    {
+        if (name.empty())
+            continue;
+        const std::filesystem::path path(name);
+        std::filesystem::path resolved;
+        if (!ResolveLoggingBoundaryPath(path, &resolved, error))
+        {
+            *error = "cannot resolve protected path for --log-file: " + name + ": " + *error;
+            return false;
+        }
+        std::error_code ec;
+        const bool same_file = std::filesystem::equivalent(log_path, path, ec) && !ec;
+        ec.clear();
+        if (same_file || LoggingPathsOverlap(resolved_log, resolved))
+        {
+            *error = "--log-file overlaps an input, output or journal path: " + name;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ConfigureLogging(const std::string& log_file, const std::vector<std::string>& protected_paths, std::string* error)
 {
     logsys::DefaultLoggerOptions options;
     options.level = logsys::LogLevel::Info;
@@ -326,10 +537,27 @@ void ConfigureLogging(bool json_mode, const std::string& log_file)
     options.file_path = log_file;
 
     auto& logger = logsys::Logger::Instance();
+    if (!ValidateLogFilePath(log_file, protected_paths, error))
+        return false;
+    // ConfigureDefaultLogger preserves this policy. Check every size-rotation
+    // path before creating its FileSink, even when the current log is small.
+    const auto rolling = logger.CurrentConfigV2().rolling;
+    if (!log_file.empty() && rolling.enabled && rolling.max_file_size_bytes > 0)
+    {
+        for (std::size_t i = 0; i < rolling.keep_recent_files; ++i)
+        {
+            const auto archive = log_file + "." + std::to_string(i + 1);
+            if (!ValidateLogFilePath(archive, protected_paths, error))
+            {
+                *error = "log rotation path " + archive + ": " + *error;
+                return false;
+            }
+        }
+    }
     logger.ConfigureDefaultLogger(options);
     logger.SetDefaultOrigin(logsys::ErrorSource::Business, logsys::ModuleId::BusinessCommon,
                             logsys::ErrorCategory::Business);
-    (void)json_mode;
+    return true;
 }
 
 cfgx::RemoteFetcher MakeHttpxFetcher(httpx::Client* client)
@@ -436,52 +664,58 @@ cfgx::Result<std::vector<schemax::Issue>> RunSchemaValidation(const std::string&
 int main(int argc, const char* const argv[])
 {
     argtool::Parser parser;
+    std::vector<std::string> value_options;
+    std::vector<char> short_value_options;
+    const auto option = [&parser, &value_options, &short_value_options](const char* name, char short_name = '\0')
+    {
+        value_options.emplace_back(name);
+        if (short_name != '\0')
+            short_value_options.push_back(short_name);
+        return parser.Option(name, short_name);
+    };
     parser.SetProgramName("toolx-sync")
         .SetDescription("toolx-sync - validate and atomically publish composed config")
         .SetUsageExample("toolx-sync --base app.json --out resolved.json --require svc.port")
         .SetHelpLayout(argtool::HelpLayout::Fixed);
 
-    parser.Option("base", 'b').String().ValueName("FILE").Description("Base config file.").Done();
-    parser.Option("out", 'o').String().ValueName("FILE").Description("Resolved output file.").Done();
-    parser.Option("overlay")
+    option("base", 'b').String().ValueName("FILE").Description("Base config file.").Done();
+    option("out", 'o').String().ValueName("FILE").Description("Resolved output file.").Done();
+    option("overlay")
         .String()
         .ListValue()
         .ValueName("FILE")
         .Description("Local overlay config file. Repeatable.")
         .Done();
-    parser.Option("snapshot", 's').String().ValueName("FILE").Description("Optional snapshot file.").Done();
-    parser.Option("journal", 'j').String().ValueName("FILE").Description("Optional fsx journal file.").Done();
-    parser.Option("schema").String().ValueName("FILE").Description("Optional schemax schema file.").Done();
-    parser.Option("remote-url").String().ValueName("URL").Description("Optional remote config URL.").Done();
+    option("snapshot", 's').String().ValueName("FILE").Description("Optional snapshot file.").Done();
+    option("journal", 'j').String().ValueName("FILE").Description("Optional fsx journal file.").Done();
+    option("schema").String().ValueName("FILE").Description("Optional schemax schema file.").Done();
+    option("remote-url").String().ValueName("URL").Description("Optional remote config URL.").Done();
     parser.Flag("no-proxy-from-env")
         .Description("Disable HTTP(S)_PROXY and NO_PROXY for --remote-url requests.")
         .Done();
-    parser.Option("remote-format")
+    option("remote-format")
         .String()
         .Default("auto")
         .ValueName("FORMAT")
         .Description("Remote format: auto/json/ini/yaml/toml.")
         .Done();
-    parser.Option("require")
-        .String()
-        .ListValue()
-        .ValueName("PATH")
-        .Description("Validation rule: required path.")
-        .Done();
-    parser.Option("range")
+    option("require").String().ListValue().ValueName("PATH").Description("Validation rule: required path.").Done();
+    option("range")
         .String()
         .ListValue()
         .ValueName("PATH=MIN:MAX")
         .Description("Validation rule: numeric range.")
         .Done();
-    parser.Option("log-file").String().ValueName("FILE").Description("Optional audit log file.").Done();
-    parser.Option("indent", 'i').Int().Default("2").Description("JSON indent width.").Done();
+    option("log-file").String().ValueName("FILE").Description("Optional audit log file.").Done();
+    option("indent", 'i').Int().Default("2").Description("JSON indent width.").Done();
     parser.Flag("append-arrays").Description("Append arrays while composing layers instead of replacing them.").Done();
     parser.Flag("dry-run").Description("Validate and print the publish plan without writing files.").Done();
     parser.Flag("json").Description("Emit machine-readable JSON envelope.").Done();
 
     const auto parsed = parser.Parse(argc, argv);
-    const bool json_mode = parsed.GetBool("json", false);
+    const bool json_mode =
+        parsed.GetBool("json", false) ||
+        ((!parsed.ok || parsed.help_requested) && WantsJsonOutput(argc, argv, value_options, short_value_options));
     if (parsed.help_requested)
     {
         if (json_mode)
@@ -525,7 +759,12 @@ int main(int argc, const char* const argv[])
         return ExitError(json_mode, kExitUsageError, validation_rule_error);
     }
 
-    ConfigureLogging(json_mode, parsed.GetString("log-file", ""));
+    auto protected_paths = parsed.GetAll("overlay");
+    for (const char* name : {"base", "out", "snapshot", "journal", "schema"})
+        protected_paths.push_back(parsed.GetString(name, ""));
+    std::string log_path_error;
+    if (!ConfigureLogging(parsed.GetString("log-file", ""), protected_paths, &log_path_error))
+        return ExitError(json_mode, kExitUsageError, log_path_error);
 
     const bool append_arrays = parsed.GetBool("append-arrays", false);
     const bool dry_run = parsed.GetBool("dry-run", false);
@@ -576,17 +815,10 @@ int main(int argc, const char* const argv[])
         remote_layer = std::move(remote.value);
     }
 
-    const auto overlay_layer = LoadOverlayLayer(overlay_paths, append_arrays);
-    if (!overlay_layer.ok)
-    {
-        return ExitError(json_mode, kExitRuntimeError, overlay_layer.error);
-    }
-
     cfgx::ComposeOptions compose_options;
     compose_options.append_arrays = append_arrays;
     std::vector<cfgx::SourceAttribution> source_trace;
-    const auto composed = cfgx::ComposeLayers(base.value, std::nullopt, overlay_layer.value, nullptr, compose_options,
-                                              &source_trace, remote_layer);
+    const auto composed = ComposeInputLayers(base.value, remote_layer, overlay_paths, compose_options, &source_trace);
     if (!composed.ok)
     {
         return ExitError(json_mode, kExitRuntimeError, composed.error);
@@ -595,20 +827,8 @@ int main(int argc, const char* const argv[])
     const auto validation = cfgx::Validate(composed.value, rules);
     std::vector<cfgx::ValidationIssue> combined_issues = validation.value;
     const auto schema_validation = RunSchemaValidation(parsed.GetString("schema", ""), composed.value);
-    if (!schema_validation.ok)
-    {
-        return ExitError(json_mode, kExitRuntimeError, schema_validation.error);
-    }
     auto schema_cfgx_issues = schemax::ToCfgxIssues(schema_validation.value);
     combined_issues.insert(combined_issues.end(), schema_cfgx_issues.begin(), schema_cfgx_issues.end());
-    if (!validation.ok || !schema_validation.value.empty())
-    {
-        return ExitError(
-            json_mode, kExitValidationFailed, "validation failed",
-            BuildDataObject({{"issues_count", cfgx::Node(static_cast<std::int64_t>(combined_issues.size()))},
-                             {"schema_issues", BuildSchemaIssueArray(schema_validation.value)}}),
-            combined_issues);
-    }
 
     const int indent = parsed.GetInt("indent", 2);
     const std::string serialized = cfgx::ToJson(composed.value, indent);
@@ -623,7 +843,7 @@ int main(int argc, const char* const argv[])
         plan.AddAtomicWrite(snapshot_path, serialized);
     }
 
-    const cfgx::Node publish_data = BuildDataObject({
+    cfgx::Node publish_data = BuildDataObject({
         {"base", cfgx::Node(base_path)},
         {"overlays", BuildStringArray(overlay_paths)},
         {"remote_url", cfgx::Node(remote_url)},
@@ -639,10 +859,25 @@ int main(int argc, const char* const argv[])
         {"steps", cfgx::Node(static_cast<std::int64_t>(plan.Actions().size()))},
         {"planned_steps", BuildPlanActionsArray(plan)},
         {"source_trace", BuildSourceTraceArray(source_trace)},
+        {"issues_count", cfgx::Node(static_cast<std::int64_t>(combined_issues.size()))},
+        {"validation_passed", cfgx::Node(validation.ok && schema_validation.ok && schema_validation.value.empty())},
+        {"publish_attempted", cfgx::Node(false)},
+        {"stage", cfgx::Node("validation")},
     });
+
+    if (!schema_validation.ok)
+    {
+        (void)cfgx::SetNode(publish_data, "stage", cfgx::Node("schema_load"));
+        return ExitError(json_mode, kExitRuntimeError, schema_validation.error, publish_data, combined_issues);
+    }
+    if (!validation.ok || !schema_validation.value.empty())
+    {
+        return ExitError(json_mode, kExitValidationFailed, "validation failed", publish_data, combined_issues);
+    }
 
     if (dry_run)
     {
+        (void)cfgx::SetNode(publish_data, "stage", cfgx::Node("dry_run"));
         pool.StopAndJoin(asyncx::StopMode::Drain);
         if (json_mode)
         {
@@ -667,10 +902,13 @@ int main(int argc, const char* const argv[])
     run_options.journal_path = journal_path;
     run_options.keep_journal_on_success = !journal_path.empty();
 
+    (void)cfgx::SetNode(publish_data, "stage", cfgx::Node("publish"));
+    (void)cfgx::SetNode(publish_data, "publish_attempted", cfgx::Node(true));
     const auto run = fsx::Run(plan, run_options);
+    (void)cfgx::SetNode(publish_data, "execution", BuildExecutionData(run));
     if (!run.ok)
     {
-        return ExitError(json_mode, kExitRuntimeError, "failed to publish config: " + run.error);
+        return ExitError(json_mode, kExitRuntimeError, "failed to publish config: " + run.error, publish_data);
     }
 
     pool.StopAndJoin(asyncx::StopMode::Drain);

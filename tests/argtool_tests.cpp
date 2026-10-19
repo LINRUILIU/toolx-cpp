@@ -111,6 +111,30 @@ TEST(ArgtoolTests, MissingRequiredPositionalHasStructuredError)
     EXPECT_EQ(result.error->field, "input");
 }
 
+TEST(ArgtoolTests, VariadicDefaultAppliesOnlyWithoutExplicitTokensAndDoesNotAccumulate)
+{
+    argtool::Parser parser;
+    parser.Positional("extras").String().Required(false).Variadic(true).Default("fallback").Done();
+
+    for (const auto& args : std::vector<std::vector<std::string>>{{"app"}, {"app", "one", "two"}, {"app"}})
+    {
+        const auto argv = ToArgv(args);
+        const auto result = parser.Parse(static_cast<int>(argv.size()), argv.data());
+        ASSERT_TRUE(result.ok);
+        const auto expected =
+            args.size() == 1 ? std::vector<std::string>{"fallback"} : std::vector<std::string>{"one", "two"};
+        EXPECT_EQ(result.GetAll("extras"), expected);
+    }
+
+    argtool::Parser without_default;
+    without_default.Positional("extras").String().Required(false).Variadic(true).Done();
+    const std::vector<std::string> args = {"app"};
+    const auto argv = ToArgv(args);
+    const auto result = without_default.Parse(static_cast<int>(argv.size()), argv.data());
+    ASSERT_TRUE(result.ok);
+    EXPECT_FALSE(result.Has("extras"));
+}
+
 TEST(ArgtoolTests, TypeMismatchErrorIsReported)
 {
     auto parser = BuildParser();

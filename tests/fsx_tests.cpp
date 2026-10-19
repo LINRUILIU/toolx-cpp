@@ -6,10 +6,18 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <locale>
 #include <string>
 #include <thread>
 
 #include "fsx.h"
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace
 {
@@ -33,6 +41,49 @@ std::string ReadText(const std::filesystem::path& p)
     std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     return s;
 }
+
+class ScopedWorkingDirectory
+{
+  public:
+    explicit ScopedWorkingDirectory(const std::filesystem::path& path) : original_(std::filesystem::current_path())
+    {
+        std::filesystem::current_path(path);
+    }
+    ~ScopedWorkingDirectory()
+    {
+        std::error_code ec;
+        std::filesystem::current_path(original_, ec);
+    }
+
+  private:
+    std::filesystem::path original_;
+};
+
+class GroupedNumbers : public std::numpunct<char>
+{
+  protected:
+    char do_thousands_sep() const override
+    {
+        return ',';
+    }
+    std::string do_grouping() const override
+    {
+        return "\3";
+    }
+};
+
+class ScopedGlobalLocale
+{
+  public:
+    explicit ScopedGlobalLocale(const std::locale& locale) : original_(std::locale::global(locale)) {}
+    ~ScopedGlobalLocale()
+    {
+        std::locale::global(original_);
+    }
+
+  private:
+    std::locale original_;
+};
 
 void WriteOctal(char* field, std::size_t width, std::uintmax_t value)
 {
@@ -95,6 +146,64 @@ TEST(FsxTests, AtomicWriteCreatesFile)
     std::filesystem::remove_all(root, ec);
 }
 
+TEST(FsxTests, AtomicOverwriteKeepsExistingReaderAndPublishesNewContent)
+{
+    const auto root = TestRoot() / "atomic_reader";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto target = root / "target.txt";
+    WriteText(target, "old");
+#if defined(_WIN32)
+    HANDLE reader = CreateFileW(target.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(reader, INVALID_HANDLE_VALUE);
+#else
+    std::ifstream reader(target, std::ios::binary);
+    ASSERT_TRUE(reader.is_open());
+#endif
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite(target.string(), "new");
+    const auto result = fsx::Run(plan);
+    EXPECT_TRUE(result.ok) << result.error;
+    EXPECT_EQ(ReadText(target), "new");
+#if defined(_WIN32)
+    char buffer[3]{};
+    DWORD count = 0;
+    EXPECT_TRUE(ReadFile(reader, buffer, sizeof(buffer), &count, nullptr));
+    EXPECT_EQ(std::string(buffer, count), "old");
+    CloseHandle(reader);
+#else
+    EXPECT_EQ(std::string((std::istreambuf_iterator<char>(reader)), std::istreambuf_iterator<char>()), "old");
+    reader.close();
+#endif
+    std::filesystem::remove_all(root, ec);
+}
+
+#if defined(_WIN32)
+TEST(FsxTests, AtomicOverwriteBlockedByReaderPreservesOldTarget)
+{
+    const auto root = TestRoot() / "atomic_blocked_reader";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto target = root / "target.txt";
+    WriteText(target, "old");
+    HANDLE reader = CreateFileW(target.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(reader, INVALID_HANDLE_VALUE);
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite(target.string(), "new");
+    fsx::RunOptions options;
+    options.journal_path = (root / "run.journal").string();
+    const auto result = fsx::Run(plan, options);
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.rollback_complete) << result.rollback_error;
+    EXPECT_EQ(ReadText(target), "old");
+    EXPECT_FALSE(std::filesystem::exists(options.journal_path));
+    CloseHandle(reader);
+    std::filesystem::remove_all(root, ec);
+}
+#endif
+
 TEST(FsxTests, SafeReplaceDefaultOverwrite)
 {
     const auto root = TestRoot() / "safe_replace";
@@ -140,6 +249,10 @@ TEST(FsxTests, FailFastRollback)
     EXPECT_TRUE(result.steps[0].ok);
     EXPECT_TRUE(result.steps[0].rolled_back);
     EXPECT_FALSE(result.steps[1].ok);
+    EXPECT_TRUE(result.rollback_attempted);
+    EXPECT_TRUE(result.rollback_complete);
+    EXPECT_EQ(result.rolled_back_steps, 1U);
+    EXPECT_FALSE(result.steps[1].rollback_attempted);
 
     std::filesystem::remove_all(root, ec);
 }
@@ -292,7 +405,7 @@ TEST(FsxTests, CommittedJournalCannotBeRecoveredAndCanBeReused)
     first.AddAtomicWrite(target.string(), "first");
     ASSERT_TRUE(fsx::Run(first, options).ok);
     EXPECT_TRUE(std::filesystem::exists(journal));
-    EXPECT_NE(ReadText(journal).find("FSXJ3\n"), std::string::npos);
+    EXPECT_NE(ReadText(journal).find("FSXJ4\n"), std::string::npos);
 
     const auto recovered = fsx::RecoverFromJournal(journal.string());
     EXPECT_FALSE(recovered.ok);
@@ -307,6 +420,292 @@ TEST(FsxTests, CommittedJournalCannotBeRecoveredAndCanBeReused)
 
     std::filesystem::remove_all(root, ec);
 }
+
+TEST(FsxTests, ReplacementJournalRecoversUnderGroupedAndClassicLocales)
+{
+    const auto root = TestRoot() / "recover_grouped_locale";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    for (const bool recover_under_classic : {false, true})
+    {
+        SCOPED_TRACE(recover_under_classic ? "recover under classic locale" : "recover under grouped locale");
+        const ScopedGlobalLocale locale(std::locale(std::locale::classic(), new GroupedNumbers));
+        const auto case_root = root / (recover_under_classic ? "classic" : "grouped");
+        const auto target = case_root / "target.txt";
+        const auto journal = case_root / "run.journal";
+        WriteText(target, "original");
+        const std::string replacement(12345, 'x');
+
+        fsx::BatchPlan plan;
+        plan.AddAtomicWrite(target.string(), replacement)
+            .AddSafeReplace((case_root / "missing.txt").string(), (case_root / "later.txt").string());
+        fsx::RunOptions options;
+        options.fail_fast = false;
+        options.journal_path = journal.string();
+        const auto run = fsx::Run(plan, options);
+        ASSERT_FALSE(run.ok);
+        ASSERT_EQ(run.steps.size(), 2U);
+        ASSERT_TRUE(run.steps[0].ok) << run.steps[0].error;
+        EXPECT_FALSE(run.steps[1].ok);
+        EXPECT_EQ(run.completed_steps, 1U);
+        EXPECT_FALSE(run.rollback_attempted);
+        EXPECT_EQ(ReadText(target), replacement);
+        ASSERT_NE(ReadText(journal).find("UNDO|REPLACE|"), std::string::npos);
+        for (const auto& entry : std::filesystem::directory_iterator(case_root))
+            EXPECT_EQ(entry.path().filename().string().find(','), std::string::npos);
+
+        if (recover_under_classic)
+            std::locale::global(std::locale::classic());
+        const auto recovered = fsx::RecoverFromJournal(journal.string());
+        ASSERT_TRUE(recovered.ok) << recovered.error;
+        EXPECT_TRUE(recovered.rollback_attempted);
+        EXPECT_TRUE(recovered.rollback_complete);
+        EXPECT_EQ(ReadText(target), "original");
+        EXPECT_FALSE(std::filesystem::exists(journal));
+        for (const auto& entry : std::filesystem::directory_iterator(case_root))
+            EXPECT_EQ(entry.path(), target);
+    }
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, CommittedReplacementJournalCanBeReusedUnderGroupedAndClassicLocales)
+{
+    const auto root = TestRoot() / "committed_grouped_locale";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    for (const bool reuse_under_classic : {false, true})
+    {
+        SCOPED_TRACE(reuse_under_classic ? "reuse under classic locale" : "reuse under grouped locale");
+        const ScopedGlobalLocale locale(std::locale(std::locale::classic(), new GroupedNumbers));
+        const auto case_root = root / (reuse_under_classic ? "classic" : "grouped");
+        const auto target = case_root / "target.txt";
+        const auto journal = case_root / "run.journal";
+        WriteText(target, "original");
+        fsx::RunOptions options;
+        options.journal_path = journal.string();
+        options.keep_journal_on_success = true;
+        fsx::BatchPlan first;
+        first.AddAtomicWrite(target.string(), "first");
+        const auto committed = fsx::Run(first, options);
+        ASSERT_TRUE(committed.ok) << committed.error;
+        ASSERT_NE(ReadText(journal).find("UNDO|REPLACE|"), std::string::npos);
+        ASSERT_NE(ReadText(journal).find("\nCOMMIT\n"), std::string::npos);
+
+        if (reuse_under_classic)
+            std::locale::global(std::locale::classic());
+        const auto recovered = fsx::RecoverFromJournal(journal.string());
+        EXPECT_FALSE(recovered.ok);
+        EXPECT_NE(recovered.error.find("completed transaction"), std::string::npos);
+        EXPECT_EQ(ReadText(target), "first");
+        fsx::BatchPlan second;
+        second.AddAtomicWrite(target.string(), "second");
+        const auto reused = fsx::Run(second, options);
+        ASSERT_TRUE(reused.ok) << reused.error;
+        EXPECT_EQ(ReadText(target), "second");
+        EXPECT_NE(ReadText(journal).find("\nCOMMIT\n"), std::string::npos);
+    }
+
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, MalformedCommittedJournalCannotBeSilentlyReused)
+{
+    const auto root = TestRoot() / "malformed_committed_journal";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto target = root / "target.txt";
+    const auto journal = root / "run.journal";
+    for (const std::string records : {"COMMIT\nUNDO|REMOVE|staging.tmp.1\n", "UNKNOWN|value\nCOMMIT\n"})
+    {
+        WriteText(target, "old");
+        const std::string contents = "FSXJ4\n" + records;
+        WriteText(journal, contents);
+        fsx::BatchPlan plan;
+        plan.AddAtomicWrite(target.string(), "new");
+        fsx::RunOptions options;
+        options.journal_path = journal.string();
+        const auto result = fsx::Run(plan, options);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(ReadText(target), "old");
+        EXPECT_EQ(ReadText(journal), contents);
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, JournalAliasesAreRejectedBeforeAnyMutation)
+{
+    const auto root = TestRoot() / "journal_aliases";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root);
+    const auto target = root / "target.json";
+    for (const bool keep : {false, true})
+    {
+        for (const bool existing : {false, true})
+        {
+            std::filesystem::remove(target, ec);
+            const std::string original = "FSXJ4\nCOMMIT\n";
+            if (existing)
+                WriteText(target, original);
+            fsx::BatchPlan plan;
+            plan.AddAtomicWrite(target.string(), "new bytes");
+            fsx::RunOptions options;
+            options.journal_path = (root / "." / "target.json").string();
+            options.keep_journal_on_success = keep;
+            const auto run = fsx::Run(plan, options);
+            EXPECT_FALSE(run.ok);
+            EXPECT_NE(run.error.find("overlaps"), std::string::npos);
+            EXPECT_TRUE(run.steps.empty());
+            if (existing)
+                EXPECT_EQ(ReadText(target), original);
+            else
+                EXPECT_FALSE(std::filesystem::exists(target));
+        }
+    }
+}
+
+TEST(FsxTests, JournalRelativeAndAbsoluteAliasesRejectNewOutputBeforeMutation)
+{
+    const auto root = TestRoot() / "journal_relative_absolute_aliases";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root);
+    {
+        const ScopedWorkingDirectory working_directory(root);
+        const std::filesystem::path relative_target = "new-target.txt";
+        const auto absolute_target = root / relative_target;
+        for (const bool absolute_journal : {false, true})
+        {
+            for (const bool keep : {false, true})
+            {
+                fsx::BatchPlan plan;
+                plan.AddAtomicWrite((absolute_journal ? relative_target : absolute_target).string(), "new bytes");
+                fsx::RunOptions options;
+                options.journal_path = (absolute_journal ? absolute_target : relative_target).string();
+                options.keep_journal_on_success = keep;
+                const auto run = fsx::Run(plan, options);
+                EXPECT_FALSE(run.ok);
+                EXPECT_NE(run.error.find("overlaps"), std::string::npos);
+                EXPECT_TRUE(run.steps.empty());
+                EXPECT_FALSE(std::filesystem::exists(absolute_target));
+                EXPECT_TRUE(std::filesystem::is_empty(root));
+            }
+        }
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, JournalCannotOverlapTreeSourceDestinationOrBackup)
+{
+    const auto root = TestRoot() / "journal_tree_aliases";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto source = root / "source";
+    const auto destination = root / "destination";
+    WriteText(source / "file", "original");
+    WriteText(destination / "file", "old destination");
+    fsx::BatchPlan plan;
+    plan.AddCopyTree(source.string(), destination.string());
+    for (const auto& journal : {source / "run.journal", destination / "run.journal", root})
+    {
+        fsx::RunOptions options;
+        options.journal_path = journal.string();
+        const auto run = fsx::Run(plan, options);
+        EXPECT_FALSE(run.ok);
+        EXPECT_NE(run.error.find("overlaps"), std::string::npos);
+        EXPECT_TRUE(run.steps.empty());
+        EXPECT_EQ(ReadText(source / "file"), "original");
+        EXPECT_EQ(ReadText(destination / "file"), "old destination");
+    }
+    fsx::BatchPlan replace;
+    replace.AddSafeReplace((source / "file").string(), (destination / "file").string(), true);
+    fsx::RunOptions options;
+    options.journal_path = (destination / "file.bak").string();
+    EXPECT_FALSE(fsx::Run(replace, options).ok);
+    EXPECT_FALSE(std::filesystem::exists(options.journal_path));
+    EXPECT_EQ(ReadText(source / "file"), "original");
+    EXPECT_EQ(ReadText(destination / "file"), "old destination");
+}
+
+TEST(FsxTests, JournalHardLinkAliasDoesNotTruncateSource)
+{
+    const auto root = TestRoot() / "journal_hardlink_alias";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto source = root / "source";
+    const auto journal = root / "run.journal";
+    WriteText(source, "FSXJ4\nCOMMIT\n");
+    std::filesystem::create_hard_link(source, journal, ec);
+    if (ec)
+        GTEST_SKIP() << "hard links unavailable: " << ec.message();
+    fsx::BatchPlan plan;
+    plan.AddCopyFile(source.string(), (root / "copied").string());
+    fsx::RunOptions options;
+    options.journal_path = journal.string();
+    EXPECT_FALSE(fsx::Run(plan, options).ok);
+    EXPECT_EQ(ReadText(source), "FSXJ4\nCOMMIT\n");
+    EXPECT_FALSE(std::filesystem::exists(root / "copied"));
+}
+
+TEST(FsxTests, JournalRejectsAncestorWithTrailingSeparator)
+{
+    const auto root = TestRoot() / "journal_trailing_separator";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(root / "tree" / "file", "original");
+    fsx::BatchPlan plan;
+    plan.AddRemovePath((root / "tree" / "").string());
+    fsx::RunOptions options;
+    options.journal_path = (root / "tree" / "run.journal").string();
+    const auto run = fsx::Run(plan, options);
+    EXPECT_FALSE(run.ok);
+    EXPECT_NE(run.error.find("overlaps"), std::string::npos);
+    EXPECT_TRUE(run.steps.empty());
+    EXPECT_EQ(ReadText(root / "tree" / "file"), "original");
+    EXPECT_FALSE(std::filesystem::exists(options.journal_path));
+}
+
+TEST(FsxTests, JournalSymlinkParentAliasIsRejectedBeforeCreatingOutput)
+{
+    const auto root = TestRoot() / "journal_symlink_parent_alias";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "physical");
+    std::filesystem::create_directory_symlink(root / "physical", root / "alias", ec);
+    if (ec)
+        GTEST_SKIP() << "directory symbolic links unavailable: " << ec.message();
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite((root / "alias" / "output").string(), "new");
+    fsx::RunOptions options;
+    options.journal_path = (root / "physical" / "output").string();
+    const auto run = fsx::Run(plan, options);
+    EXPECT_FALSE(run.ok);
+    EXPECT_NE(run.error.find("overlaps"), std::string::npos);
+    EXPECT_TRUE(run.steps.empty());
+    EXPECT_FALSE(std::filesystem::exists(root / "physical" / "output"));
+    std::filesystem::remove_all(root, ec);
+}
+
+#if defined(_WIN32)
+TEST(FsxTests, JournalCaseAliasUsesWindowsUnicodeComparison)
+{
+    const auto root = TestRoot() / "journal_unicode_alias";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root);
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite((root / L"\u00c4.json").string(), "new bytes");
+    fsx::RunOptions options;
+    options.journal_path = (root / L"\u00e4.JSON").string();
+    const auto run = fsx::Run(plan, options);
+    EXPECT_FALSE(run.ok);
+    EXPECT_TRUE(run.steps.empty());
+    EXPECT_TRUE(std::filesystem::is_empty(root));
+}
+#endif
 
 TEST(FsxTests, RecoverFromJournalMaintainsV1AndV2Compatibility)
 {
@@ -337,6 +736,93 @@ TEST(FsxTests, RecoverFromJournalMaintainsV1AndV2Compatibility)
     EXPECT_EQ(ReadText(v2_target), "original");
     EXPECT_FALSE(std::filesystem::exists(v2_journal));
 
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, GeneratedJournalRecoversRelativeOperationsAfterWorkingDirectoryChanges)
+{
+    const auto root = TestRoot() / "relative_recovery";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "other");
+    for (const bool existing : {false, true})
+    {
+        const auto job = root / (existing ? "existing" : "new");
+        std::filesystem::create_directories(job / "data");
+        const auto target = job / "data" / "target.txt";
+        const auto journal = job / "data" / "run.journal";
+        if (existing)
+            WriteText(target, "old");
+        fsx::RunResult run;
+        {
+            ScopedWorkingDirectory cwd(job);
+            fsx::BatchPlan plan;
+            plan.AddAtomicWrite("data/target.txt", "new").AddSafeReplace("missing.txt", "later.txt");
+            fsx::RunOptions options;
+            options.fail_fast = false;
+            options.journal_path = "data/run.journal";
+            run = fsx::Run(plan, options);
+        }
+        ASSERT_FALSE(run.ok);
+        ASSERT_EQ(ReadText(target), "new");
+        fsx::RunResult recovered;
+        {
+            ScopedWorkingDirectory cwd(root / "other");
+            recovered = fsx::RecoverFromJournal(journal.string());
+        }
+        ASSERT_TRUE(recovered.ok) << recovered.error;
+        EXPECT_TRUE(recovered.rollback_complete);
+        EXPECT_FALSE(std::filesystem::exists(journal));
+        if (existing)
+            EXPECT_EQ(ReadText(target), "old");
+        else
+            EXPECT_FALSE(std::filesystem::exists(target));
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, RelativeV4RecordsAreRejectedBeforeAnyMutation)
+{
+    const auto root = TestRoot() / "relative_v4_records";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto staging = root / "staging.tmp.1";
+    const auto journal = root / "run.journal";
+    WriteText(staging, "keep");
+    const auto contents = "FSXJ4\nUNDO|MOVE|relative.tmp.1|relative-target\nUNDO|REMOVE|" + staging.string() + "\n";
+    WriteText(journal, contents);
+    const auto recovered = fsx::RecoverFromJournal(journal.string());
+    EXPECT_FALSE(recovered.ok);
+    EXPECT_FALSE(recovered.rollback_attempted);
+    EXPECT_NE(recovered.error.find("absolute undo paths"), std::string::npos);
+    EXPECT_EQ(ReadText(staging), "keep");
+    EXPECT_EQ(ReadText(journal), contents);
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, LegacyRelativeRecordsRemainUsableFromOriginalWorkingDirectory)
+{
+    const auto root = TestRoot() / "legacy_relative_records";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root);
+    for (const std::string header : {"FSXJ1", "FSXJ2", "FSXJ3"})
+    {
+        const auto source = root / "source.tmp.1";
+        const auto target = root / "target.txt";
+        const auto journal = root / "run.journal";
+        std::filesystem::remove(target, ec);
+        WriteText(source, "old");
+        WriteText(journal, header + "\nUNDO|MOVE|source.tmp.1|target.txt\n");
+        fsx::RunResult recovered;
+        {
+            ScopedWorkingDirectory cwd(root);
+            recovered = fsx::RecoverFromJournal(journal.string());
+        }
+        EXPECT_TRUE(recovered.ok) << header << ": " << recovered.error;
+        EXPECT_EQ(ReadText(target), "old");
+        EXPECT_FALSE(std::filesystem::exists(source));
+    }
     std::filesystem::remove_all(root, ec);
 }
 
@@ -386,6 +872,214 @@ TEST(FsxTests, RecoverFromJournalV3ManualMoveJournalIsCompatible)
     std::filesystem::remove_all(root, ec);
 }
 
+TEST(FsxTests, LegacyBestEffortRecoveryReportsFailureAndKeepsEvidence)
+{
+    const auto root = TestRoot() / "recover_legacy_failure";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto nonempty = root / "nonempty";
+    const auto independent = root / "independent";
+    const auto journal = root / "run.journal";
+    WriteText(nonempty / "keep.txt", "keep");
+    WriteText(independent, "temporary");
+    WriteText(journal, "FSXJ2\nUNDO|REMOVE|" + independent.string() + "\nUNDO|REMOVE|" + nonempty.string() + "\n");
+
+    const auto recovered = fsx::RecoverFromJournal(journal.string());
+    EXPECT_FALSE(recovered.ok);
+    EXPECT_TRUE(recovered.rollback_attempted);
+    EXPECT_FALSE(recovered.rollback_complete);
+    EXPECT_FALSE(recovered.rollback_error.empty());
+    EXPECT_TRUE(std::filesystem::exists(journal));
+    EXPECT_EQ(ReadText(nonempty / "keep.txt"), "keep");
+    EXPECT_FALSE(std::filesystem::exists(independent));
+    ASSERT_EQ(recovered.steps.size(), 2U);
+    EXPECT_FALSE(recovered.steps[0].rolled_back);
+    EXPECT_FALSE(recovered.steps[0].rollback_error.empty());
+    EXPECT_TRUE(recovered.steps[1].rolled_back);
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, RecoveryRejectsUnknownRecordsBeforeAnyMutation)
+{
+    const auto root = TestRoot() / "recover_unknown_record";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto staging = root / "staging.tmp.1";
+    const auto journal = root / "run.journal";
+    for (const std::string header : {"FSXJ1", "FSXJ2", "FSXJ3", "FSXJ4"})
+    {
+        WriteText(staging, "keep");
+        WriteText(journal, header + "\nUNDO|REMOVE|" + staging.string() + "\nUNKNOWN|value\n");
+        const auto recovered = fsx::RecoverFromJournal(journal.string());
+        EXPECT_FALSE(recovered.ok) << header;
+        EXPECT_FALSE(recovered.rollback_attempted) << header;
+        EXPECT_EQ(ReadText(staging), "keep") << header;
+        EXPECT_TRUE(std::filesystem::exists(journal)) << header;
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, RecoveryRejectsDuplicateAndOutOfOrderRestoredMarkers)
+{
+    const auto root = TestRoot() / "recover_invalid_marker";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto old = root / "old.tmp.1";
+    const auto newer = root / "new.tmp.1";
+    const auto staging = root / "restore.tmp.1";
+    const auto target = root / "target.txt";
+    const auto journal = root / "run.journal";
+    const std::string cleanup =
+        "UNDO|REMOVE|" + old.string() + "\nUNDO|REMOVE|" + newer.string() + "\nUNDO|REMOVE|" + staging.string() + "\n";
+    const std::string replace = "UNDO|REPLACE|" + old.string() + "|" + target.string() + "|" + newer.string() + "|" +
+                                staging.string() + "|1:2:3:4:5:6:7|1:2:3:4:5:6:7\n";
+    const std::string marker = "RESTORED|" + old.string() + "\n";
+    for (const auto& records :
+         {cleanup + marker + replace, cleanup + replace + marker + marker, cleanup + replace + replace,
+          cleanup + replace + "RESTORED|unknown.tmp.1\n", cleanup + replace + "COMMIT\n" + marker})
+    {
+        WriteText(old, "old");
+        WriteText(newer, "new");
+        WriteText(target, "new");
+        WriteText(journal, "FSXJ4\n" + records);
+        const auto recovered = fsx::RecoverFromJournal(journal.string());
+        EXPECT_FALSE(recovered.ok);
+        EXPECT_FALSE(recovered.rollback_attempted);
+        EXPECT_EQ(ReadText(target), "new");
+        EXPECT_EQ(ReadText(old), "old");
+        EXPECT_EQ(ReadText(newer), "new");
+        EXPECT_TRUE(std::filesystem::exists(journal));
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, RollbackNeverMarksSkippedForwardStepsAndCountsBusinessSteps)
+{
+    const auto root = TestRoot() / "rollback_skipped";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(root / "existing.txt", "old");
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite((root / "existing.txt").string(), "skipped")
+        .AddAtomicWrite((root / "created.txt").string(), "new")
+        .AddSafeReplace((root / "missing.txt").string(), (root / "later.txt").string());
+    fsx::RunOptions options;
+    options.conflict_policy = fsx::ConflictPolicy::Skip;
+    const auto result = fsx::Run(plan, options);
+    ASSERT_FALSE(result.ok);
+    ASSERT_EQ(result.steps.size(), 3U);
+    EXPECT_TRUE(result.steps[0].skipped);
+    EXPECT_FALSE(result.steps[0].rollback_attempted);
+    EXPECT_FALSE(result.steps[0].rolled_back);
+    EXPECT_TRUE(result.steps[1].rolled_back);
+    EXPECT_EQ(result.rolled_back_steps, 1U);
+    EXPECT_TRUE(result.rollback_complete);
+    EXPECT_EQ(ReadText(root / "existing.txt"), "old");
+    EXPECT_FALSE(std::filesystem::exists(root / "created.txt"));
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, FailedTreeStepReportsItsCompletedPartialRollback)
+{
+    const auto root = TestRoot() / "rollback_partial_step";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(root / "source" / "a.txt", "new");
+    WriteText(root / "source" / "z" / "item.txt", "later");
+    WriteText(root / "destination" / "a.txt", "old");
+    WriteText(root / "destination" / "z", "blocked-parent");
+    fsx::BatchPlan plan;
+    plan.AddCopyTree((root / "source").string(), (root / "destination").string());
+    const auto result = fsx::Run(plan);
+    ASSERT_FALSE(result.ok);
+    ASSERT_EQ(result.steps.size(), 1U);
+    EXPECT_FALSE(result.steps[0].ok);
+    EXPECT_TRUE(result.steps[0].rollback_attempted);
+    EXPECT_TRUE(result.steps[0].rolled_back);
+    EXPECT_TRUE(result.rollback_complete);
+    EXPECT_EQ(result.rolled_back_steps, 1U);
+    EXPECT_EQ(ReadText(root / "destination" / "a.txt"), "old");
+    EXPECT_EQ(ReadText(root / "destination" / "z"), "blocked-parent");
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, AtomicWriteRollbackRestoresFileReplacedByCreatedParents)
+{
+    const auto root = TestRoot() / "rollback_atomic_parents";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto target = root / "original";
+    WriteText(target, "old-file");
+    fsx::BatchPlan plan;
+    plan.AddRemovePath(target.string())
+        .AddAtomicWrite((target / "nested" / "new.txt").string(), "new")
+        .AddSafeReplace((root / "missing.txt").string(), (root / "later.txt").string());
+    const auto result = fsx::Run(plan);
+    ASSERT_FALSE(result.ok);
+    EXPECT_TRUE(result.rollback_complete) << result.rollback_error;
+    EXPECT_EQ(ReadText(target), "old-file");
+    EXPECT_EQ(result.rolled_back_steps, 2U);
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, AtomicWriteRejectsExistingDirectoryWithoutRemovingIt)
+{
+    const auto root = TestRoot() / "atomic_directory";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(root / "target" / "keep.txt", "keep");
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite((root / "target").string(), "new");
+    const auto result = fsx::Run(plan);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(ReadText(root / "target" / "keep.txt"), "keep");
+    EXPECT_TRUE(result.rollback_complete);
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, AtomicWriteRejectsDanglingSymlinkWithoutReplacingIt)
+{
+    const auto root = TestRoot() / "atomic_dangling_link";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root, ec);
+    const auto target = root / "target.txt";
+    const auto missing = root / "missing.txt";
+    std::filesystem::create_symlink(missing, target, ec);
+    if (ec)
+        GTEST_SKIP() << "symbolic links unavailable: " << ec.message();
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite(target.string(), "new");
+    const auto result = fsx::Run(plan);
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(std::filesystem::is_symlink(std::filesystem::symlink_status(target)));
+    EXPECT_EQ(std::filesystem::read_symlink(target), missing);
+    EXPECT_FALSE(std::filesystem::exists(missing));
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, RepeatedAtomicWritesRestoreOriginalTargetOnFailure)
+{
+    const auto root = TestRoot() / "atomic_repeated_rollback";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto target = root / "target.txt";
+    WriteText(target, "original");
+    fsx::BatchPlan plan;
+    plan.AddAtomicWrite(target.string(), "first")
+        .AddAtomicWrite(target.string(), "second")
+        .AddSafeReplace((root / "missing.txt").string(), (root / "later.txt").string());
+    fsx::RunOptions options;
+    options.journal_path = (root / "run.journal").string();
+    const auto result = fsx::Run(plan, options);
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.rollback_complete) << result.rollback_error;
+    EXPECT_EQ(result.rolled_back_steps, 2U);
+    EXPECT_EQ(ReadText(target), "original");
+    EXPECT_FALSE(std::filesystem::exists(options.journal_path));
+    std::filesystem::remove_all(root, ec);
+}
+
 TEST(FsxTests, FailFastRollbackRestoresExistingAtomicWriteTarget)
 {
     const auto root = TestRoot() / "rollback_existing_atomic";
@@ -402,6 +1096,10 @@ TEST(FsxTests, FailFastRollbackRestoresExistingAtomicWriteTarget)
     const auto result = fsx::Run(plan);
     ASSERT_FALSE(result.ok);
     EXPECT_EQ(ReadText(target), "old");
+    EXPECT_TRUE(result.rollback_complete);
+    ASSERT_EQ(result.steps.size(), 2U);
+    EXPECT_TRUE(result.steps[0].rolled_back);
+    EXPECT_EQ(result.rolled_back_steps, 1U);
 
     std::filesystem::remove_all(root, ec);
 }

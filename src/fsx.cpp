@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <locale>
 #include <map>
 #include <sstream>
 #include <system_error>
@@ -38,6 +39,7 @@
 #endif
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -53,12 +55,19 @@ struct UndoAction
     enum class Kind : std::uint8_t
     {
         RemovePath,
-        MovePath
+        MovePath,
+        ReplaceFile
     };
 
     Kind kind{Kind::RemovePath};
     Path from;
     Path to;
+    std::size_t step{0};
+    Path witness;
+    Path staging;
+    bool restored{false};
+    std::string old_stamp;
+    std::string new_stamp;
 };
 
 struct ExecuteState
@@ -66,6 +75,7 @@ struct ExecuteState
     const RunOptions* options{nullptr};
     std::vector<UndoAction> undo_stack;
     std::vector<Path> cleanup_after_commit;
+    std::size_t current_step{0};
 };
 
 struct ExecOutcome
@@ -91,6 +101,7 @@ Path make_temp_path(const Path& base, std::string_view tag)
     static std::atomic<std::uint64_t> next_id{0};
     const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
     std::ostringstream os;
+    os.imbue(std::locale::classic());
     os << base.string() << "." << tag << ".tmp." << now << "." << next_id.fetch_add(1, std::memory_order_relaxed);
     return Path(os.str());
 }
@@ -140,6 +151,73 @@ bool path_is_within(std::string_view child, std::string_view parent)
 bool path_is_at_or_within(std::string_view child, std::string_view parent)
 {
     return child == parent || path_is_within(child, parent);
+}
+
+Path journal_boundary_path(const Path& path)
+{
+    std::error_code ec;
+    auto resolved = std::filesystem::absolute(path, ec);
+    if (!ec)
+    {
+        const auto canonical = std::filesystem::weakly_canonical(resolved, ec);
+        if (!ec)
+            resolved = canonical;
+    }
+    return resolved.lexically_normal();
+}
+
+bool boundary_component_equal(const Path& lhs, const Path& rhs)
+{
+#if defined(_WIN32)
+    const auto& left = lhs.native();
+    const auto& right = rhs.native();
+    return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
+#else
+    return lhs == rhs;
+#endif
+}
+
+bool boundary_paths_overlap(const Path& lhs, const Path& rhs)
+{
+    auto left = lhs.begin();
+    auto right = rhs.begin();
+    for (; left != lhs.end() && right != rhs.end(); ++left, ++right)
+    {
+        if (!boundary_component_equal(*left, *right))
+            return false;
+    }
+    return true; // Equal paths or an ancestor of the other path.
+}
+
+bool journal_is_separate(const BatchPlan& plan, const RunOptions& options, std::string* error)
+{
+    if (options.journal_path.empty())
+        return true;
+    const Path journal(options.journal_path);
+    const auto resolved_journal = journal_boundary_path(journal);
+    auto separate = [&](const std::string& name)
+    {
+        if (name.empty())
+            return true;
+        const Path path(name);
+        std::error_code ec;
+        const bool same_file = std::filesystem::equivalent(journal, path, ec) && !ec;
+        if (same_file || boundary_paths_overlap(resolved_journal, journal_boundary_path(path)))
+        {
+            *error = utils::err::join_context("fsx", "journal", "journal overlaps a batch path: " + name);
+            return false;
+        }
+        return true;
+    };
+    for (const auto& action : plan.Actions())
+    {
+        if (!separate(action.src) || !separate(action.dst))
+            return false;
+        if (action.kind == BatchPlan::ActionKind::SafeReplace && (action.backup || options.default_backup) &&
+            !separate(action.dst + options.backup_suffix))
+            return false;
+    }
+    return true;
 }
 
 bool files_have_same_content(const Path& lhs, const Path& rhs)
@@ -257,7 +335,188 @@ std::vector<std::string> split_pipe(std::string_view line)
 constexpr std::string_view kJournalHeaderV1{"FSXJ1"};
 constexpr std::string_view kJournalHeaderV2{"FSXJ2"};
 constexpr std::string_view kJournalHeaderV3{"FSXJ3"};
+constexpr std::string_view kJournalHeaderV4{"FSXJ4"};
 constexpr std::string_view kJournalCommit{"COMMIT"};
+
+struct ParsedJournal
+{
+    bool ok{false};
+    bool empty{false};
+    bool committed{false};
+    std::string header;
+    std::string error;
+    std::vector<UndoAction> undos;
+};
+
+ParsedJournal read_journal(const Path& journal_path)
+{
+    ParsedJournal result;
+    std::ifstream in(journal_path, std::ios::binary);
+    if (!in.is_open())
+    {
+        result.error = utils::err::join_context("fsx", "recover", "failed to open journal");
+        return result;
+    }
+
+    std::string header;
+    if (!std::getline(in, header) || (header != kJournalHeaderV1 && header != kJournalHeaderV2 &&
+                                      header != kJournalHeaderV3 && header != kJournalHeaderV4))
+    {
+        result.empty = header.empty() && in.eof();
+        result.error = utils::err::join_context("fsx", "recover", "invalid journal header");
+        return result;
+    }
+
+    const bool has_commit = header != kJournalHeaderV1;
+    const bool version_four = header == kJournalHeaderV4;
+    bool committed = false;
+    std::vector<UndoAction> undo_list;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (line.empty())
+        {
+            continue;
+        }
+
+        if (has_commit && line == kJournalCommit && !committed)
+        {
+            committed = true;
+            continue;
+        }
+
+        const auto parts = split_pipe(line);
+        if (committed)
+        {
+            result.error = "fsx::recover: journal contains records after COMMIT";
+            return result;
+        }
+        auto valid_field = [](std::string_view field)
+        {
+            if (field.empty())
+                return false;
+            for (std::size_t i = 0; i < field.size(); ++i)
+            {
+                if (field[i] == '%')
+                {
+                    if (i + 2 >= field.size() || hex_to_int(field[i + 1]) < 0 || hex_to_int(field[i + 2]) < 0)
+                        return false;
+                    i += 2;
+                }
+            }
+            return true;
+        };
+        if (!std::all_of(parts.begin(), parts.end(), valid_field))
+        {
+            result.error = "fsx::recover: invalid journal field";
+            return result;
+        }
+        if (version_four && parts.size() == 2 && parts[0] == "RESTORED")
+        {
+            const auto source = Path(unescape_field(parts[1]));
+            const auto found =
+                std::find_if(undo_list.begin(), undo_list.end(), [&](const UndoAction& undo)
+                             { return undo.kind == UndoAction::Kind::ReplaceFile && undo.from == source; });
+            if (found == undo_list.end() || found->restored)
+            {
+                result.error = "fsx::recover: unknown or duplicate RESTORED reference";
+                return result;
+            }
+            found->restored = true;
+        }
+        else if (parts.size() == 3 && parts[0] == "UNDO" && parts[1] == "REMOVE")
+        {
+            UndoAction u;
+            u.kind = UndoAction::Kind::RemovePath;
+            u.from = Path(unescape_field(parts[2]));
+            undo_list.push_back(std::move(u));
+        }
+        else if (parts.size() == 4 && parts[0] == "UNDO" && parts[1] == "MOVE")
+        {
+            UndoAction u;
+            u.kind = UndoAction::Kind::MovePath;
+            u.from = Path(unescape_field(parts[2]));
+            u.to = Path(unescape_field(parts[3]));
+            undo_list.push_back(std::move(u));
+        }
+        else if (version_four && parts.size() == 8 && parts[0] == "UNDO" && parts[1] == "REPLACE")
+        {
+            UndoAction u;
+            u.kind = UndoAction::Kind::ReplaceFile;
+            u.from = Path(unescape_field(parts[2]));
+            u.to = Path(unescape_field(parts[3]));
+            u.witness = Path(unescape_field(parts[4]));
+            u.staging = Path(unescape_field(parts[5]));
+            u.old_stamp = parts[6];
+            u.new_stamp = parts[7];
+            const auto valid_stamp = [](std::string_view stamp)
+            {
+                unsigned fields = 1;
+                bool has_digit = false;
+                for (std::size_t i = 0; i < stamp.size(); ++i)
+                {
+                    const char c = stamp[i];
+                    if (c == ':')
+                    {
+                        if (!has_digit)
+                            return false;
+                        ++fields;
+                        has_digit = false;
+                    }
+                    else if (c >= '0' && c <= '9')
+                        has_digit = true;
+                    else if (c != '-' || (i != 0 && stamp[i - 1] != ':'))
+                        return false;
+                }
+                return fields == 7 && has_digit && stamp.size() <= 256;
+            };
+            const auto cleanup_exists = [&](const Path& path)
+            {
+                return path.generic_string().find(".tmp.") != std::string::npos &&
+                       std::any_of(undo_list.begin(), undo_list.end(), [&](const UndoAction& prior)
+                                   { return prior.kind == UndoAction::Kind::RemovePath && prior.from == path; });
+            };
+            if (!valid_stamp(u.old_stamp) || !valid_stamp(u.new_stamp) || u.from == u.to || u.from == u.witness ||
+                u.from == u.staging || u.witness == u.staging || u.to == u.witness || u.to == u.staging ||
+                !cleanup_exists(u.from) || !cleanup_exists(u.witness) || !cleanup_exists(u.staging) ||
+                std::any_of(undo_list.begin(), undo_list.end(), [&](const UndoAction& prior)
+                            { return prior.kind == UndoAction::Kind::ReplaceFile && prior.from == u.from; }))
+            {
+                result.error = "fsx::recover: invalid replacement witness references";
+                return result;
+            }
+            undo_list.push_back(std::move(u));
+        }
+        else
+        {
+            result.error = "fsx::recover: unknown or malformed journal record";
+            return result;
+        }
+    }
+    if (!in.eof())
+    {
+        result.error = "fsx::recover: failed to read complete journal";
+        return result;
+    }
+    if (version_four && std::any_of(undo_list.begin(), undo_list.end(),
+                                    [](const UndoAction& undo)
+                                    {
+                                        return !undo.from.is_absolute() ||
+                                               (!undo.to.empty() && !undo.to.is_absolute()) ||
+                                               (!undo.witness.empty() && !undo.witness.is_absolute()) ||
+                                               (!undo.staging.empty() && !undo.staging.is_absolute());
+                                    }))
+    {
+        result.error = "fsx::recover: FSXJ4 requires absolute undo paths";
+        return result;
+    }
+
+    result.ok = true;
+    result.committed = committed;
+    result.header = std::move(header);
+    result.undos = std::move(undo_list);
+    return result;
+}
 
 bool journal_can_start(const RunOptions& options, std::string* error)
 {
@@ -282,38 +541,14 @@ bool journal_can_start(const RunOptions& options, std::string* error)
         return true;
     }
 
-    std::ifstream in(journal, std::ios::binary);
-    if (!in.is_open())
-    {
-        if (error != nullptr)
-        {
-            *error = utils::err::join_context("fsx", "journal", "failed to inspect existing journal");
-        }
-        return false;
-    }
-
-    std::string header;
-    if (!std::getline(in, header))
-    {
+    const auto parsed = read_journal(journal);
+    if (parsed.empty || (parsed.ok && parsed.committed))
         return true;
-    }
-    if (header == kJournalHeaderV2 || header == kJournalHeaderV3)
-    {
-        std::string line;
-        while (std::getline(in, line))
-        {
-            if (line == kJournalCommit)
-            {
-                return true;
-            }
-        }
-    }
-
-    if (error != nullptr)
-    {
+    if (error)
         *error = utils::err::join_context(
-            "fsx", "journal", "existing journal is incomplete; recover or remove it before starting a new run");
-    }
+            "fsx", "journal",
+            parsed.ok ? "existing journal is incomplete; recover or remove it before starting a new run"
+                      : "existing journal is malformed: " + parsed.error);
     return false;
 }
 
@@ -453,7 +688,7 @@ bool journal_write_header(const RunOptions& options, std::string* error)
         return true;
     }
 
-    return write_journal_bytes_sync(Path(options.journal_path), std::string(kJournalHeaderV3) + "\n", true,
+    return write_journal_bytes_sync(Path(options.journal_path), std::string(kJournalHeaderV4) + "\n", true,
                                     "write journal header", error);
 }
 
@@ -464,9 +699,30 @@ bool journal_write_undo(const RunOptions& options, const UndoAction& undo, std::
         return journal_append_line(options, "UNDO|REMOVE|" + escape_field(undo.from.string()) + "\n",
                                    "append journal undo", error);
     }
+    if (undo.kind == UndoAction::Kind::ReplaceFile)
+        return journal_append_line(options,
+                                   "UNDO|REPLACE|" + escape_field(undo.from.string()) + "|" +
+                                       escape_field(undo.to.string()) + "|" + escape_field(undo.witness.string()) +
+                                       "|" + escape_field(undo.staging.string()) + "|" + undo.old_stamp + "|" +
+                                       undo.new_stamp + "\n",
+                                   "append journal replace undo", error);
     return journal_append_line(
         options, "UNDO|MOVE|" + escape_field(undo.from.string()) + "|" + escape_field(undo.to.string()) + "\n",
         "append journal undo", error);
+}
+
+bool journal_write_restored(const RunOptions& options, const UndoAction& undo, std::string* error)
+{
+#if defined(FSX_ENABLE_TEST_FAILPOINTS)
+    if (const char* value = std::getenv("TOOLX_FSX_TEST_FAILPOINT");
+        value && std::strcmp(value, "fail-restored-journal-write") == 0)
+    {
+        *error = "injected RESTORED journal write failure";
+        return false;
+    }
+#endif
+    return journal_append_line(options, "RESTORED|" + escape_field(undo.from.string()) + "\n",
+                               "record restored replacement", error);
 }
 
 bool journal_write_commit(const RunOptions& options, std::string* error)
@@ -505,11 +761,29 @@ bool record_undo(ExecuteState* state, const UndoAction& undo, std::string* error
         }
         return false;
     }
-    if (!journal_write_undo(*state->options, undo, error))
+    auto recorded = undo;
+    if (!state->options->journal_path.empty())
+    {
+        for (auto* path : {&recorded.from, &recorded.to, &recorded.witness, &recorded.staging})
+        {
+            if (path->empty())
+                continue;
+            std::error_code ec;
+            auto absolute = std::filesystem::absolute(*path, ec);
+            if (ec || !absolute.is_absolute())
+            {
+                *error = utils::err::join_context("fsx", "journal", "failed to resolve an absolute undo path");
+                return false;
+            }
+            *path = std::move(absolute);
+        }
+    }
+    if (!journal_write_undo(*state->options, recorded, error))
     {
         return false;
     }
-    state->undo_stack.push_back(undo);
+    state->undo_stack.push_back(std::move(recorded));
+    state->undo_stack.back().step = state->current_step;
     if (trigger_failpoint)
     {
         trigger_journal_failpoint_after_sync(*state);
@@ -592,6 +866,153 @@ bool record_temporary_cleanup(ExecuteState* state, const Path& temp, std::string
     return record_undo(state, {UndoAction::Kind::RemovePath, temp, {}}, error, false);
 }
 
+bool replace_existing_file(const Path& candidate, const Path& target, std::string* error)
+{
+#if defined(_WIN32)
+    // FileRenameInfoEx + POSIX semantics is one directory-entry replacement
+    // that keeps delete-sharing reader handles valid. ReplaceFileW can lose
+    // the target on documented partial failures; MoveFileEx cannot replace an
+    // open destination even with delete sharing. Unsupported filesystems/OS
+    // versions fail without a multi-rename fallback.
+    struct RenameInfo
+    {
+        DWORD flags;
+        HANDLE root;
+        DWORD length;
+        wchar_t name[1];
+    };
+    std::error_code ec;
+    const auto destination = std::filesystem::absolute(target, ec).wstring();
+    if (!ec)
+    {
+        const auto byte_count = destination.size() * sizeof(wchar_t);
+        // Win32's wrapper consumes a terminated DOS pathname even though the
+        // underlying NT rename structure also carries FileNameLength.
+        const auto buffer_size = offsetof(RenameInfo, name) + byte_count + sizeof(wchar_t);
+        if (buffer_size > std::numeric_limits<DWORD>::max())
+            ec = std::make_error_code(std::errc::filename_too_long);
+        else
+        {
+            std::vector<char> buffer(buffer_size, 0);
+            auto* info = reinterpret_cast<RenameInfo*>(buffer.data());
+            info->flags = 0x00000001 | 0x00000002; // REPLACE_IF_EXISTS | POSIX_SEMANTICS
+            info->length = static_cast<DWORD>(byte_count);
+            std::memcpy(info->name, destination.data(), byte_count);
+            HANDLE handle = CreateFileW(candidate.c_str(), DELETE | SYNCHRONIZE,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                        FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (handle == INVALID_HANDLE_VALUE)
+                ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+            else
+            {
+                // FileRenameInfoEx is class 22, available since Windows 10
+                // 1607. Use its ABI directly so older SDK minimum macros do
+                // not silently select legacy rename semantics.
+                const bool ok = SetFileInformationByHandle(handle, static_cast<FILE_INFO_BY_HANDLE_CLASS>(22), info,
+                                                           static_cast<DWORD>(buffer_size)) != 0;
+                if (!ok)
+                    ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+                CloseHandle(handle);
+                if (ok)
+                    return true;
+            }
+        }
+    }
+#else
+    std::error_code ec;
+    std::filesystem::rename(candidate, target, ec);
+    if (!ec)
+        return true;
+#endif
+    *error = utils::err::join_context("fsx", "atomic_write", ec.message());
+    return false;
+}
+
+bool witness_stamp(const Path& path, std::string* stamp)
+{
+    std::error_code ec;
+    const auto status = std::filesystem::symlink_status(path, ec);
+    if (ec || !std::filesystem::is_regular_file(status))
+        return false;
+    std::ostringstream out;
+    // FSXJ4 stamps are machine fields; grouping would violate the journal grammar.
+    out.imbue(std::locale::classic());
+#if defined(_WIN32)
+    HANDLE handle =
+        CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return false;
+    BY_HANDLE_FILE_INFORMATION info{};
+    FILE_BASIC_INFO basic{};
+    const bool ok = GetFileInformationByHandle(handle, &info) &&
+                    GetFileInformationByHandleEx(handle, FileBasicInfo, &basic, sizeof(basic));
+    CloseHandle(handle);
+    if (!ok || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        return false;
+    out << info.dwVolumeSerialNumber << ':' << info.nFileIndexHigh << ':' << info.nFileIndexLow << ':'
+        << info.nFileSizeHigh << ':' << info.nFileSizeLow << ':' << basic.LastWriteTime.QuadPart << ':'
+        << basic.ChangeTime.QuadPart;
+#else
+    struct stat info{};
+    if (::stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
+        return false;
+    out << info.st_dev << ':' << info.st_ino << ':' << info.st_size << ':';
+#if defined(__APPLE__)
+    out << info.st_mtimespec.tv_sec << ':' << info.st_mtimespec.tv_nsec << ':' << info.st_ctimespec.tv_sec << ':'
+        << info.st_ctimespec.tv_nsec;
+#else
+    out << info.st_mtim.tv_sec << ':' << info.st_mtim.tv_nsec << ':' << info.st_ctim.tv_sec << ':'
+        << info.st_ctim.tv_nsec;
+#endif
+#endif
+    *stamp = out.str();
+    return true;
+}
+
+bool restore_replacement(const UndoAction& undo, bool* changed, std::string* error)
+{
+    *changed = false;
+    if (undo.restored)
+        return true;
+    std::string old_stamp;
+    std::string new_stamp;
+    std::error_code ec;
+    const auto target_status = std::filesystem::symlink_status(undo.to, ec);
+    if (ec || !std::filesystem::is_regular_file(target_status) || !witness_stamp(undo.from, &old_stamp) ||
+        old_stamp != undo.old_stamp || !witness_stamp(undo.witness, &new_stamp) || new_stamp != undo.new_stamp)
+    {
+        *error = "replacement recovery conflict: target or witnesses changed";
+        return false;
+    }
+    // Witness files stay private until the durable RESTORED marker is written.
+    // Exact comparisons avoid accepting a changed target on a hash collision.
+    if (files_have_same_content(undo.to, undo.from))
+        return true;
+    if (!files_have_same_content(undo.to, undo.witness) || !path_exists(undo.from))
+    {
+        *error = "replacement recovery conflict: target or witnesses changed";
+        return false;
+    }
+    std::filesystem::copy_file(undo.from, undo.staging, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec)
+    {
+        *error = ec.message();
+        return false;
+    }
+    if (!replace_existing_file(undo.staging, undo.to, error))
+        return false;
+    *changed = true;
+#if defined(FSX_ENABLE_TEST_FAILPOINTS)
+    if (const char* value = std::getenv("TOOLX_FSX_TEST_FAILPOINT");
+        value && std::strcmp(value, "after-replacement-restore-before-marker") == 0)
+        std::_Exit(86);
+#endif
+    return true;
+}
+
+bool ensure_copy_parent_tracked(const Path& destination, ExecuteState* state, std::string* error);
+
 bool write_file_atomic(const Path& target, std::string_view data, ConflictPolicy conflict_policy, ExecuteState* state,
                        std::string* error, bool* skipped)
 {
@@ -599,11 +1020,23 @@ bool write_file_atomic(const Path& target, std::string_view data, ConflictPolicy
     {
         *skipped = false;
     }
-    if (!ensure_parent(target, error))
+    if (!ensure_copy_parent_tracked(target, state, error))
     {
         return false;
     }
-    const bool had_existing = path_exists(target);
+    std::error_code target_ec;
+    const auto target_status = std::filesystem::symlink_status(target, target_ec);
+    if (target_ec && target_ec != std::errc::no_such_file_or_directory)
+    {
+        *error = utils::err::join_context("fsx", "atomic_write", target_ec.message());
+        return false;
+    }
+    const bool had_existing = target_status.type() != std::filesystem::file_type::not_found;
+    if (had_existing && !std::filesystem::is_regular_file(target_status))
+    {
+        *error = utils::err::join_context("fsx", "atomic_write", "existing target must be a regular file");
+        return false;
+    }
     if (had_existing && conflict_policy == ConflictPolicy::Skip)
     {
         if (skipped != nullptr)
@@ -633,12 +1066,35 @@ bool write_file_atomic(const Path& target, std::string_view data, ConflictPolicy
     if (had_existing)
     {
         const Path previous_backup = make_temp_path(target, "old");
-        if (!record_undo(state, {UndoAction::Kind::MovePath, previous_backup, target}, error, true) ||
-            !move_path_without_overwrite(target, previous_backup, "atomic_write", error))
+        const Path new_witness = make_temp_path(target, "witness");
+        const Path restore_staging = make_temp_path(target, "restore");
+        if (!record_temporary_cleanup(state, previous_backup, error) ||
+            !copy_to_temporary_file(target, previous_backup, error) ||
+            !record_temporary_cleanup(state, new_witness, error) || !copy_to_temporary_file(temp, new_witness, error) ||
+            !record_temporary_cleanup(state, restore_staging, error))
+            return false;
+        UndoAction undo{UndoAction::Kind::ReplaceFile, previous_backup, target};
+        undo.witness = new_witness;
+        undo.staging = restore_staging;
+        if (!witness_stamp(previous_backup, &undo.old_stamp) || !witness_stamp(new_witness, &undo.new_stamp))
         {
+            *error = "failed to inspect replacement witnesses";
             return false;
         }
+        if (!record_undo(state, undo, error, true))
+            return false;
+        if (!replace_existing_file(temp, target, error))
+            return false;
+        // A separate post-mutation crash point makes old/new reader checks
+        // deterministic and also exercises recovery after publication.
+#if defined(FSX_ENABLE_TEST_FAILPOINTS)
+        if (const char* value = std::getenv("TOOLX_FSX_TEST_FAILPOINT");
+            value && std::strcmp(value, "after-atomic-replace") == 0)
+            std::_Exit(86);
+#endif
         track_cleanup_after_commit(state, previous_backup);
+        track_cleanup_after_commit(state, new_witness);
+        return true;
     }
 
     if (!record_undo(state, {UndoAction::Kind::MovePath, target, temp}, error, true))
@@ -948,50 +1404,102 @@ bool copy_tree_tracked(const Path& src, const Path& dst, const RunOptions& optio
 
 bool rollback(ExecuteState* state, RunResult* result, RollbackMode mode)
 {
-    (void)mode;
+    result->rollback_attempted = true;
     bool all_ok = true;
+    std::vector<bool> changed(result->steps.size(), false);
+    std::vector<std::size_t> remaining(result->steps.size(), 0);
+    for (const auto& undo : state->undo_stack)
+        ++remaining[undo.step];
+    std::vector<Path> blocked_paths;
+    auto overlaps_blocked_path = [&](const Path& path)
+    {
+        if (path.empty())
+            return false;
+        const auto key = boundary_key(path);
+        return std::any_of(blocked_paths.begin(), blocked_paths.end(),
+                           [&](const Path& blocked)
+                           {
+                               const auto blocked_key = boundary_key(blocked);
+                               return path_is_at_or_within(key, blocked_key) || path_is_at_or_within(blocked_key, key);
+                           });
+    };
+
     for (auto it = state->undo_stack.rbegin(); it != state->undo_stack.rend(); ++it)
     {
+        auto& report = result->steps[it->step];
+        report.rollback_attempted = true;
+        --remaining[it->step];
+        std::string error;
+        bool undone = false;
         std::error_code ec;
-        if (it->kind == UndoAction::Kind::RemovePath)
+        if (overlaps_blocked_path(it->from) || overlaps_blocked_path(it->to) || overlaps_blocked_path(it->witness) ||
+            overlaps_blocked_path(it->staging))
         {
-            if (std::filesystem::exists(it->from, ec))
+            error = "undo depends on a path whose rollback failed";
+        }
+        else if (it->kind == UndoAction::Kind::ReplaceFile)
+        {
+            if (restore_replacement(*it, &undone, &error) && !journal_write_restored(*state->options, *it, &error))
+                undone = false;
+        }
+        else
+        {
+            const bool source_exists = std::filesystem::exists(it->from, ec);
+            if (ec)
             {
-                std::filesystem::remove(it->from, ec);
-                if (!ec)
+                error = ec.message();
+            }
+            else if (source_exists)
+            {
+                if (it->kind == UndoAction::Kind::RemovePath)
                 {
-                    ++result->rolled_back_steps;
+                    undone = std::filesystem::remove(it->from, ec);
                 }
                 else
                 {
-                    all_ok = false;
+                    const bool destination_exists = std::filesystem::exists(it->to, ec);
+                    if (!ec && destination_exists)
+                        error = "rollback conflict: destination already exists";
+                    else if (!ec)
+                    {
+                        std::filesystem::rename(it->from, it->to, ec);
+                        undone = !ec;
+                    }
                 }
+                if (ec)
+                    error = ec.message();
             }
-            continue;
         }
-
-        if (it->kind == UndoAction::Kind::MovePath)
+        if (!error.empty())
         {
-            if (std::filesystem::exists(it->from, ec))
-            {
-                if (std::filesystem::exists(it->to, ec))
-                {
-                    all_ok = false;
-                    continue;
-                }
-                std::filesystem::rename(it->from, it->to, ec);
-                if (!ec)
-                {
-                    ++result->rolled_back_steps;
-                }
-                else
-                {
-                    all_ok = false;
-                }
-            }
+            all_ok = false;
+            const auto detail = utils::err::join_context("fsx", "rollback", error);
+            if (report.rollback_error.empty())
+                report.rollback_error = detail;
+            if (result->rollback_error.empty())
+                result->rollback_error = detail;
+            blocked_paths.push_back(it->from);
+            if (!it->to.empty())
+                blocked_paths.push_back(it->to);
+            if (!it->witness.empty())
+                blocked_paths.push_back(it->witness);
+            if (!it->staging.empty())
+                blocked_paths.push_back(it->staging);
+            if (mode == RollbackMode::Strict)
+                break;
         }
+        changed[it->step] = changed[it->step] || undone;
     }
-
+    for (std::size_t i = 0; i < result->steps.size(); ++i)
+    {
+        auto& report = result->steps[i];
+        // Strict may stop part way through a step. A partial undo must never
+        // become a complete step restoration merely because one path changed.
+        report.rolled_back = changed[i] && report.rollback_error.empty() && remaining[i] == 0 && !report.skipped;
+        if (report.rolled_back)
+            ++result->rolled_back_steps;
+    }
+    result->rollback_complete = all_ok;
     return all_ok;
 }
 
@@ -1370,7 +1878,7 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
     ExecuteState state;
     state.options = &options;
     std::string journal_error;
-    if (!journal_write_header(options, &journal_error))
+    if (!journal_is_separate(plan, options, &journal_error) || !journal_write_header(options, &journal_error))
     {
         result.error = journal_error;
         return result;
@@ -1378,17 +1886,16 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
 
     auto rollback_and_mark = [&]()
     {
+#if defined(FSX_ENABLE_TEST_FAILPOINTS)
+        // Deterministic concurrent-writer simulation for the failpoint child.
+        // Production builds do not inspect this variable or create this file.
+        if (const char* conflict = std::getenv("TOOLX_FSX_TEST_BEFORE_ROLLBACK_CREATE"))
+            std::ofstream(conflict, std::ios::binary) << "foreign";
+#endif
         const bool rollback_ok = rollback(&state, &result, options.rollback_mode);
-        for (auto& step : result.steps)
-        {
-            if (step.ok)
-            {
-                step.rolled_back = true;
-            }
-        }
         if (!rollback_ok)
         {
-            result.error = utils::err::join_context("fsx", "rollback", "rollback failed");
+            result.error += "; " + result.rollback_error;
         }
         return rollback_ok;
     };
@@ -1416,6 +1923,7 @@ RunResult Run(const BatchPlan& plan, const RunOptions& options)
 
     for (std::size_t i = 0; i < actions.size(); ++i)
     {
+        state.current_step = i;
         const auto& action = actions[i];
 
         StepReport report;
@@ -1531,68 +2039,22 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
         return result;
     }
 
-    std::ifstream in(std::string(journal_path), std::ios::binary);
-    if (!in.is_open())
+    const auto parsed = read_journal(Path(std::string(journal_path)));
+    if (!parsed.ok)
     {
-        result.error = utils::err::join_context("fsx", "recover", "failed to open journal");
+        result.error = parsed.error;
         return result;
     }
-
-    std::string header;
-    if (!std::getline(in, header) ||
-        (header != kJournalHeaderV1 && header != kJournalHeaderV2 && header != kJournalHeaderV3))
-    {
-        result.error = utils::err::join_context("fsx", "recover", "invalid journal header");
-        return result;
-    }
-
-    const bool version_two_or_three = header == kJournalHeaderV2 || header == kJournalHeaderV3;
-    const bool version_three = header == kJournalHeaderV3;
-    bool committed = false;
-    std::vector<UndoAction> undo_list;
-    std::string line;
-    while (std::getline(in, line))
-    {
-        if (line.empty())
-        {
-            continue;
-        }
-
-        if (version_two_or_three && line == kJournalCommit)
-        {
-            committed = true;
-            continue;
-        }
-
-        const auto parts = split_pipe(line);
-        if (parts.size() < 3 || parts[0] != "UNDO")
-        {
-            continue;
-        }
-
-        if (parts[1] == "REMOVE")
-        {
-            UndoAction u;
-            u.kind = UndoAction::Kind::RemovePath;
-            u.from = Path(unescape_field(parts[2]));
-            undo_list.push_back(std::move(u));
-        }
-        else if (parts[1] == "MOVE" && parts.size() >= 4)
-        {
-            UndoAction u;
-            u.kind = UndoAction::Kind::MovePath;
-            u.from = Path(unescape_field(parts[2]));
-            u.to = Path(unescape_field(parts[3]));
-            undo_list.push_back(std::move(u));
-        }
-    }
-
-    if (committed)
+    if (parsed.committed)
     {
         result.error = utils::err::join_context("fsx", "recover", "journal records a completed transaction");
         return result;
     }
+    const bool conflict_aware = parsed.header == kJournalHeaderV3 || parsed.header == kJournalHeaderV4;
+    const auto& undo_list = parsed.undos;
 
+    bool had_undo_failure = false;
+    result.rollback_attempted = true;
     for (std::size_t i = undo_list.size(); i > 0; --i)
     {
         const auto& undo = undo_list[i - 1];
@@ -1600,9 +2062,43 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
         step.step = undo_list.size() - i;
         step.recovery_source = std::string(journal_path);
         step.ok = true;
+        step.rollback_attempted = true;
 
         std::error_code ec;
-        if (undo.kind == UndoAction::Kind::RemovePath)
+        if (undo.kind == UndoAction::Kind::ReplaceFile)
+        {
+            step.op = OpType::AtomicWrite;
+            step.src = undo.from.string();
+            step.dst = undo.to.string();
+            bool changed = false;
+            std::string error;
+            step.ok = restore_replacement(undo, &changed, &error);
+            if (step.ok && !undo.restored)
+            {
+                RunOptions progress_options;
+                progress_options.journal_path = std::string(journal_path);
+                step.ok = journal_write_restored(progress_options, undo, &error);
+#if defined(FSX_ENABLE_TEST_FAILPOINTS)
+                if (step.ok)
+                    if (const char* value = std::getenv("TOOLX_FSX_TEST_FAILPOINT");
+                        value && std::strcmp(value, "after-replacement-restored-marker") == 0)
+                        std::_Exit(86);
+#endif
+            }
+            if (!step.ok)
+                step.error = utils::err::join_context("fsx", "recover", error);
+            else if (changed)
+            {
+                step.rolled_back = true;
+                ++result.rolled_back_steps;
+            }
+            else
+            {
+                step.skipped = true;
+                ++result.skipped_steps;
+            }
+        }
+        else if (undo.kind == UndoAction::Kind::RemovePath)
         {
             step.op = OpType::AtomicWrite;
             step.src = undo.from.string();
@@ -1612,11 +2108,11 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
                 step.ok = false;
                 step.error = utils::err::join_context("fsx", "recover", ec.message());
             }
-            else if (version_three && undo.from.generic_string().find(".tmp.") == std::string::npos)
+            else if (conflict_aware && undo.from.generic_string().find(".tmp.") == std::string::npos)
             {
                 step.ok = false;
                 step.error = utils::err::join_context("fsx", "recover",
-                                                      "FSXJ3 refuses to remove a non-staging path while recovering");
+                                                      "journal refuses to remove a non-staging path while recovering");
             }
             else if (exists)
             {
@@ -1663,11 +2159,11 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
                     step.ok = false;
                     step.error = utils::err::join_context("fsx", "recover", ec.message());
                 }
-                else if (version_three && destination_exists)
+                else if (conflict_aware && destination_exists)
                 {
                     step.ok = false;
                     step.error = utils::err::join_context(
-                        "fsx", "recover", "FSXJ3 recovery conflict: destination appeared after the journal entry");
+                        "fsx", "recover", "journal recovery conflict: destination appeared after the journal entry");
                 }
                 else
                 {
@@ -1688,9 +2184,13 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
 
         if (!step.ok)
         {
+            had_undo_failure = true;
+            step.rollback_error = step.error;
             result.steps.push_back(step);
             result.error = step.error;
-            if (version_three || options.rollback_mode == RollbackMode::Strict)
+            if (result.rollback_error.empty())
+                result.rollback_error = step.error;
+            if (conflict_aware || options.rollback_mode == RollbackMode::Strict)
             {
                 result.ok = false;
                 return result;
@@ -1706,12 +2206,18 @@ RunResult RecoverFromJournal(std::string_view journal_path, const RecoverOptions
         }
     }
 
-    result.ok = true;
-    in.close();
-    if (options.cleanup_journal_on_success)
+    result.ok = !had_undo_failure;
+    result.rollback_complete = !had_undo_failure;
+    if (result.ok && options.cleanup_journal_on_success)
     {
         std::error_code ec;
         std::filesystem::remove(Path(std::string(journal_path)), ec);
+        if (ec)
+        {
+            result.ok = false;
+            result.error =
+                utils::err::join_context("fsx", "recover", "failed to remove restored journal: " + ec.message());
+        }
     }
     return result;
 }

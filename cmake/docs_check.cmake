@@ -79,6 +79,7 @@ set(TOOLX_PUBLIC_DOCUMENTS
     docs/dependencies.md
     docs/stability.md
     docs/roadmap.md
+    docs/automation.md
     docs/cli/matrix.md
     docs/examples/showcase.md
     docs/examples/module-cookbooks.md
@@ -87,7 +88,8 @@ set(TOOLX_PUBLIC_DOCUMENTS
     docs/releases/v0.2.0.md
     docs/releases/v0.3.0.md
     docs/releases/v0.3.1.md
-    docs/releases/v0.3.2.md)
+    docs/releases/v0.3.2.md
+    docs/releases/v0.3.3.md)
 foreach(module IN LISTS TOOLX_MODULES)
     list(APPEND TOOLX_PUBLIC_DOCUMENTS "docs/modules/${module}.md")
 endforeach()
@@ -102,10 +104,16 @@ set(TOOLX_INTERNAL_DOCUMENTS
     docs/development/audits/api_product_gap_audit.md
     docs/development/audits/api_test_matrix.md
     docs/development/audits/security-v032.md
+    docs/development/audits/v0.4-task-slice.md
+    docs/development/audits/v0.4-config-slice.md
+    docs/development/audits/v0.4-ai-observation.md
+    docs/development/audits/v0.4-caddy-ai-observation.md
+    docs/development/audits/v0.4-contract-update.md
     docs/development/design/toolx-http-design.md
     docs/development/design/toolx-pack-design.md
     docs/development/design/toolx-log-design.md
     docs/development/design/toolx-inspect-design.md
+    docs/development/design/v0.4.x-mainline.md
     docs/development/retrospectives/productization-retro.md)
 
 foreach(required_file IN ITEMS
@@ -245,7 +253,8 @@ foreach(release_note IN ITEMS
         docs/releases/v0.2.0.md
         docs/releases/v0.3.0.md
         docs/releases/v0.3.1.md
-        docs/releases/v0.3.2.md)
+        docs/releases/v0.3.2.md
+        docs/releases/v0.3.3.md)
     foreach(section IN ITEMS
             "## Highlights"
             "## Compatibility"

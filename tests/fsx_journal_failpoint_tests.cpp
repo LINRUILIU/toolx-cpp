@@ -158,8 +158,54 @@ int main(int argc, char** argv)
 
     const std::string child = argv[1];
     const fs::path test_root = argv[2];
+    for (const std::string scenario :
+         {"recover_replace_before_marker", "recover_replace_after_marker", "recover_replace_write_failure"})
+    {
+        const auto root = test_root / scenario;
+        std::string child_error;
+        const auto code = RunFailpointChild(child, scenario, root, &child_error);
+        if (code != (scenario == "recover_replace_write_failure" ? 0 : 86) || ReadText(root / "target.txt") != "old" ||
+            !fs::exists(root / "run.journal"))
+            Fail("replacement recovery crash/failure did not preserve restored state: " + scenario);
+        if (scenario == "recover_replace_after_marker")
+        {
+            // Model a crash part way through cleanup after the durable marker.
+            for (const auto& entry : fs::directory_iterator(root))
+                if (entry.path().filename().string().find(".tmp.") != std::string::npos)
+                    fs::remove(entry.path());
+        }
+        const auto retried = fsx::RecoverFromJournal((root / "run.journal").string());
+        if (!retried.ok || !retried.rollback_complete || ReadText(root / "target.txt") != "old")
+            Fail("replacement recovery retry failed: " + scenario + ": " + retried.error);
+        VerifyNoStagingFiles(root);
+    }
+    for (const std::string scenario : {"rollback_conflict_best_effort", "rollback_conflict_strict"})
+    {
+        const auto root = test_root / scenario;
+        std::string child_error;
+        const int child_exit = RunFailpointChild(child, scenario, root, &child_error);
+        if (child_exit != 0)
+            Fail("rollback contract child failed: " + scenario + ": " + child_error + ": " +
+                 std::to_string(child_exit));
+        if (ReadText(root / "source.txt") != "foreign" || ReadText(root / "destination.txt") != "source" ||
+            !fs::exists(root / "run.journal") ||
+            fs::exists(root / "independent.txt") != (scenario == "rollback_conflict_strict"))
+            Fail("rollback conflict lost evidence or did not honor its effort policy");
+        bool kept_old_backup = false;
+        for (const auto& entry : fs::directory_iterator(root))
+            if (entry.path().filename().string().find("destination.txt.old.tmp.") == 0 &&
+                ReadText(entry.path()) == "old")
+                kept_old_backup = true;
+        if (!kept_old_backup)
+            Fail("rollback conflict removed its dependent old-data backup");
+    }
     const std::vector<Scenario> scenarios = {
         {"atomic_write", {{"target.txt", "old"}}},
+        {"atomic_write_after", {{"target.txt", "old"}}},
+        {"atomic_write_foreign", {{"target.txt", "foreign"}}},
+        {"atomic_write_missing", {}},
+        {"atomic_write_directory", {}},
+        {"atomic_write_witness_corrupt", {{"target.txt", "new"}}},
         {"copy_overwrite", {{"source.txt", "source"}, {"destination.txt", "old"}}},
         {"copy_new_parent", {{"source.txt", "source"}}},
         {"copy_new_parent_after", {{"source.txt", "source"}}},
@@ -196,6 +242,41 @@ int main(int argc, char** argv)
         if (!fs::exists(journal, ec) || ec)
         {
             Fail("failpoint child did not leave a journal for " + scenario.name);
+        }
+        if (scenario.name.rfind("atomic_write", 0) == 0)
+        {
+            // The child is stopped at exact native publication boundaries;
+            // these observations do not rely on probabilistic reader polling.
+            const auto expected = scenario.name == "atomic_write" ? "old" : "new";
+            if (!fs::is_regular_file(root / "target.txt") || ReadText(root / "target.txt") != expected)
+                Fail("atomic publication boundary lost its readable old/new target");
+        }
+        if (scenario.name == "atomic_write_foreign" || scenario.name == "atomic_write_missing" ||
+            scenario.name == "atomic_write_directory" || scenario.name == "atomic_write_witness_corrupt")
+        {
+            if (scenario.name == "atomic_write_foreign")
+                std::ofstream(root / "target.txt", std::ios::binary | std::ios::trunc) << "foreign";
+            else if (scenario.name == "atomic_write_missing" || scenario.name == "atomic_write_directory")
+            {
+                fs::remove(root / "target.txt");
+                if (scenario.name == "atomic_write_directory")
+                    fs::create_directory(root / "target.txt");
+            }
+            else
+                for (const auto& entry : fs::directory_iterator(root))
+                    if (entry.path().filename().string().find("target.txt.old.tmp.") == 0)
+                        std::ofstream(entry.path(), std::ios::binary | std::ios::trunc) << "damaged old witness";
+            const auto before = ReadText(journal);
+            const auto conflict = fsx::RecoverFromJournal(journal.string());
+            if (conflict.ok || conflict.rollback_complete || !fs::exists(journal) || ReadText(journal) != before)
+                Fail("replacement recovery accepted a modified/missing target or witness");
+            std::size_t witness_count = 0;
+            for (const auto& entry : fs::directory_iterator(root))
+                if (entry.path().filename().string().find(".tmp.") != std::string::npos)
+                    ++witness_count;
+            if (witness_count < 2)
+                Fail("replacement recovery conflict removed witnesses");
+            continue;
         }
 
         if (scenario.name == "copy_new_parent_conflict")

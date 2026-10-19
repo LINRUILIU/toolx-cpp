@@ -15,15 +15,30 @@
 - [CLI 产品准入清单](cli-productization.md)
 - [根目录开发日志](../../README.dev.md)
 - [公开路线图](../roadmap.md)
+- [v0.3.3 维护候选与兼容迁移](../releases/v0.3.3.md)
 
 ## 审计材料
 
+- [v0.4 真实任务三方案验证切片](audits/v0.4-task-slice.md)
+- [v0.4 配置分层、验证与发布切片](audits/v0.4-config-slice.md)
+- [v0.4 提前开展的真实 AI 使用观察](audits/v0.4-ai-observation.md)
+- [v0.4 审查后的 Caddy AI 使用观察](audits/v0.4-caddy-ai-observation.md)
+- [v0.4 契约修复实施记录](audits/v0.4-contract-update.md)
 - [一级 API 盘点与风险审计](audits/api_inventory.md)
 - [一级 API 到产品的断层审计](audits/api_product_gap_audit.md)
 - [API 分层覆盖测试矩阵](audits/api_test_matrix.md)
 
+上述 v0.4 路径保留原研究命名和冻结证据，不代表当前版本承诺。修复与资料归入
+v0.3.3 维护候选；不改写历史正文或把旧候选验证重标为新发行证据。
 这些材料记录审计口径和风险证据；面向使用者的整理结果已经进入
 [`docs/modules`](../modules/) 与 [`docs/cli`](../cli/)。
+
+## 当前设计
+
+- [v0.3.3 维护收口与 v0.4 立项条件](design/v0.4.x-mainline.md)
+
+v0.4 保留降低 AI 采用与信任成本的方向，撤销分版本产品交付承诺。仅在重复真实
+职责、公平成熟基线与留出收益成立后再立项；没有证据时可继续维护。
 
 ## 历史设计
 

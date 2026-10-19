@@ -2,7 +2,7 @@
 
 > Audience: integrators composing multiple ToolX modules
 > Status: Stable support module guide
-> Applies to: `v0.3.2` release
+> Applies to: `v0.3.2` released baseline and `v0.3.3` maintenance candidate
 > Source of truth for: cross-module result normalization
 
 ## Role and boundary
@@ -45,12 +45,21 @@ if (!status.ok) std::cerr << resultx::FormatError(status.error);
 - HTTP errors map into the network domain and reuse `http_status` as the native
   code field; callers should not confuse that with an OS error number.
 - No adapter performs I/O or owns the input value.
+- In the v0.3.3 maintenance candidate, `FromFsx(RunResult)` preserves the complete
+  run report in `value` even when `ok=false`. Inspect its forward and rollback
+  facts separately; normalization does not turn a partially executed run into
+  an empty result or claim that recovery succeeded.
 
 ## Stability, compatibility, examples, and version changes
 
 The adapter aliases and conversions are stable support, while the underlying
 module remains authoritative for its native error detail. No `resultx`-specific
 user-visible change is recorded for `v0.3.2`.
+
+The `v0.3.3` candidate corrects the loss of failed run reports during normalization.
+Consumers can inspect actual partial completion and rollback facts in `value`
+even when `ok=false`; this does not make module errors interchangeable or change
+CLI exit-code ownership. See the [candidate notes](../releases/v0.3.3.md).
 
 - [Annotated cookbook](../../examples/resultx_cookbook.cpp)
 - [Behavior tests](../../tests/resultx_tests.cpp)

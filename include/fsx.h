@@ -43,6 +43,11 @@ struct StepReport
     bool rolled_back{false};
     bool skipped{false};
     bool ok{false};
+    // Set only for undo work actually considered by Run/RecoverFromJournal.
+    // rolled_back means all undo work for this report succeeded and changed a
+    // path. Skipped forward operations are never reported as rolled back.
+    bool rollback_attempted{false};
+    std::string rollback_error;
 }; // 步骤报告，包含步骤编号、操作类型、源路径、目标路径、错误信息、回滚来源、是否已回滚、是否被跳过以及操作是否成功等信息。
 
 struct RunOptions
@@ -53,9 +58,11 @@ struct RunOptions
     std::string backup_suffix{".bak"};
     RollbackMode rollback_mode{RollbackMode::BestEffort};
     ConflictPolicy conflict_policy{ConflictPolicy::Overwrite};
-    // When configured, Run writes synchronized FSXJ3 undo records before each
+    // When configured, Run writes synchronized FSXJ4 undo records before each
     // destructive primitive mutation. This is a recoverable ordering contract,
-    // not a universal power-loss atomicity guarantee.
+    // not a universal power-loss atomicity guarantee. Must be separate from
+    // every batch source/destination tree and explicit retained backup path.
+    // Run rejects static aliases/ancestor overlaps before writing the header.
     std::string journal_path;
     // Retained successful journals are finalized and are audit-only;
     // RecoverFromJournal rejects them rather than rolling back completed work.
@@ -69,7 +76,14 @@ struct RunResult
     std::vector<StepReport> steps;
     std::size_t completed_steps{0};
     std::size_t skipped_steps{0};
+    // Run counts restored business steps; RecoverFromJournal counts restored
+    // undo records, whose reports are the recovery operation's steps.
     std::size_t rolled_back_steps{0};
+    bool rollback_attempted{false};
+    // True only after all recorded undo work succeeds. Check this field instead
+    // of inferring completeness from rolled_back_steps.
+    bool rollback_complete{false};
+    std::string rollback_error;
 }; // 运行结果，包含操作是否成功、错误信息、步骤报告列表、已完成步骤数、已跳过步骤数以及已回滚步骤数等信息。
 
 struct RecoverOptions

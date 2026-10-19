@@ -75,6 +75,8 @@ behavior. When a safety or correctness fix requires a visible behavior change:
   productization checklist.
 - The current release is `v0.3.2`; its compatibility and behavior changes are
   recorded in the version-specific release notes.
+- The `v0.3.3` maintenance candidate includes explicit correctness exceptions
+  and recovery-format migration requirements in its [candidate notes](releases/v0.3.3.md).
 
 See [Architecture](architecture.md), [Build and compatibility](build-and-compatibility.md),
 and [Dependencies](dependencies.md) for boundaries outside API stability.

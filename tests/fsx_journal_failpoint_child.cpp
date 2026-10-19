@@ -46,7 +46,62 @@ int main(int argc, char** argv)
     fs::create_directories(root, ec);
 
     fsx::BatchPlan plan;
-    if (scenario == "atomic_write")
+    if (scenario.rfind("recover_replace_", 0) == 0)
+    {
+        WriteText(root / "target.txt", "old");
+        plan.AddAtomicWrite((root / "target.txt").string(), "new")
+            .AddSafeReplace((root / "missing.txt").string(), (root / "later.txt").string());
+        fsx::RunOptions options;
+        options.fail_fast = false;
+        options.journal_path = (root / "run.journal").string();
+        if (fsx::Run(plan, options).ok)
+            return 5;
+        const char* failpoint = scenario == "recover_replace_before_marker"  ? "after-replacement-restore-before-marker"
+                                : scenario == "recover_replace_after_marker" ? "after-replacement-restored-marker"
+                                                                             : "fail-restored-journal-write";
+#if defined(_WIN32)
+        _putenv_s("TOOLX_FSX_TEST_FAILPOINT", failpoint);
+#else
+        setenv("TOOLX_FSX_TEST_FAILPOINT", failpoint, 1);
+#endif
+        const auto recovered = fsx::RecoverFromJournal(options.journal_path);
+        if (scenario == "recover_replace_write_failure" && !recovered.ok && !recovered.rollback_complete &&
+            !recovered.rollback_error.empty() && fs::exists(options.journal_path))
+            return 0;
+        return 5;
+    }
+    if (scenario == "rollback_conflict_best_effort" || scenario == "rollback_conflict_strict")
+    {
+        const fs::path source = root / "source.txt";
+        WriteText(source, "source");
+        WriteText(root / "destination.txt", "old");
+        plan.AddAtomicWrite((root / "independent.txt").string(), "new")
+            .AddRename(source.string(), (root / "destination.txt").string())
+            .AddSafeReplace((root / "missing.txt").string(), (root / "later.txt").string());
+#if defined(_WIN32)
+        _putenv_s("TOOLX_FSX_TEST_BEFORE_ROLLBACK_CREATE", source.string().c_str());
+#else
+        setenv("TOOLX_FSX_TEST_BEFORE_ROLLBACK_CREATE", source.string().c_str(), 1);
+#endif
+        fsx::RunOptions options;
+        options.journal_path = (root / "run.journal").string();
+        options.rollback_mode =
+            scenario == "rollback_conflict_strict" ? fsx::RollbackMode::Strict : fsx::RollbackMode::BestEffort;
+        const auto result = fsx::Run(plan, options);
+        const bool best_effort = options.rollback_mode == fsx::RollbackMode::BestEffort;
+        if (result.ok || !result.rollback_attempted || result.rollback_complete || result.rollback_error.empty() ||
+            result.error.find("source file not found") == std::string::npos ||
+            result.error.find("rollback conflict") == std::string::npos || result.steps.size() != 3 ||
+            result.steps[1].rolled_back || !result.steps[1].rollback_attempted ||
+            result.steps[1].rollback_error.empty() || result.steps[0].rolled_back != best_effort ||
+            result.steps[0].rollback_attempted != best_effort || result.rolled_back_steps != (best_effort ? 1u : 0u))
+        {
+            std::cerr << "untruthful rollback result: " << result.error << "\n";
+            return 5;
+        }
+        return 0;
+    }
+    if (scenario.rfind("atomic_write", 0) == 0)
     {
         const fs::path target = root / "target.txt";
         WriteText(target, "old");
@@ -110,6 +165,14 @@ int main(int argc, char** argv)
     {
         std::cerr << "failed to set failpoint\n";
         return 2;
+    }
+    if (scenario != "atomic_write" && scenario.rfind("atomic_write", 0) == 0)
+    {
+#if defined(_WIN32)
+        _putenv_s("TOOLX_FSX_TEST_FAILPOINT", "after-atomic-replace");
+#else
+        setenv("TOOLX_FSX_TEST_FAILPOINT", "after-atomic-replace", 1);
+#endif
     }
 
     fsx::RunOptions options;

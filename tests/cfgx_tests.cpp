@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <locale>
 #include <optional>
 #include <string>
 
@@ -16,6 +19,20 @@ std::filesystem::path TestTempPath(const char* name)
     const auto root = std::filesystem::current_path() / "toolx_test_tmp";
     std::filesystem::create_directories(root);
     return root / name;
+}
+
+std::string IncrementDecimalString(std::string value)
+{
+    for (std::size_t i = value.size(); i > 0; --i)
+    {
+        if (value[i - 1] != '9')
+        {
+            ++value[i - 1];
+            return value;
+        }
+        value[i - 1] = '0';
+    }
+    return "1" + value;
 }
 
 class ParserAdapterScope
@@ -91,6 +108,39 @@ class ScopedEnvVar
     std::optional<std::string> original_;
 };
 
+class CommaNumberPunctuation : public std::numpunct<char>
+{
+  protected:
+    char do_decimal_point() const override
+    {
+        return ',';
+    }
+    char do_thousands_sep() const override
+    {
+        return '_';
+    }
+    std::string do_grouping() const override
+    {
+        return "\3";
+    }
+};
+
+class ScopedNumberLocale
+{
+  public:
+    ScopedNumberLocale() : original_(std::locale())
+    {
+        std::locale::global(std::locale(original_, new CommaNumberPunctuation));
+    }
+    ~ScopedNumberLocale()
+    {
+        std::locale::global(original_);
+    }
+
+  private:
+    std::locale original_;
+};
+
 cfgx::ParserAdapter MakeFailingAdapter(std::string name)
 {
     cfgx::ParserAdapter adapter;
@@ -138,6 +188,201 @@ TEST(CfgxPathTests, ParsePathRejectsTrailingEscape)
     const auto parsed = cfgx::ParsePath("a\\");
     ASSERT_FALSE(parsed.ok);
     EXPECT_NE(parsed.error.find("trailing escape"), std::string::npos);
+}
+
+TEST(CfgxPathTests, ParsePathAcceptsSizeMaxAndLeadingZeros)
+{
+    const auto maximum = std::numeric_limits<std::size_t>::max();
+    const auto maximum_digits = std::to_string(maximum);
+    for (const std::string digits : {maximum_digits, "000" + maximum_digits})
+    {
+        SCOPED_TRACE(digits);
+        const auto parsed = cfgx::ParsePath("items[" + digits + "]");
+        ASSERT_TRUE(parsed.ok) << parsed.error;
+        ASSERT_EQ(parsed.value.size(), 2U);
+        EXPECT_EQ(parsed.value[1].kind, cfgx::PathTokenKind::Index);
+        EXPECT_EQ(parsed.value[1].index, maximum);
+    }
+    for (const auto& entry : std::vector<std::pair<std::string, std::size_t>>{{std::string(256, '0'), 0}, {"0001", 1}})
+    {
+        const auto parsed = cfgx::ParsePath("[" + entry.first + "]");
+        ASSERT_TRUE(parsed.ok) << parsed.error;
+        ASSERT_EQ(parsed.value.size(), 1U);
+        EXPECT_EQ(parsed.value[0].kind, cfgx::PathTokenKind::Index);
+        EXPECT_EQ(parsed.value[0].index, entry.second);
+    }
+}
+
+TEST(CfgxPathTests, ParsePathRejectsOverflowingArrayIndices)
+{
+    const auto overflow = IncrementDecimalString(std::to_string(std::numeric_limits<std::size_t>::max()));
+    for (const std::string digits : {overflow, overflow + "0", std::string(256, '9'), std::string(256, '0') + overflow})
+    {
+        SCOPED_TRACE(digits);
+        const auto parsed = cfgx::ParsePath("items[" + digits + "]");
+        EXPECT_FALSE(parsed.ok);
+        EXPECT_TRUE(parsed.value.empty());
+        EXPECT_NE(parsed.error.find("array index exceeds size_t maximum"), std::string::npos) << parsed.error;
+    }
+}
+
+TEST(CfgxTreeTests, OverflowingArrayPathsRejectGetSetAndRemoveWithoutMutation)
+{
+    const auto overflow = IncrementDecimalString(std::to_string(std::numeric_limits<std::size_t>::max()));
+    const auto document = cfgx::ParseJson(R"({"items":[123,456],"keep":true})");
+    ASSERT_TRUE(document.ok) << document.error;
+    for (const std::string digits : {overflow, overflow + "0", std::string(256, '9'), "000" + overflow})
+    {
+        for (const std::string prefix : {"items", "missing.created", "items[0].nested"})
+        {
+            const auto path = prefix + "[" + digits + "]";
+            SCOPED_TRACE(path);
+            auto root = document.value;
+            const auto original = cfgx::ToJson(root, 0);
+            const auto found = cfgx::GetNode(root, path);
+            EXPECT_FALSE(found.ok);
+            EXPECT_EQ(found.value, nullptr);
+            EXPECT_NE(found.error.find("array index exceeds size_t maximum"), std::string::npos) << found.error;
+            const auto mutable_found = cfgx::GetNodeMutable(root, path);
+            EXPECT_FALSE(mutable_found.ok);
+            EXPECT_EQ(mutable_found.value, nullptr);
+            EXPECT_EQ(cfgx::ToJson(root, 0), original);
+
+            const auto set = cfgx::SetNode(root, path, cfgx::Node(std::int64_t(999)));
+            EXPECT_FALSE(set.ok);
+            EXPECT_NE(set.error.find("array index exceeds size_t maximum"), std::string::npos) << set.error;
+            EXPECT_EQ(cfgx::ToJson(root, 0), original);
+
+            const auto removed = cfgx::RemoveNode(root, path);
+            EXPECT_FALSE(removed.ok);
+            EXPECT_NE(removed.error.find("array index exceeds size_t maximum"), std::string::npos) << removed.error;
+            EXPECT_EQ(cfgx::ToJson(root, 0), original);
+            const auto first = cfgx::GetNode(root, "items[0]");
+            ASSERT_TRUE(first.ok) << first.error;
+            EXPECT_EQ(first.value->AsInt(), 123);
+        }
+    }
+
+    cfgx::Node empty;
+    EXPECT_FALSE(cfgx::SetNode(empty, "new.items[" + overflow + "]", cfgx::Node(true)).ok);
+    EXPECT_EQ(cfgx::ToJson(empty, 0), "null");
+}
+
+TEST(CfgxTreeTests, SizeMaxIsAbsentAndImpossibleArraySizesFailBeforeMutation)
+{
+    const auto maximum = std::to_string(std::numeric_limits<std::size_t>::max());
+    const auto document = cfgx::ParseJson(R"({"items":[123,456],"nested":null,"keep":true})");
+    ASSERT_TRUE(document.ok) << document.error;
+    auto root = document.value;
+    const auto original = cfgx::ToJson(root, 0);
+    const auto found = cfgx::GetNode(root, "items[" + maximum + "]");
+    EXPECT_FALSE(found.ok);
+    EXPECT_EQ(found.value, nullptr);
+    EXPECT_NE(found.error.find("array index out of range"), std::string::npos) << found.error;
+    const auto removed = cfgx::RemoveNode(root, "items[" + maximum + "]");
+    EXPECT_FALSE(removed.ok);
+    EXPECT_EQ(cfgx::ToJson(root, 0), original);
+
+    const auto maximum_array_size = std::to_string(cfgx::Node::Array{}.max_size());
+    for (const std::string digits : {maximum, maximum_array_size})
+    {
+        for (const std::string prefix : {"items", "missing.created", "nested.items"})
+        {
+            const auto path = prefix + "[" + digits + "]";
+            SCOPED_TRACE(path);
+            root = document.value;
+            const auto set = cfgx::SetNode(root, path, cfgx::Node(true));
+            EXPECT_FALSE(set.ok);
+            EXPECT_NE(set.error.find("array index exceeds maximum supported array size"), std::string::npos)
+                << set.error;
+            EXPECT_EQ(cfgx::ToJson(root, 0), original);
+        }
+    }
+    cfgx::Node empty;
+    EXPECT_FALSE(cfgx::SetNode(empty, "new.items[" + maximum + "]", cfgx::Node(true)).ok);
+    EXPECT_EQ(cfgx::ToJson(empty, 0), "null");
+}
+
+TEST(CfgxPathTests, EmptyObjectKeysHaveDistinctRoundTrippablePaths)
+{
+    const auto document = cfgx::ParseJson(R"({"":{"x":1},"a":{"":2},"items":[{"":3}],"[]":4})");
+    ASSERT_TRUE(document.ok) << document.error;
+    for (const auto& entry :
+         std::vector<std::pair<std::string, int>>{{"[].x", 1}, {"a.[]", 2}, {"items[0].[]", 3}, {R"(\[\])", 4}})
+    {
+        const auto found = cfgx::GetNode(document.value, entry.first);
+        ASSERT_TRUE(found.ok) << entry.first << ": " << found.error;
+        EXPECT_EQ(found.value->AsInt(), entry.second);
+    }
+
+    cfgx::Node root = cfgx::Node::MakeObject();
+    ASSERT_TRUE(cfgx::SetNode(root, "[][0].[]", cfgx::Node(std::int64_t(7))).ok);
+    const auto found = cfgx::GetNode(root, "[][0].[]");
+    ASSERT_TRUE(found.ok) << found.error;
+    EXPECT_EQ(found.value->AsInt(), 7);
+    ASSERT_TRUE(cfgx::RemoveNode(root, "[][0].[]").ok);
+    EXPECT_FALSE(cfgx::GetNode(root, "[][0].[]").ok);
+    EXPECT_FALSE(cfgx::ParsePath("[]x").ok);
+    EXPECT_FALSE(cfgx::ParsePath("[].").ok);
+    EXPECT_FALSE(cfgx::ParsePath("a..[]").ok);
+}
+
+TEST(CfgxJsonTests, RejectsNonJsonAndUnrepresentableNumbers)
+{
+    for (const std::string literal : {"01", "01.2", "00e2", "1.", "1.e2", "1e", "1e+", "--1", "1e999", "-1e999"})
+    {
+        SCOPED_TRACE(literal);
+        EXPECT_FALSE(cfgx::ParseJson(literal).ok);
+        EXPECT_FALSE(cfgx::ParseJson("{\"number\":" + literal + "}").ok);
+    }
+    for (const std::string literal : {"0", "-0", "-1", "0.25", "-0.25", "1e+2", "1E-2", "1.7976931348623157e308"})
+    {
+        SCOPED_TRACE(literal);
+        const auto parsed = cfgx::ParseJson(literal);
+        ASSERT_TRUE(parsed.ok) << parsed.error;
+        EXPECT_TRUE(cfgx::ParseJson(cfgx::ToJson(parsed.value, 0)).ok);
+    }
+}
+
+TEST(CfgxJsonTests, FiniteDoublesRoundTripExactlyAndRetainTheirKind)
+{
+    for (const double value :
+         {1.0000000000000002, std::numeric_limits<double>::denorm_min(), std::numeric_limits<double>::min(),
+          std::numeric_limits<double>::max(), std::numeric_limits<double>::lowest(), 42.0, 1e20, 0.0, -0.0})
+    {
+        const auto text = cfgx::ToJson(cfgx::Node(value), 0);
+        SCOPED_TRACE(text);
+        const auto parsed = cfgx::ParseJson(text);
+        ASSERT_TRUE(parsed.ok) << parsed.error;
+        EXPECT_EQ(parsed.value.Kind(), cfgx::NodeKind::Double);
+        EXPECT_EQ(parsed.value.AsDouble(), value);
+        EXPECT_EQ(std::signbit(parsed.value.AsDouble()), std::signbit(value));
+    }
+    EXPECT_EQ(cfgx::ToJson(cfgx::Node(42.0), 0), "42.0");
+    EXPECT_EQ(cfgx::ToJson(cfgx::Node(std::int64_t(42)), 0), "42");
+}
+
+TEST(CfgxJsonTests, JsonNumbersIgnoreTheProcessCppLocale)
+{
+    const auto document = cfgx::ParseJson(R"({"fraction":1.0000000000000002,"whole":1234567,"double":42.0})");
+    ASSERT_TRUE(document.ok) << document.error;
+    std::string text;
+    {
+        ScopedNumberLocale locale;
+        text = cfgx::ToJson(document.value, 0);
+    }
+    const auto parsed = cfgx::ParseJson(text);
+    ASSERT_TRUE(parsed.ok) << text << ": " << parsed.error;
+    const auto fraction = cfgx::GetNode(parsed.value, "fraction");
+    const auto whole = cfgx::GetNode(parsed.value, "whole");
+    const auto integral_double = cfgx::GetNode(parsed.value, "double");
+    ASSERT_TRUE(fraction.ok);
+    ASSERT_TRUE(whole.ok);
+    ASSERT_TRUE(integral_double.ok);
+    EXPECT_EQ(fraction.value->AsDouble(), 1.0000000000000002);
+    EXPECT_EQ(whole.value->AsInt(), 1234567);
+    EXPECT_EQ(integral_double.value->Kind(), cfgx::NodeKind::Double);
+    EXPECT_EQ(integral_double.value->AsDouble(), 42.0);
 }
 
 TEST(CfgxPathTests, ParsePathSupportsDotAfterIndexAndRejectsTrailingDot)
@@ -368,6 +613,299 @@ TEST(CfgxV2ComposeTests, ComposeLayersProvidesSourceAttribution)
     const auto host_layer = find_layer("svc.host");
     ASSERT_TRUE(host_layer.has_value());
     EXPECT_EQ(*host_layer, cfgx::SourceLayer::Local);
+}
+
+TEST(CfgxV2ComposeTests, SourceTraceDropsLeavesRemovedByTypeAndArrayReplacement)
+{
+    const auto base = cfgx::ParseJson(R"({"keep":1,"object":{"child":true},"value":0,"list":[{"id":"old"},2]})");
+    const auto env = cfgx::ParseJson(R"({"object":false,"value":{"nested":3},"list":[{"id":"new"}]})");
+    const auto local = cfgx::ParseJson(R"({"object":{"final":7},"value":9})");
+    ASSERT_TRUE(base.ok);
+    ASSERT_TRUE(env.ok);
+    ASSERT_TRUE(local.ok);
+
+    std::vector<cfgx::SourceAttribution> trace;
+    const auto composed = cfgx::ComposeLayers(base.value, env.value, local.value, nullptr, {}, &trace);
+    ASSERT_TRUE(composed.ok) << composed.error;
+    EXPECT_EQ(cfgx::ToJson(composed.value, 0), R"({"keep":1,"object":{"final":7},"value":9,"list":[{"id":"new"}]})");
+
+    ASSERT_EQ(trace.size(), 4u);
+    EXPECT_EQ(trace[0].path, "keep");
+    EXPECT_EQ(trace[0].layer, cfgx::SourceLayer::Base);
+    EXPECT_EQ(trace[1].path, "list[0].id");
+    EXPECT_EQ(trace[1].layer, cfgx::SourceLayer::Env);
+    EXPECT_EQ(trace[2].path, "object.final");
+    EXPECT_EQ(trace[2].layer, cfgx::SourceLayer::Local);
+    EXPECT_EQ(trace[3].path, "value");
+    EXPECT_EQ(trace[3].layer, cfgx::SourceLayer::Local);
+    for (const auto& entry : trace)
+    {
+        EXPECT_TRUE(cfgx::GetNode(composed.value, entry.path).ok) << entry.path;
+    }
+}
+
+TEST(CfgxV2ComposeTests, SourceTraceUsesFinalArrayIndicesAcrossAllLayers)
+{
+    const auto base = cfgx::ParseJson(R"({"servers":[{"host":"base","opts":{}},[]],"untouched":[]})");
+    const auto env = cfgx::ParseJson(R"({"servers":[{"host":"env"}]})");
+    const auto remote = cfgx::ParseJson(R"({"servers":[{"host":"remote"}]})");
+    const auto local = cfgx::ParseJson(R"({"servers":[{"host":"local"},{}]})");
+    const auto runtime_layer = cfgx::ParseJson(R"({"servers":[{"host":"runtime"}]})");
+    ASSERT_TRUE(base.ok);
+    ASSERT_TRUE(env.ok);
+    ASSERT_TRUE(remote.ok);
+    ASSERT_TRUE(local.ok);
+    ASSERT_TRUE(runtime_layer.ok);
+    cfgx::RuntimeOverrides runtime;
+    ASSERT_TRUE(runtime.Replace(runtime_layer.value).ok);
+
+    cfgx::ComposeOptions options;
+    options.append_arrays = true;
+    std::vector<cfgx::SourceAttribution> trace;
+    const auto composed =
+        cfgx::ComposeLayers(base.value, env.value, local.value, &runtime, options, &trace, remote.value);
+    ASSERT_TRUE(composed.ok) << composed.error;
+    EXPECT_EQ(
+        cfgx::ToJson(composed.value, 0),
+        R"({"servers":[{"host":"base","opts":{}},[],{"host":"env"},{"host":"remote"},{"host":"local"},{},{"host":"runtime"}],"untouched":[]})");
+
+    const std::vector<std::string> paths = {"servers[0].host", "servers[0].opts", "servers[1]",
+                                            "servers[2].host", "servers[3].host", "servers[4].host",
+                                            "servers[5]",      "servers[6].host", "untouched"};
+    const std::vector<cfgx::SourceLayer> layers = {
+        cfgx::SourceLayer::Base,  cfgx::SourceLayer::Base,    cfgx::SourceLayer::Base,
+        cfgx::SourceLayer::Env,   cfgx::SourceLayer::Remote,  cfgx::SourceLayer::Local,
+        cfgx::SourceLayer::Local, cfgx::SourceLayer::Runtime, cfgx::SourceLayer::Base};
+    ASSERT_EQ(trace.size(), paths.size());
+    for (std::size_t i = 0; i < trace.size(); ++i)
+    {
+        EXPECT_EQ(trace[i].path, paths[i]);
+        EXPECT_EQ(trace[i].layer, layers[i]) << trace[i].path;
+        EXPECT_TRUE(cfgx::GetNode(composed.value, trace[i].path).ok) << trace[i].path;
+    }
+}
+
+TEST(CfgxV2ComposeTests, SourceTraceDistinguishesEmptyReplacementFromNoOpMerges)
+{
+    const auto base = cfgx::ParseJson(R"({"object":{},"array":[],"keep":{"child":1},"clear":[1],"scalar":0})");
+    const auto env = cfgx::ParseJson(R"({"object":{},"array":[],"keep":{},"clear":[],"scalar":{}})");
+    ASSERT_TRUE(base.ok);
+    ASSERT_TRUE(env.ok);
+
+    for (bool append_arrays : {false, true})
+    {
+        SCOPED_TRACE(append_arrays ? "append arrays" : "replace arrays");
+        cfgx::ComposeOptions options;
+        options.append_arrays = append_arrays;
+        std::vector<cfgx::SourceAttribution> trace;
+        const auto composed = cfgx::ComposeLayers(base.value, env.value, std::nullopt, nullptr, options, &trace);
+        ASSERT_TRUE(composed.ok) << composed.error;
+        EXPECT_EQ(cfgx::ToJson(composed.value, 0),
+                  append_arrays ? R"({"object":{},"array":[],"keep":{"child":1},"clear":[1],"scalar":{}})"
+                                : R"({"object":{},"array":[],"keep":{"child":1},"clear":[],"scalar":{}})");
+
+        ASSERT_EQ(trace.size(), 5u);
+        EXPECT_EQ(trace[0].path, "array");
+        EXPECT_EQ(trace[0].layer, append_arrays ? cfgx::SourceLayer::Base : cfgx::SourceLayer::Env);
+        EXPECT_EQ(trace[1].path, append_arrays ? "clear[0]" : "clear");
+        EXPECT_EQ(trace[1].layer, append_arrays ? cfgx::SourceLayer::Base : cfgx::SourceLayer::Env);
+        EXPECT_EQ(trace[2].path, "keep.child");
+        EXPECT_EQ(trace[2].layer, cfgx::SourceLayer::Base);
+        EXPECT_EQ(trace[3].path, "object");
+        EXPECT_EQ(trace[3].layer, cfgx::SourceLayer::Base);
+        EXPECT_EQ(trace[4].path, "scalar");
+        EXPECT_EQ(trace[4].layer, cfgx::SourceLayer::Env);
+    }
+}
+
+TEST(CfgxV2ComposeTests, SourceTraceHandlesRootReplacementAndEmptyContainers)
+{
+    const auto base = cfgx::ParseJson(R"([1,{"child":2}])");
+    ASSERT_TRUE(base.ok);
+    for (const std::string text : {"false", "null", "{}", "[]"})
+    {
+        SCOPED_TRACE(text);
+        const auto local = cfgx::ParseJson(text);
+        ASSERT_TRUE(local.ok);
+        std::vector<cfgx::SourceAttribution> trace;
+        const auto composed = cfgx::ComposeLayers(base.value, std::nullopt, local.value, nullptr, {}, &trace);
+        ASSERT_TRUE(composed.ok) << composed.error;
+        EXPECT_EQ(cfgx::ToJson(composed.value, 0), text);
+        ASSERT_EQ(trace.size(), 1u);
+        EXPECT_EQ(trace[0].path, "value");
+        EXPECT_EQ(trace[0].layer, cfgx::SourceLayer::Local);
+    }
+
+    for (const std::string text : {"{}", "[]"})
+    {
+        SCOPED_TRACE(text);
+        const auto empty = cfgx::ParseJson(text);
+        ASSERT_TRUE(empty.ok);
+        cfgx::ComposeOptions options;
+        options.append_arrays = true;
+        std::vector<cfgx::SourceAttribution> trace;
+        const auto composed = cfgx::ComposeLayers(empty.value, empty.value, std::nullopt, nullptr, options, &trace);
+        ASSERT_TRUE(composed.ok) << composed.error;
+        ASSERT_EQ(trace.size(), 1u);
+        EXPECT_EQ(trace[0].path, "value");
+        EXPECT_EQ(trace[0].layer, cfgx::SourceLayer::Base);
+    }
+}
+
+TEST(CfgxV2ComposeTests, SourceTraceReplacesEmptyMarkersAndAttributesEqualScalarWrites)
+{
+    const auto base = cfgx::ParseJson(R"({"object":{},"array":[],"same":1})");
+    const auto local = cfgx::ParseJson(R"({"object":{"child":{}},"array":[[]],"same":1})");
+    ASSERT_TRUE(base.ok);
+    ASSERT_TRUE(local.ok);
+    cfgx::ComposeOptions options;
+    options.append_arrays = true;
+    std::vector<cfgx::SourceAttribution> trace;
+    const auto composed = cfgx::ComposeLayers(base.value, std::nullopt, local.value, nullptr, options, &trace);
+    const auto without_trace = cfgx::ComposeLayers(base.value, std::nullopt, local.value, nullptr, options);
+    ASSERT_TRUE(composed.ok) << composed.error;
+    ASSERT_TRUE(without_trace.ok) << without_trace.error;
+    EXPECT_EQ(cfgx::ToJson(composed.value, 0), cfgx::ToJson(without_trace.value, 0));
+    EXPECT_EQ(cfgx::ToJson(composed.value, 0), R"({"object":{"child":{}},"array":[[]],"same":1})");
+    ASSERT_EQ(trace.size(), 3u);
+    EXPECT_EQ(trace[0].path, "array[0]");
+    EXPECT_EQ(trace[1].path, "object.child");
+    EXPECT_EQ(trace[2].path, "same");
+    for (const auto& entry : trace)
+    {
+        EXPECT_EQ(entry.layer, cfgx::SourceLayer::Local) << entry.path;
+    }
+}
+
+TEST(CfgxV2ComposeTests, SourceTraceEscapesKeysAndDoesNotEraseDistinctPaths)
+{
+    const auto base = cfgx::ParseJson(R"({"a.b":1,"a":{"b":2},"list[0]":3,"back\\slash":4})");
+    const auto local = cfgx::ParseJson(R"({"a":false,"list[0]":5})");
+    ASSERT_TRUE(base.ok);
+    ASSERT_TRUE(local.ok);
+    std::vector<cfgx::SourceAttribution> trace;
+    const auto composed = cfgx::ComposeLayers(base.value, std::nullopt, local.value, nullptr, {}, &trace);
+    ASSERT_TRUE(composed.ok) << composed.error;
+    ASSERT_EQ(trace.size(), 4u);
+    EXPECT_EQ(trace[0].path, "a");
+    EXPECT_EQ(trace[0].layer, cfgx::SourceLayer::Local);
+    EXPECT_EQ(trace[1].path, R"(a\.b)");
+    EXPECT_EQ(trace[1].layer, cfgx::SourceLayer::Base);
+    EXPECT_EQ(trace[2].path, R"(back\\slash)");
+    EXPECT_EQ(trace[2].layer, cfgx::SourceLayer::Base);
+    EXPECT_EQ(trace[3].path, R"(list\[0\])");
+    EXPECT_EQ(trace[3].layer, cfgx::SourceLayer::Local);
+    for (const auto& entry : trace)
+    {
+        EXPECT_TRUE(cfgx::GetNode(composed.value, entry.path).ok) << entry.path;
+    }
+}
+
+TEST(CfgxV2ComposeTests, EmptyKeysDoNotClearOrCollideWithOtherSourceTraceEntries)
+{
+    const auto base = cfgx::ParseJson(R"({"":0,"a":1,"value":2,"[]":3,"nested":{"":4},"array":[{"":5}]})");
+    const auto local = cfgx::ParseJson(R"({"":9,"nested":{"":{}},"array":[{"":6}]})");
+    ASSERT_TRUE(base.ok);
+    ASSERT_TRUE(local.ok);
+    std::vector<cfgx::SourceAttribution> trace;
+    const auto composed = cfgx::ComposeLayers(base.value, std::nullopt, local.value, nullptr, {}, &trace);
+    ASSERT_TRUE(composed.ok) << composed.error;
+    ASSERT_EQ(trace.size(), 6U);
+    for (const auto& entry : trace)
+    {
+        const auto found = cfgx::GetNode(composed.value, entry.path);
+        EXPECT_TRUE(found.ok) << entry.path << ": " << found.error;
+        const bool local_path = entry.path == "[]" || entry.path == "nested.[]" || entry.path == "array[0].[]";
+        EXPECT_EQ(entry.layer, local_path ? cfgx::SourceLayer::Local : cfgx::SourceLayer::Base) << entry.path;
+    }
+    const auto key = cfgx::GetNode(composed.value, "[]");
+    ASSERT_TRUE(key.ok);
+    EXPECT_EQ(key.value->AsInt(), 9);
+}
+
+TEST(CfgxV2ReloadTests, EmptyKeyChangesAppearInDiffAndRetainSiblingAttribution)
+{
+    const auto base_file = TestTempPath("cfgx_v04_empty_key_base.json");
+    const auto local_file = TestTempPath("cfgx_v04_empty_key_local.json");
+    {
+        std::ofstream base(base_file.string(), std::ios::trunc);
+        base << R"({"":1,"value":2,"keep":3})";
+        std::ofstream local(local_file.string(), std::ios::trunc);
+        local << R"({"":4})";
+    }
+    cfgx::PollReloader reloader(base_file.string(), local_file.string());
+    cfgx::ReloadOptions options;
+    options.env_prefix = "TOOLX_V04_EMPTY_KEY_TEST_";
+    reloader.SetOptions(options);
+    const auto first = reloader.ReloadNow();
+    ASSERT_TRUE(first.ok) << first.error;
+    ASSERT_EQ(first.value.diff_paths.size(), 3U);
+    EXPECT_EQ(first.value.diff_paths[0].path, "[]");
+    EXPECT_EQ(first.value.diff_paths[0].layer, cfgx::SourceLayer::Local);
+    {
+        std::ofstream local(local_file.string(), std::ios::trunc);
+        local << R"({"":5})";
+    }
+    const auto next = reloader.ReloadNow();
+    ASSERT_TRUE(next.ok) << next.error;
+    ASSERT_EQ(next.value.diff_paths.size(), 1U);
+    EXPECT_EQ(next.value.diff_paths[0].path, "[]");
+    EXPECT_EQ(next.value.diff_paths[0].layer, cfgx::SourceLayer::Local);
+    std::error_code ec;
+    std::filesystem::remove(base_file, ec);
+    std::filesystem::remove(local_file, ec);
+}
+
+TEST(CfgxValidationTests, NumericRangesRejectNonFiniteBoundsAndValues)
+{
+    const auto document = cfgx::ParseJson(R"({"number":42})");
+    ASSERT_TRUE(document.ok);
+    const double infinity = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (const auto& bounds :
+         std::vector<std::pair<double, double>>{{nan, 100}, {0, nan}, {-infinity, infinity}, {100, 0}})
+    {
+        const auto checked =
+            cfgx::Validate(document.value, {cfgx::NumericRangeRule("number", bounds.first, bounds.second)});
+        EXPECT_FALSE(checked.ok);
+        ASSERT_EQ(checked.value.size(), 1U);
+        EXPECT_EQ(checked.value[0].path, "number");
+    }
+    for (const double value : {infinity, -infinity, nan})
+    {
+        cfgx::Node manual = cfgx::Node::MakeObject();
+        ASSERT_TRUE(cfgx::SetNode(manual, "number", cfgx::Node(value)).ok);
+        EXPECT_FALSE(cfgx::Validate(manual, {cfgx::NumericRangeRule("number", 0, 100)}).ok);
+    }
+}
+
+TEST(CfgxV2ReloadTests, DiffAndSourceTraceUseTheSameEscapedPaths)
+{
+    const auto base_file = TestTempPath("cfgx_v04_trace_escaped_base.json");
+    const auto local_file = TestTempPath("cfgx_v04_trace_escaped_local.json");
+    {
+        std::ofstream base(base_file.string(), std::ios::trunc);
+        base << R"({"a.b":1,"a":{"b":2},"list[0]":3})";
+        std::ofstream local(local_file.string(), std::ios::trunc);
+        local << R"({"a.b":4})";
+    }
+    cfgx::PollReloader reloader(base_file.string(), local_file.string());
+    cfgx::ReloadOptions options;
+    options.env_prefix = "TOOLX_V04_ESCAPED_PATH_TEST_";
+    reloader.SetOptions(options);
+    const auto event = reloader.ReloadNow();
+    ASSERT_TRUE(event.ok) << event.error;
+    ASSERT_EQ(event.value.diff_paths.size(), 3u);
+    EXPECT_EQ(event.value.diff_paths[0].path, "a.b");
+    EXPECT_EQ(event.value.diff_paths[0].layer, cfgx::SourceLayer::Base);
+    EXPECT_EQ(event.value.diff_paths[1].path, R"(a\.b)");
+    EXPECT_EQ(event.value.diff_paths[1].layer, cfgx::SourceLayer::Local);
+    EXPECT_EQ(event.value.diff_paths[2].path, R"(list\[0\])");
+    EXPECT_EQ(event.value.diff_paths[2].layer, cfgx::SourceLayer::Base);
+
+    std::error_code ec;
+    std::filesystem::remove(base_file, ec);
+    std::filesystem::remove(local_file, ec);
 }
 
 TEST(CfgxV2ReloadTests, TickSupportsDebounceAndRollback)

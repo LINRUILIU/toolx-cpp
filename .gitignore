@@ -7,6 +7,9 @@ build/
 build-*/
 temp/
 stage/
+/toolx_test_tmp/
+/release-docs-fixture/
+/source-archive-fixtures/
 
 #通用忽略
 CMakeFiles/

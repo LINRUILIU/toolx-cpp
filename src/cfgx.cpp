@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <locale>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -259,6 +260,16 @@ bool IsMissingPathError(std::string_view message)
 }
 
 std::optional<std::size_t> FindObjectIndex(const Node::Object& obj, std::string_view key);
+std::string EscapePathSegment(std::string_view segment);
+
+std::string JoinObjectPath(const std::string& path, const std::string& escaped_key)
+{
+    std::string out(path);
+    if (!out.empty())
+        out.push_back('.');
+    out.append(escaped_key);
+    return out;
+}
 
 std::vector<std::pair<std::string, std::string>> CollectEnvironmentPairs()
 {
@@ -591,7 +602,8 @@ void FlattenLeafNodes(const Node& node, const std::string& path, std::map<std::s
 
             for (const auto& kv : *obj)
             {
-                const std::string next = path.empty() ? kv.first : (path + "." + kv.first);
+                const std::string key = EscapePathSegment(kv.first);
+                const std::string next = JoinObjectPath(path, key);
                 FlattenLeafNodes(kv.second, next, out);
             }
         }
@@ -992,6 +1004,38 @@ class JsonParser
             return Fail("invalid number");
         }
 
+        // Conversion routines also accept spellings outside the JSON number grammar.
+        std::size_t cursor = token.front() == '-' ? 1 : 0;
+        const auto consume_digits = [&token, &cursor]()
+        {
+            const std::size_t begin = cursor;
+            while (cursor < token.size() && token[cursor] >= '0' && token[cursor] <= '9')
+                ++cursor;
+            return cursor != begin;
+        };
+        if (cursor == token.size())
+            return Fail("invalid number");
+        if (token[cursor] == '0')
+            ++cursor;
+        else if (token[cursor] < '1' || token[cursor] > '9' || !consume_digits())
+            return Fail("invalid number");
+        if (cursor < token.size() && token[cursor] == '.')
+        {
+            ++cursor;
+            if (!consume_digits())
+                return Fail("invalid number");
+        }
+        if (cursor < token.size() && (token[cursor] == 'e' || token[cursor] == 'E'))
+        {
+            ++cursor;
+            if (cursor < token.size() && (token[cursor] == '+' || token[cursor] == '-'))
+                ++cursor;
+            if (!consume_digits())
+                return Fail("invalid number");
+        }
+        if (cursor != token.size())
+            return Fail("invalid number");
+
         if (token.find('.') == std::string::npos && token.find('e') == std::string::npos &&
             token.find('E') == std::string::npos)
         {
@@ -1006,11 +1050,11 @@ class JsonParser
             return Fail("invalid integer literal");
         }
 
-        char* parse_end = nullptr;
-        const double parsed = std::strtod(token.c_str(), &parse_end);
-        if (parse_end == nullptr || *parse_end != '\0')
+        double parsed = 0.0;
+        const auto result = std::from_chars(token.data(), token.data() + token.size(), parsed);
+        if (result.ec != std::errc() || result.ptr != token.data() + token.size() || !std::isfinite(parsed))
         {
-            return Fail("invalid numeric literal");
+            return Fail("invalid or unrepresentable numeric literal");
         }
         return Result<Node>{true, Node(parsed), ""};
     }
@@ -1206,8 +1250,18 @@ void AppendJson(const Node& node, std::ostringstream& oss, int indent, int depth
         oss << node.AsInt();
         return;
     case NodeKind::Double:
-        oss << node.AsDouble();
+    {
+        std::ostringstream number;
+        number.imbue(std::locale::classic());
+        number.precision(std::numeric_limits<double>::max_digits10);
+        const double value = node.AsDouble();
+        number << value;
+        const std::string text = number.str();
+        oss << text;
+        if (std::isfinite(value) && text.find_first_of(".eE") == std::string::npos)
+            oss << ".0";
         return;
+    }
     case NodeKind::String:
         oss << '"' << EscapeJsonString(node.AsString()) << '"';
         return;
@@ -1285,7 +1339,52 @@ void AppendJson(const Node& node, std::ostringstream& oss, int indent, int depth
     }
 }
 
-Status MergeInternal(Node& base, const Node& overlay, bool append_arrays)
+using SourceTraceIndex = std::map<std::string, SourceLayer>;
+
+void CollectSourceTrace(const Node& node, SourceLayer layer, const std::string& path, SourceTraceIndex& trace)
+{
+    if (const auto* object = node.TryObject(); object != nullptr && !object->empty())
+    {
+        for (const auto& entry : *object)
+        {
+            const std::string key = EscapePathSegment(entry.first);
+            CollectSourceTrace(entry.second, layer, JoinObjectPath(path, key), trace);
+        }
+        return;
+    }
+    if (const auto* array = node.TryArray(); array != nullptr && !array->empty())
+    {
+        for (std::size_t i = 0; i < array->size(); ++i)
+        {
+            CollectSourceTrace((*array)[i], layer, path + "[" + std::to_string(i) + "]", trace);
+        }
+        return;
+    }
+    trace[path] = layer;
+}
+
+void EraseSourceTraceSubtree(SourceTraceIndex& trace, const std::string& path)
+{
+    if (path.empty())
+    {
+        trace.clear();
+        return;
+    }
+
+    trace.erase(path);
+    const auto erase_prefix = [&trace](const std::string& prefix)
+    {
+        for (auto it = trace.lower_bound(prefix); it != trace.end() && StartsWith(it->first, prefix);)
+        {
+            it = trace.erase(it);
+        }
+    };
+    erase_prefix(path + ".");
+    erase_prefix(path + "[");
+}
+
+Status MergeInternal(Node& base, const Node& overlay, bool append_arrays, SourceTraceIndex* trace = nullptr,
+                     SourceLayer layer = SourceLayer::Base, const std::string& path = {})
 {
     if (base.Kind() == NodeKind::Object && overlay.Kind() == NodeKind::Object)
     {
@@ -1296,16 +1395,27 @@ Status MergeInternal(Node& base, const Node& overlay, bool append_arrays)
             return FailStatus("internal object merge error");
         }
 
+        if (trace != nullptr && dst->empty() && !src->empty())
+        {
+            trace->erase(path);
+        }
+
         for (const auto& entry : *src)
         {
+            const std::string key = trace == nullptr ? std::string{} : EscapePathSegment(entry.first);
+            const std::string next = JoinObjectPath(path, key);
             const auto index = FindObjectIndex(*dst, entry.first);
             if (!index.has_value())
             {
                 dst->push_back(entry);
+                if (trace != nullptr)
+                {
+                    CollectSourceTrace(entry.second, layer, next, *trace);
+                }
                 continue;
             }
 
-            auto st = MergeInternal((*dst)[*index].second, entry.second, append_arrays);
+            auto st = MergeInternal((*dst)[*index].second, entry.second, append_arrays, trace, layer, next);
             if (!st.ok)
             {
                 return st;
@@ -1325,15 +1435,36 @@ Status MergeInternal(Node& base, const Node& overlay, bool append_arrays)
 
         if (append_arrays)
         {
+            if (trace != nullptr && !src->empty())
+            {
+                if (dst->empty())
+                {
+                    trace->erase(path);
+                }
+                for (std::size_t i = 0; i < src->size(); ++i)
+                {
+                    CollectSourceTrace((*src)[i], layer, path + "[" + std::to_string(dst->size() + i) + "]", *trace);
+                }
+            }
             dst->insert(dst->end(), src->begin(), src->end());
         }
         else
         {
+            if (trace != nullptr)
+            {
+                EraseSourceTraceSubtree(*trace, path);
+                CollectSourceTrace(overlay, layer, path, *trace);
+            }
             *dst = *src;
         }
         return OkStatus();
     }
 
+    if (trace != nullptr)
+    {
+        EraseSourceTraceSubtree(*trace, path);
+        CollectSourceTrace(overlay, layer, path, *trace);
+    }
     base = overlay;
     return OkStatus();
 }
@@ -1671,7 +1802,7 @@ Result<std::vector<PathToken>> ParsePath(std::string_view path)
 
             if (current.empty())
             {
-                if (out.empty() || out.back().kind != PathTokenKind::Index)
+                if (out.empty() || (out.back().kind != PathTokenKind::Index && !out.back().key.empty()))
                 {
                     return Result<std::vector<PathToken>>{false, {}, PathError(i, "empty path segment")};
                 }
@@ -1698,11 +1829,29 @@ Result<std::vector<PathToken>> ParsePath(std::string_view path)
                 return Result<std::vector<PathToken>>{false, {}, PathError(i, "unterminated index")};
             }
 
+            if (path[i] == ']')
+            {
+                out.push_back(PathToken{PathTokenKind::Key, "", 0});
+                ++i;
+                if (i < path.size() && path[i] != '.' && path[i] != '[')
+                {
+                    return Result<std::vector<PathToken>>{
+                        false, {}, PathError(i, "expected '.' or '[' after empty key")};
+                }
+                continue;
+            }
+
             std::size_t index = 0;
             const std::size_t start = i;
             while (i < path.size() && path[i] >= '0' && path[i] <= '9')
             {
-                index = index * 10 + static_cast<std::size_t>(path[i] - '0');
+                const auto digit = static_cast<std::size_t>(path[i] - '0');
+                if (index > (std::numeric_limits<std::size_t>::max() - digit) / 10)
+                {
+                    return Result<std::vector<PathToken>>{
+                        false, {}, PathError(i, "array index exceeds size_t maximum")};
+                }
+                index = index * 10 + digit;
                 ++i;
             }
 
@@ -1803,6 +1952,15 @@ Status SetNode(Node& root, std::string_view path, Node value)
     if (!parsed.ok)
     {
         return FailStatus(parsed.error);
+    }
+
+    const auto maximum_array_size = Node::Array{}.max_size();
+    for (const auto& token : parsed.value)
+    {
+        if (token.kind == PathTokenKind::Index && token.index >= maximum_array_size)
+        {
+            return FailStatus("array index exceeds maximum supported array size");
+        }
     }
 
     Node* current = &root;
@@ -2101,10 +2259,16 @@ Result<Node> ComposeLayers(const Node& base, const std::optional<Node>& env_laye
                            const std::optional<Node>& remote_layer)
 {
     Node out = base;
+    SourceTraceIndex trace_index;
+    SourceTraceIndex* trace = source_trace == nullptr ? nullptr : &trace_index;
+    if (trace != nullptr)
+    {
+        CollectSourceTrace(base, SourceLayer::Base, "", *trace);
+    }
 
     if (env_layer.has_value())
     {
-        auto st = Merge(out, *env_layer, options.append_arrays);
+        auto st = MergeInternal(out, *env_layer, options.append_arrays, trace, SourceLayer::Env);
         if (!st.ok)
         {
             return Result<Node>{false, Node{}, "compose env layer failed: " + st.error};
@@ -2113,7 +2277,7 @@ Result<Node> ComposeLayers(const Node& base, const std::optional<Node>& env_laye
 
     if (remote_layer.has_value())
     {
-        auto st = Merge(out, *remote_layer, options.append_arrays);
+        auto st = MergeInternal(out, *remote_layer, options.append_arrays, trace, SourceLayer::Remote);
         if (!st.ok)
         {
             return Result<Node>{false, Node{}, "compose remote layer failed: " + st.error};
@@ -2122,7 +2286,7 @@ Result<Node> ComposeLayers(const Node& base, const std::optional<Node>& env_laye
 
     if (local_layer.has_value())
     {
-        auto st = Merge(out, *local_layer, options.append_arrays);
+        auto st = MergeInternal(out, *local_layer, options.append_arrays, trace, SourceLayer::Local);
         if (!st.ok)
         {
             return Result<Node>{false, Node{}, "compose local layer failed: " + st.error};
@@ -2130,7 +2294,6 @@ Result<Node> ComposeLayers(const Node& base, const std::optional<Node>& env_laye
     }
 
     Node runtime_layer;
-    bool has_runtime_layer = false;
     if (runtime != nullptr && !runtime->Empty())
     {
         const auto resolved = runtime->Materialize();
@@ -2140,9 +2303,7 @@ Result<Node> ComposeLayers(const Node& base, const std::optional<Node>& env_laye
         }
 
         runtime_layer = resolved.value;
-        has_runtime_layer = true;
-
-        auto st = Merge(out, runtime_layer, options.append_arrays);
+        auto st = MergeInternal(out, runtime_layer, options.append_arrays, trace, SourceLayer::Runtime);
         if (!st.ok)
         {
             return Result<Node>{false, Node{}, "compose runtime merge failed: " + st.error};
@@ -2151,69 +2312,12 @@ Result<Node> ComposeLayers(const Node& base, const std::optional<Node>& env_laye
 
     if (source_trace != nullptr)
     {
-        std::unordered_map<std::string, SourceLayer> trace_index;
-
-        const auto collect_layer = [&](const Node& layer_node, SourceLayer layer)
-        {
-            std::function<void(const Node&, const std::string&)> visit;
-            visit = [&](const Node& node, const std::string& path)
-            {
-                if (node.IsObject())
-                {
-                    const auto* obj = node.TryObject();
-                    for (const auto& kv : *obj)
-                    {
-                        const std::string next = path.empty() ? kv.first : (path + "." + kv.first);
-                        visit(kv.second, next);
-                    }
-                    return;
-                }
-
-                if (node.IsArray())
-                {
-                    const auto* arr = node.TryArray();
-                    for (std::size_t i = 0; i < arr->size(); ++i)
-                    {
-                        const std::string next = path + "[" + std::to_string(i) + "]";
-                        visit((*arr)[i], next);
-                    }
-                    return;
-                }
-
-                const std::string normalized = path.empty() ? "value" : path;
-                trace_index[normalized] = layer;
-            };
-
-            visit(layer_node, "");
-        };
-
-        collect_layer(base, SourceLayer::Base);
-        if (env_layer.has_value())
-        {
-            collect_layer(*env_layer, SourceLayer::Env);
-        }
-        if (remote_layer.has_value())
-        {
-            collect_layer(*remote_layer, SourceLayer::Remote);
-        }
-        if (local_layer.has_value())
-        {
-            collect_layer(*local_layer, SourceLayer::Local);
-        }
-        if (has_runtime_layer)
-        {
-            collect_layer(runtime_layer, SourceLayer::Runtime);
-        }
-
         source_trace->clear();
         source_trace->reserve(trace_index.size());
         for (const auto& entry : trace_index)
         {
-            source_trace->push_back(SourceAttribution{entry.first, entry.second});
+            source_trace->push_back(SourceAttribution{entry.first.empty() ? "value" : entry.first, entry.second});
         }
-
-        std::sort(source_trace->begin(), source_trace->end(),
-                  [](const SourceAttribution& lhs, const SourceAttribution& rhs) { return lhs.path < rhs.path; });
     }
 
     return Result<Node>{true, std::move(out), ""};
@@ -2722,6 +2826,10 @@ ValidationRule NumericRangeRule(std::string path, double min_value, double max_v
     rule.fail_fast = fail_fast;
     rule.evaluator = [path = std::move(path), min_value, max_value](const Node& root) -> std::optional<ValidationIssue>
     {
+        if (!std::isfinite(min_value) || !std::isfinite(max_value) || min_value > max_value)
+        {
+            return ValidationIssue{path, "numeric range bounds must be finite and ordered"};
+        }
         const auto node = GetNode(root, path);
         if (!node.ok || node.value == nullptr)
         {
@@ -2741,7 +2849,7 @@ ValidationRule NumericRangeRule(std::string path, double min_value, double max_v
         }
 
         const double value = node.value->AsDouble();
-        if (value < min_value || value > max_value)
+        if (!std::isfinite(value) || value < min_value || value > max_value)
         {
             std::ostringstream oss;
             oss << "numeric value " << value << " is out of range [" << min_value << "," << max_value << "]";
@@ -3206,6 +3314,7 @@ Result<Node> ParseJson(std::string_view text)
 std::string ToJson(const Node& node, int indent)
 {
     std::ostringstream oss;
+    oss.imbue(std::locale::classic());
     const int safe_indent = indent < 0 ? 0 : indent;
     AppendJson(node, oss, safe_indent, 0);
     return oss.str();
@@ -3354,6 +3463,8 @@ Result<Node> ParseIniText(std::string_view text)
 
 std::string EscapePathSegment(std::string_view segment)
 {
+    if (segment.empty())
+        return "[]";
     std::string out;
     out.reserve(segment.size() + 4);
     for (char ch : segment)

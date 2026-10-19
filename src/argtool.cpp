@@ -2408,9 +2408,10 @@ ParseResult Parser::Parse(int argc, const char* const argv[]) const
                 }
                 apply_positional(positional, normalized);
             }
-            if (!result.Has(positional.name) && positional.default_value.has_value())
+            const auto default_value = positional.default_value;
+            if (!result.Has(positional.name) && default_value.has_value())
             {
-                apply_positional(positional, *positional.default_value);
+                apply_positional(positional, *default_value);
             }
             if (positional.required && !result.Has(positional.name))
             {

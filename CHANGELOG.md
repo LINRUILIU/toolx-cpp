@@ -6,6 +6,47 @@ narratives remain under [`docs/releases`](docs/releases/).
 > Status: Released
 > Applies to: v0.3.2
 
+## [Unreleased]
+
+Target: `v0.3.3` release candidate
+
+### Fixed
+
+- Correct configuration traces, overlay ordering, empty-key paths, finite
+  JSON/range checks, index overflow and finite-double output.
+- Preserve sync failure context and resultx failed fsx reports; report actual
+  rollback attempts, completeness, errors and restored business-step counts.
+- Replace regular targets with one native operation; use FSXJ4 checked recovery
+  with retryable restoration and private content witnesses.
+- Reject journal/target aliases and conflicting main/rotation log paths before
+  mutation, unresolved logging-boundary links, missing-parent traversal and
+  Windows explicit streams; preserve recognized extended-drive roots.
+
+### Changed
+
+- Add sync validation/execution facts and improve the short automation guide.
+  No new product CLI or runner is introduced.
+- Treat this work as maintenance. Future `v0.4` needs repeated real duties, a
+  mature comparison and held-out net benefit; observed AI-cost savings remain
+  unestablished.
+
+### Compatibility and preparation
+
+- New writers use FSXJ4; readers retain J1–3 support, but older tools reject J4.
+  Keep the producer and dependent witnesses at their recorded locations until
+  recovery completes; recover legacy relative J1–3 records from the original cwd.
+- Witnesses add disk/I/O cost. Windows replacement requires system/filesystem
+  support and reader delete-sharing; failure does not use a two-rename fallback.
+- JSON additions remain additive under `schema_version=1`. Corrected trace,
+  overlay, numeric spelling and rollback facts and stricter paths are explicit
+  correctness exceptions, not zero-migration changes.
+- Default build/dependency/TLS choices remain unchanged. This entry is not a
+  release or tag; current candidate gates and package preparation remain required.
+  See the [v0.3.3 candidate notes](docs/releases/v0.3.3.md) for migration and limits.
+- Exclude generated runtime/test-fixture roots and Python bytecode/caches from
+  source archives while retaining experiment recipes and legitimate log fixtures.
+  CI retains current package/test evidence and executes the installed consumer.
+
 ## [0.3.2] - 2026-09-14
 
 ### Security hardening

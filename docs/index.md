@@ -2,7 +2,7 @@
 
 > Audience: users, C++ consumers, operators, and contributors
 > Status: Canonical documentation portal
-> Applies to: `v0.3.2` release
+> Applies to: `v0.3.3` candidate; latest tagged release `v0.3.2`
 > Source of truth for: document ownership and reading order
 
 ToolX documentation is organized by reader intent. Public material is written
@@ -37,6 +37,7 @@ maintained in Chinese.
 | [Dependencies](dependencies.md) | Required, fetched, optional, system, development and packaged dependencies |
 | [Stability](stability.md) | Normative stability levels, compatibility promises and version policy |
 | [Roadmap](roadmap.md) | Current consolidation line and explicitly deferred work |
+| [Using ToolX in automation](automation.md) | Choose bounded operations and validate exact configuration candidates |
 | [Changelog](../CHANGELOG.md) | User-visible feature and compatibility history |
 
 ## C++ module guides
@@ -68,6 +69,7 @@ and cookbook entry points.
 
 ## Releases
 
+- [v0.3.3 candidate notes](releases/v0.3.3.md)
 - [v0.3.2 release notes](releases/v0.3.2.md)
 - [v0.3.1](releases/v0.3.1.md)
 - [v0.3.0](releases/v0.3.0.md)

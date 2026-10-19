@@ -2,7 +2,7 @@
 
 > Audience: C++ tools that need planned filesystem mutation
 > Status: Stable core module guide
-> Applies to: `v0.3.2` released baseline and `v0.3.3` maintenance candidate
+> Applies to: `v0.3.3` release
 > Source of truth for: intended `fsx` use and recovery boundaries
 
 ## Role and boundary
@@ -147,12 +147,12 @@ basics are stable. Archive format support is intentionally tar-only.
 undo records with conflict-aware recovery. FSXJ1/FSXJ2 recovery remains
 supported; the public plan API is unchanged.
 
-The `v0.3.3` maintenance candidate adds FSXJ4 checked single-file replacement and
+The `v0.3.3` maintenance release adds FSXJ4 checked single-file replacement and
 truthful rollback reports. It keeps the public planning API and legacy recovery
 support. Older recovery tools reject J4; retain the producer and original witness
 locations until recovery completes. The added witnesses and synchronized records
 increase disk and I/O use. These are explicit correctness/compatibility changes,
-not a new orchestration product. See the [candidate migration notes](../releases/v0.3.3.md).
+not a new orchestration product. See the [release migration notes](../releases/v0.3.3.md).
 A retained committed journal remains audit-only and cannot be recovered.
 
 - [Annotated cookbook](../../examples/fsx_cookbook.cpp)

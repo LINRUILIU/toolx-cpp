@@ -2,7 +2,7 @@
 
 > Audience: ToolX 维护者与发布负责人
 > Status: Canonical maintainer guide
-> Applies to: `v0.3.2` maintenance cycle
+> Applies to: `v0.3.3` maintenance cycle
 > Source of truth for: 本地质量门禁、打包、发布与维护流程
 
 公开构建要求位于

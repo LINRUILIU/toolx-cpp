@@ -2,7 +2,7 @@
 
 > Audience: configuration publishers and automation users
 > Status: Bounded-stable CLI specification
-> Applies to: the `0.3.x` released baseline and v0.3.3 maintenance candidate
+> Applies to: the `0.3.x` released baseline through v0.3.3
 > Source of truth for: `toolx-sync` composition, publish and output contract
 
 `toolx-sync` composes a required base, an optional remote layer, and zero or
@@ -18,7 +18,7 @@ is not a deployment system, remote configuration service or secret manager.
 Later layers win. Arrays replace unless `--append-arrays` is present. An
 explicit remote URL is the only condition that triggers network access.
 
-The v0.3.3 candidate applies each overlay directly to the current composed
+The v0.3.3 release applies each overlay directly to the current composed
 tree in command order. It no longer pre-merges overlays, which could resurrect
 base children after an overlay replaced their object with a scalar and a later
 overlay rebuilt that object. This corrects output in those type-changing cases;
@@ -38,7 +38,7 @@ JSON uses `schema=toolx.sync.result`, `schema_version=1`. Tested data includes
 `journal`, `log_file`, `schema`, `schema_issues`, `append_arrays`, `dry_run`,
 `steps`, `planned_steps`, and `source_trace`.
 
-The v0.3.3 candidate also preserves composed context on validation and
+The v0.3.3 release also preserves composed context on validation and
 schema-load failures, including `source_trace`, `issues_count`,
 `validation_passed`, `publish_attempted` and `stage`. Stages are `schema_load`,
 `validation`, `dry_run` or `publish`; early argument/input-load errors do not
@@ -55,7 +55,7 @@ its forward `ok`/`error` independently of `rolled_back` and `rollback_error`.
 Partial or failed rollback preserves evidence and does not claim restoration.
 Consumers must handle additive data fields without relying on message text.
 Corrected trace and rollback facts are explicit correctness changes; see the
-[candidate compatibility and migration notes](../releases/v0.3.3.md), including
+[release compatibility and migration notes](../releases/v0.3.3.md), including
 FSXJ4's inability to be read by older recovery tools.
 
 ## Options

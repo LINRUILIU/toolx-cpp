@@ -2,7 +2,7 @@
 
 > Audience: users, C++ consumers, operators, and contributors
 > Status: Canonical documentation portal
-> Applies to: `v0.3.3` candidate; latest tagged release `v0.3.2`
+> Applies to: `v0.3.3` release
 > Source of truth for: document ownership and reading order
 
 ToolX documentation is organized by reader intent. Public material is written
@@ -69,7 +69,7 @@ and cookbook entry points.
 
 ## Releases
 
-- [v0.3.3 candidate notes](releases/v0.3.3.md)
+- [v0.3.3 release notes](releases/v0.3.3.md)
 - [v0.3.2 release notes](releases/v0.3.2.md)
 - [v0.3.1](releases/v0.3.1.md)
 - [v0.3.0](releases/v0.3.0.md)

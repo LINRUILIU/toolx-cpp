@@ -2,17 +2,16 @@
 
 > Audience: users and maintainers
 > Status: Active direction, not a release promise
-> Applies to: `v0.3.3` maintenance preparation and later evidence-led work
+> Applies to: `v0.3.3` maintenance release and later evidence-led work
 > Source of truth for: current product direction and deferred scope
 
-## Now — prepare v0.3.3 maintenance
+## Now — maintain v0.3.3
 
-The current work belongs to a `v0.3.3` maintenance release candidate, not a new
-`v0.4` product. It repairs composition, failure-reporting, replacement and recovery
+`v0.3.3` is a maintenance release. It repairs composition, failure-reporting, replacement and recovery
 contracts and improves the [automation guide](automation.md). The six CLIs and
 thirteen library targets remain the product set. See the
-[candidate notes](releases/v0.3.3.md) for visible corrections, migration costs and
-release status; `v0.3.2` remains the released baseline until publication.
+[release notes](releases/v0.3.3.md) for visible corrections, migration costs and
+release status. `v0.4` remains subject to the product admission gate below.
 
 Maintenance includes accurate layer traces, ordered overlays, finite-number and
 path-index checks, retained failure and rollback facts, native single-target
@@ -22,7 +21,7 @@ storage and I/O cost; the [filesystem guide](modules/fsx.md) defines it.
 
 Keep existing platform, installation, archive, coverage, TLS and documentation
 gates. Historical local passes and observation binaries cannot substitute for
-the current candidate's evidence. The
+the current release's evidence. The
 [contract record](development/audits/v0.4-contract-update.md) retains successive
 findings, failures, permission skips and follow-up checks under its research label.
 

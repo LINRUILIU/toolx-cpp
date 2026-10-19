@@ -2,7 +2,7 @@
 
 > Audience: automation authors and maintainers
 > Status: Canonical cross-product specification
-> Applies to: the `0.3.x` released baseline and v0.3.3 maintenance candidate
+> Applies to: the `0.3.x` released baseline through v0.3.3
 > Source of truth for: CLI comparison, side effects, precedence and implicit behavior
 
 ## Global rules
@@ -16,14 +16,14 @@
 - Dry-run guarantees are command-specific and must not be inferred for tools
   that do not expose dry-run.
 
-The v0.3.3 maintenance candidate preserves composed context on sync validation
+The v0.3.3 maintenance release preserves composed context on sync validation
 failures, and detailed execution/recovery facts after a publish attempt. Sync
 `--json` also covers help and parse early exits regardless of option order.
 Other CLIs retain their own early-exit behavior; this is not a global promise.
 Sync snapshots contain new resolved bytes, not the previous output; dry-run
 neither checks output writability nor binds a later invocation's candidate.
 
-The [v0.3.3 candidate notes](../releases/v0.3.3.md) distinguish additive JSON
+The [v0.3.3 release notes](../releases/v0.3.3.md) distinguish additive JSON
 facts from visible corrections to trace, overlays, numeric output, rollback and
 path rejection. Such corrections follow the documented safety/correctness
 exception and migration policy; they do not create a common task protocol.

@@ -2,7 +2,7 @@
 
 > Audience: builders, package consumers, and release maintainers
 > Status: Canonical build guide
-> Applies to: `v0.3.2` release
+> Applies to: `v0.3.3` release
 > Source of truth for: supported build shapes and verified compatibility
 
 ## Requirements

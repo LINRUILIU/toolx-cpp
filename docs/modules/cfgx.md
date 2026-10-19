@@ -2,7 +2,7 @@
 
 > Audience: C++ applications and configuration-tool authors
 > Status: Stable core module guide
-> Applies to: `v0.3.2` released baseline and `v0.3.3` maintenance candidate
+> Applies to: `v0.3.3` release
 > Source of truth for: intended `cfgx` use and public API grouping
 
 ## Role and boundary
@@ -61,7 +61,7 @@ entries; appended array elements use their indices in the final array. Object
 keys use the escaping accepted by `ParsePath`. A scalar or empty root uses the
 existing `value` marker.
 
-The v0.3.3 candidate path grammar adds `[]` for an empty object key: `[]` accesses a
+The v0.3.3 path grammar adds `[]` for an empty object key: `[]` accesses a
 root object's empty key, `parent.[]` a nested empty key, and `items[0].[]` an
 empty key in an array element. A literal key named `[]` remains `\[\]`. This
 syntax was previously rejected; earlier valid paths retain their meaning. The
@@ -82,7 +82,7 @@ layer. The trace identifies layers, not filenames, history or proof of validatio
 and publication. A runtime layer is its materialized patch document; removing
 an entry from that document does not remove the corresponding base value.
 
-The v0.3.3 candidate JSON parser checks the number grammar and rejects numbers
+The v0.3.3 JSON parser checks the number grammar and rejects numbers
 outside its representable integer/finite-double range, rather than serializing
 overflow as `inf`. Numeric range validation rejects non-finite bounds and
 values, including `Node` values constructed directly by a caller.
@@ -101,17 +101,17 @@ The node/path model, JSON and INI behavior, composition, validation, reload,
 snapshots and adapter contracts are stable. Do not infer full YAML, TOML, schema,
 encryption-at-rest, or remote-service semantics.
 
-No `cfgx`-specific public API change is recorded for `v0.3.2`; this release's
+No `cfgx`-specific public API change is recorded for `v0.3.2`; that release's
 proxy opt-out is implemented by the `httpx`-backed product workflows.
 
-The v0.3.3 maintenance candidate corrects existing source attribution for
+The v0.3.3 maintenance release corrects existing source attribution for
 subtree replacement, array append, empty containers and escaped keys without
 changing the public composition API or its merge policy. Trace contents and
 double serialization spelling can change, while invalid/unrepresentable numbers
 and overflowing/impossible indices are rejected. The product CLI also corrects
 its repeated-overlay application order; that can change output in type-changing
 sequences. These are documented correctness exceptions, not a file-provenance
-product. See the [candidate compatibility notes](../releases/v0.3.3.md).
+product. See the [release compatibility notes](../releases/v0.3.3.md).
 
 - [Annotated cookbook](../../examples/cfgx_cookbook.cpp)
 - [Basic example](../../examples/cfgx_example.cpp)

@@ -6,12 +6,12 @@ configuration, concurrency, filesystem transactions, HTTP, logging, terminal
 rendering, schemas, codecs, hashes, and platform utilities. Six installable CLIs
 compose those libraries into a practical release workflow.
 
-> Status: Candidate; not yet tagged
+> Status: Released
 > Applies to: v0.3.3
-> Latest release: v0.3.2
+> Latest release: v0.3.3
 
-This snapshot is the `v0.3.3` release candidate for correctness and contract
-repairs within the `0.3.x` maintenance line. Review the compatibility and migration
+`v0.3.3` delivers correctness and contract repairs within the `0.3.x`
+maintenance line. Review the compatibility and migration
 notes before upgrading, especially if you retain filesystem recovery journals.
 
 ## Understand ToolX in one minute
@@ -145,8 +145,7 @@ See [Build and compatibility](docs/build-and-compatibility.md) and
   product hypotheses. `v0.4.0` awaits evidence from repeated real use.
 
 User-visible history is maintained in [CHANGELOG.md](CHANGELOG.md); detailed
-candidate notes are in [the v0.3.3 release notes](docs/releases/v0.3.3.md).
-The latest tagged release remains [v0.3.2](docs/releases/v0.3.2.md).
+release details are in [the v0.3.3 release notes](docs/releases/v0.3.3.md).
 
 ## Repository map
 

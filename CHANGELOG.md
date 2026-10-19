@@ -4,11 +4,9 @@ All notable user-visible changes to ToolX are recorded here. Detailed release
 narratives remain under [`docs/releases`](docs/releases/).
 
 > Status: Released
-> Applies to: v0.3.2
+> Applies to: v0.3.3
 
-## [Unreleased]
-
-Target: `v0.3.3` release candidate
+## [0.3.3] - 2026-10-20
 
 ### Fixed
 
@@ -32,7 +30,7 @@ Target: `v0.3.3` release candidate
   mature comparison and held-out net benefit; observed AI-cost savings remain
   unestablished.
 
-### Compatibility and preparation
+### Compatibility and packaging
 
 - New writers use FSXJ4; readers retain J1–3 support, but older tools reject J4.
   Keep the producer and dependent witnesses at their recorded locations until
@@ -45,9 +43,8 @@ Target: `v0.3.3` release candidate
 - JSON additions remain additive under `schema_version=1`. Corrected trace,
   overlay, numeric spelling and rollback facts and stricter paths are explicit
   correctness exceptions, not zero-migration changes.
-- Default build/dependency/TLS choices remain unchanged. This entry is not a
-  release or tag; current candidate gates and package preparation remain required.
-  See the [v0.3.3 candidate notes](docs/releases/v0.3.3.md) for migration and limits.
+- Default build/dependency/TLS choices remain unchanged.
+  See the [v0.3.3 release notes](docs/releases/v0.3.3.md) for migration and limits.
 - Exclude generated runtime/test-fixture roots and Python bytecode/caches from
   source archives while retaining experiment recipes and legitimate log fixtures.
   CI retains current package/test evidence and executes the installed consumer.
@@ -145,7 +142,7 @@ Target: `v0.3.3` release candidate
 - Initial bounded `httpx`, experimental `tuix`, and scenario-oriented
   `toolx-sync` surface.
 
-[Unreleased]: https://github.com/LINRUILIU/toolx-cpp/compare/v0.3.2...HEAD
+[0.3.3]: https://github.com/LINRUILIU/toolx-cpp/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/LINRUILIU/toolx-cpp/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/LINRUILIU/toolx-cpp/releases/tag/v0.3.1
 [0.3.0]: https://github.com/LINRUILIU/toolx-cpp/releases/tag/v0.3.0

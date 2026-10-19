@@ -2,7 +2,7 @@
 
 > Audience: AI coding agents and project-script authors
 > Status: Bounded usage guide; development changes are marked explicitly
-> Applies to: v0.3.2 released baseline and v0.3.3 maintenance candidate
+> Applies to: v0.3.3 release
 > Source of truth for: choosing ToolX responsibilities and validating config candidates
 
 Start with the project's existing build, validator and release script. Use ToolX
@@ -58,7 +58,7 @@ Use exit codes and fields; do not classify an error by matching English prose.
 For v0.3.2, a publish failure can have empty `data`, so independent file checks
 are necessary to determine what was restored.
 
-The v0.3.3 maintenance candidate retains composed context on validation failures and adds
+The v0.3.3 maintenance release retains composed context on validation failures and adds
 `validation_passed`, `publish_attempted`, `stage` and `execution` where applicable.
 Execution facts distinguish forward completion from rollback. Read
 `rollback_attempted`, `rollback_complete` and per-step errors separately. These
@@ -66,11 +66,11 @@ facts do not establish project-native acceptance or current service state.
 
 `--snapshot` is a second copy of the new resolved configuration, not a backup.
 Dry-run still reads inputs and explicitly requested remote data; it does not
-prove output writability or bind the next invocation. The v0.3.3 candidate's atomic writes
+prove output writability or bind the next invocation. The v0.3.3 atomic writes
 reject existing directories and symlinks; do not use an empty directory as a
 portable failure fixture. See [filesystem recovery boundaries](modules/fsx.md).
 
 This guide describes existing operations; it does not establish an AI adoption or
-cost advantage. Candidate compatibility and recovery-version migration are in
+cost advantage. Release compatibility and recovery-version migration are in
 the [v0.3.3 notes](releases/v0.3.3.md). A future `v0.4` product needs repeated real
 tasks and a material held-out benefit over mature tools or reusable scripts.

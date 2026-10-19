@@ -2,7 +2,7 @@
 
 > Audience: CLI users, operators, and automation authors
 > Status: Canonical product reference index
-> Applies to: `v0.3.2` release
+> Applies to: `v0.3.3` release
 > Source of truth for: CLI reference ownership
 
 | CLI | Stability | Workflow | JSON schema |

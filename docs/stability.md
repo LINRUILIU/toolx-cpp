@@ -73,10 +73,10 @@ behavior. When a safety or correctness fix requires a visible behavior change:
   called out in the changelog.
 - New CLI products do not enter the install set until they satisfy the internal
   productization checklist.
-- The current release is `v0.3.2`; its compatibility and behavior changes are
+- The current release is `v0.3.3`; its compatibility and behavior changes are
   recorded in the version-specific release notes.
-- The `v0.3.3` maintenance candidate includes explicit correctness exceptions
-  and recovery-format migration requirements in its [candidate notes](releases/v0.3.3.md).
+- The `v0.3.3` maintenance release includes explicit correctness exceptions
+  and recovery-format migration requirements in its [release notes](releases/v0.3.3.md).
 
 See [Architecture](architecture.md), [Build and compatibility](build-and-compatibility.md),
 and [Dependencies](dependencies.md) for boundaries outside API stability.

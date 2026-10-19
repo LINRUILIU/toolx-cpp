@@ -153,6 +153,24 @@ bool path_is_at_or_within(std::string_view child, std::string_view parent)
     return child == parent || path_is_within(child, parent);
 }
 
+#if defined(_WIN32)
+bool journal_path_has_stream(const Path& path)
+{
+    const auto& native = path.native();
+    const auto drive_letter = [](wchar_t c) { return (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z'); };
+    const bool extended_drive = native.size() >= 6 && native.compare(0, 4, L"\\\\?\\") == 0 &&
+                                drive_letter(native[4]) && native[5] == L':' &&
+                                (native.size() == 6 || native[6] == L'\\' || native[6] == L'/');
+    for (auto colon = native.find(L':'); colon != Path::string_type::npos; colon = native.find(L':', colon + 1))
+    {
+        if ((colon == 1 && drive_letter(native[0])) || (colon == 5 && extended_drive))
+            continue;
+        return true;
+    }
+    return false;
+}
+#endif
+
 Path journal_boundary_path(const Path& path)
 {
     std::error_code ec;
@@ -194,15 +212,43 @@ bool journal_is_separate(const BatchPlan& plan, const RunOptions& options, std::
     if (options.journal_path.empty())
         return true;
     const Path journal(options.journal_path);
+#if defined(_WIN32)
+    // Streams share the host file's replacement lifetime, including when the
+    // host does not exist yet. Check raw spellings before normalization can
+    // discard a stream-bearing parent, and resolved paths for linked aliases.
+    const auto supported = [&](const Path& path)
+    {
+        if (!journal_path_has_stream(path))
+            return true;
+        *error = utils::err::join_context("fsx", "journal",
+                                          "Windows stream paths are unsupported with a journal: " + path.string());
+        return false;
+    };
+    if (!supported(journal))
+        return false;
+#endif
     const auto resolved_journal = journal_boundary_path(journal);
+#if defined(_WIN32)
+    if (!supported(resolved_journal))
+        return false;
+#endif
     auto separate = [&](const std::string& name)
     {
         if (name.empty())
             return true;
         const Path path(name);
+#if defined(_WIN32)
+        if (!supported(path))
+            return false;
+#endif
+        const auto resolved_path = journal_boundary_path(path);
+#if defined(_WIN32)
+        if (!supported(resolved_path))
+            return false;
+#endif
         std::error_code ec;
         const bool same_file = std::filesystem::equivalent(journal, path, ec) && !ec;
-        if (same_file || boundary_paths_overlap(resolved_journal, journal_boundary_path(path)))
+        if (same_file || boundary_paths_overlap(resolved_journal, resolved_path))
         {
             *error = utils::err::join_context("fsx", "journal", "journal overlaps a batch path: " + name);
             return false;

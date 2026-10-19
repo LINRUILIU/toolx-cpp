@@ -63,6 +63,10 @@ struct RunOptions
     // not a universal power-loss atomicity guarantee. Must be separate from
     // every batch source/destination tree and explicit retained backup path.
     // Run rejects static aliases/ancestor overlaps before writing the header.
+    // With journaling on Windows, explicit stream paths in the journal, batch
+    // or selected backup are unsupported and rejected before any write.
+    // Ordinary/recognized extended-drive designators remain valid; no-journal
+    // behavior and POSIX literal-colon filenames are unchanged.
     std::string journal_path;
     // Retained successful journals are finalized and are audit-only;
     // RecoverFromJournal rejects them rather than rolling back completed work.

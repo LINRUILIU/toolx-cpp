@@ -67,6 +67,20 @@ and uses Windows Unicode case-insensitive comparison on Windows. These are
 static checks; they do not provide containment against another process changing
 paths after validation. The caller must keep these paths under exclusive control.
 
+On Windows, a configured journal also makes explicit stream paths unsupported in
+the journal, every batch source/destination, and each selected retained backup.
+`Run` rejects these paths before writing the header or executing a step, including
+default streams such as `file::$DATA`, named streams, streams in path components,
+and paths whose files do not yet exist. A stream shares its host file's replacement
+lifetime; accepting a different stream name cannot establish independent recovery
+storage. This check belongs to `fsx` and applies independently of logging.
+Ordinary drive roots and recognized extended-drive roots such as
+`\\?\C:\path\file` retain their designator colon. No-journal behavior and POSIX
+literal-colon filenames keep their existing boundary; this repair adds no stream
+support to either mode. Previously accepted journaled Windows stream paths now
+fail before mutation. Migrate the journal, batch paths and selected backups to
+ordinary, separate files rather than omitting an unrelated log option.
+
 New FSXJ4 undo records contain absolute paths, including private witnesses and
 restoration staging paths. Recovery can run from a different working directory;
 relative paths in FSXJ4 records are rejected before mutation. Keep the recorded

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <locale>
+#include <map>
 #include <string>
 #include <thread>
 
@@ -84,6 +85,61 @@ class ScopedGlobalLocale
   private:
     std::locale original_;
 };
+
+#if defined(_WIN32)
+// Directory enumeration alone misses ADS bytes. Preserve every ordinary file,
+// every named/default stream, and all directory entries in rejection cases.
+std::map<std::string, std::string> JournalBoundaryTreeState(const std::filesystem::path& root)
+{
+    std::map<std::string, std::string> state;
+    state.emplace("directory:.", "");
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root))
+    {
+        const auto relative = entry.path().lexically_relative(root).generic_string();
+        if (entry.is_directory())
+        {
+            state.emplace("directory:" + relative, "");
+            continue;
+        }
+        EXPECT_TRUE(entry.is_regular_file());
+        state.emplace("file:" + relative, ReadText(entry.path()));
+        WIN32_FIND_STREAM_DATA stream{};
+        const HANDLE handle = FindFirstStreamW(entry.path().c_str(), FindStreamInfoStandard, &stream, 0);
+        EXPECT_NE(handle, INVALID_HANDLE_VALUE) << "FindFirstStreamW: " << GetLastError();
+        if (handle == INVALID_HANDLE_VALUE)
+            continue;
+        do
+        {
+            const std::filesystem::path stream_name(stream.cStreamName);
+            const std::filesystem::path stream_path(entry.path().native() + stream_name.native());
+            state.emplace("stream:" + relative + stream_name.string(), ReadText(stream_path));
+        } while (FindNextStreamW(handle, &stream));
+        EXPECT_EQ(GetLastError(), static_cast<DWORD>(ERROR_HANDLE_EOF));
+        EXPECT_TRUE(FindClose(handle));
+    }
+    return state;
+}
+
+std::filesystem::path ExtendedDrivePath(const std::filesystem::path& path)
+{
+    auto absolute = std::filesystem::absolute(path);
+    absolute.make_preferred();
+    return std::filesystem::path(L"\\\\?\\" + absolute.native());
+}
+
+void ExpectJournalStreamRejectedWithoutMutation(const fsx::BatchPlan& plan, const fsx::RunOptions& options,
+                                                const std::filesystem::path& root)
+{
+    const auto before = JournalBoundaryTreeState(root);
+    const auto result = fsx::Run(plan, options);
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error.find("stream"), std::string::npos) << result.error;
+    EXPECT_EQ(result.completed_steps, 0U);
+    EXPECT_TRUE(result.steps.empty());
+    EXPECT_FALSE(result.rollback_attempted);
+    EXPECT_EQ(JournalBoundaryTreeState(root), before);
+}
+#endif
 
 void WriteOctal(char* field, std::size_t width, std::uintmax_t value)
 {
@@ -704,6 +760,342 @@ TEST(FsxTests, JournalCaseAliasUsesWindowsUnicodeComparison)
     EXPECT_FALSE(run.ok);
     EXPECT_TRUE(run.steps.empty());
     EXPECT_TRUE(std::filesystem::is_empty(root));
+}
+#endif
+
+#if defined(_WIN32)
+TEST(FsxTests, JournalRejectsWindowsStreamJournalBeforeHeaderOrMutation)
+{
+    const auto root = TestRoot() / "journal_windows_stream_aliases";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::size_t case_number = 0;
+    for (const auto* suffix : {":journal", "::$DATA", "::$data"})
+    {
+        for (const bool existing : {false, true})
+        {
+            for (int spelling = 0; spelling != 3; ++spelling)
+            {
+                SCOPED_TRACE(std::string(suffix) + ", existing=" + std::to_string(existing) +
+                             ", spelling=" + std::to_string(spelling));
+                const auto case_root = root / std::to_string(case_number++);
+                const auto target = case_root / "target.txt";
+                const auto journal = std::filesystem::path(target.string() + suffix);
+                WriteText(case_root / "untouched.txt", "UNCHANGED");
+                if (existing)
+                {
+                    WriteText(target, "OLD");
+                    WriteText(std::filesystem::path(target.string() + ":preserve"), "PRESERVED STREAM");
+                    WriteText(journal, "FSXJ4\nCOMMIT\n");
+                    ASSERT_EQ(ReadText(journal), "FSXJ4\nCOMMIT\n");
+                }
+                fsx::BatchPlan plan;
+                plan.AddAtomicWrite(target.string(), "NEW")
+                    .AddSafeReplace((case_root / "missing.txt").string(), (case_root / "later.txt").string());
+                fsx::RunOptions options;
+                options.fail_fast = false;
+                options.keep_journal_on_success = true;
+                if (spelling == 0)
+                    options.journal_path = journal.string();
+                else if (spelling == 1)
+                    options.journal_path = journal.lexically_relative(std::filesystem::current_path()).string();
+                else
+                    options.journal_path = ExtendedDrivePath(journal).string();
+                ExpectJournalStreamRejectedWithoutMutation(plan, options, case_root);
+            }
+        }
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, JournalRejectsWindowsStreamsInEveryLaterBatchPathBeforeFirstStep)
+{
+    const auto root = TestRoot() / "journal_windows_later_stream_paths";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const std::array<const char*, 10> roles{"atomic-dst", "replace-src", "replace-dst", "rename-src", "rename-dst",
+                                            "copy-src",   "copy-dst",    "remove-dst",  "tree-src",   "tree-dst"};
+    std::size_t case_number = 0;
+    for (std::size_t role = 0; role != roles.size(); ++role)
+    {
+        for (const auto* suffix : {":journal", "::$DATA", "::$data"})
+        {
+            for (const bool existing : {false, true})
+            {
+                SCOPED_TRACE(std::string(roles[role]) + suffix + ", existing=" + std::to_string(existing));
+                const auto case_root = root / std::to_string(case_number++);
+                const auto source = case_root / "source.txt";
+                const auto destination = case_root / "destination.txt";
+                const auto victim = case_root / "victim.txt";
+                const auto stream = std::filesystem::path(victim.string() + suffix);
+                const auto journal = case_root / "run.journal";
+                WriteText(source, "SOURCE OLD");
+                WriteText(destination, "DESTINATION OLD");
+                WriteText(std::filesystem::path(source.string() + ":preserve"), "SOURCE STREAM OLD");
+                WriteText(std::filesystem::path(destination.string() + ":preserve"), "DESTINATION STREAM OLD");
+                if (existing)
+                {
+                    WriteText(victim, "VICTIM OLD");
+                    WriteText(std::filesystem::path(victim.string() + ":preserve"), "VICTIM STREAM OLD");
+                    if (std::string(suffix) == ":journal")
+                        WriteText(stream, "NAMED STREAM OLD");
+                    WriteText(journal, "FSXJ4\nCOMMIT\n");
+                }
+                fsx::BatchPlan plan;
+                // A validation confined to the current action would already
+                // mutate this first step and create its previously absent parent.
+                plan.AddAtomicWrite((case_root / "new-parent" / "first.txt").string(), "FIRST NEW");
+                switch (role)
+                {
+                case 0:
+                    plan.AddAtomicWrite(stream.string(), "STREAM NEW");
+                    break;
+                case 1:
+                    plan.AddSafeReplace(stream.string(), destination.string());
+                    break;
+                case 2:
+                    plan.AddSafeReplace(source.string(), stream.string());
+                    break;
+                case 3:
+                    plan.AddRename(stream.string(), destination.string());
+                    break;
+                case 4:
+                    plan.AddRename(source.string(), stream.string());
+                    break;
+                case 5:
+                    plan.AddCopyFile(stream.string(), destination.string());
+                    break;
+                case 6:
+                    plan.AddCopyFile(source.string(), stream.string());
+                    break;
+                case 7:
+                    plan.AddRemovePath(stream.string());
+                    break;
+                case 8:
+                    plan.AddCopyTree(stream.string(), destination.string());
+                    break;
+                case 9:
+                    plan.AddCopyTree(source.string(), stream.string());
+                    break;
+                }
+                fsx::RunOptions options;
+                options.journal_path = journal.string();
+                options.fail_fast = false;
+                options.keep_journal_on_success = true;
+                ExpectJournalStreamRejectedWithoutMutation(plan, options, case_root);
+            }
+        }
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, JournalRejectsWindowsSelectedBackupStreamsBeforeHeaderOrMutation)
+{
+    const auto root = TestRoot() / "journal_windows_backup_streams";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::size_t case_number = 0;
+    for (const auto* suffix : {":backup", "::$DATA", "::$data"})
+    {
+        for (int selection = 0; selection != 3; ++selection)
+        {
+            SCOPED_TRACE(std::string(suffix) + ", selection=" + std::to_string(selection));
+            const auto case_root = root / std::to_string(case_number++);
+            const auto source = case_root / "source.txt";
+            const auto destination = case_root / "destination.txt";
+            const auto journal = case_root / "run.journal";
+            WriteText(source, "SOURCE NEW");
+            WriteText(destination, "DESTINATION OLD");
+            WriteText(std::filesystem::path(destination.string() + ":preserve"), "DESTINATION STREAM OLD");
+            if (std::string(suffix) == ":backup")
+                WriteText(std::filesystem::path(destination.string() + suffix), "PREVIOUS BACKUP STREAM");
+            WriteText(journal, "FSXJ4\nCOMMIT\n");
+            fsx::BatchPlan plan;
+            plan.AddAtomicWrite((case_root / "new-parent" / "first.txt").string(), "FIRST NEW")
+                .AddSafeReplace(source.string(), destination.string(), selection != 1);
+            fsx::RunOptions options;
+            options.journal_path = journal.string();
+            options.backup_suffix = suffix;
+            options.default_backup = selection != 0;
+            options.fail_fast = false;
+            options.keep_journal_on_success = true;
+            ExpectJournalStreamRejectedWithoutMutation(plan, options, case_root);
+        }
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, UnusedWindowsStreamBackupSuffixDoesNotRejectJournaledActions)
+{
+    const auto root = TestRoot() / "journal_windows_unused_backup_suffix";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::size_t case_number = 0;
+    for (const auto* suffix : {":backup", "::$DATA", "::$data"})
+    {
+        for (const bool atomic : {false, true})
+        {
+            SCOPED_TRACE(std::string(suffix) + ", atomic=" + std::to_string(atomic));
+            const auto case_root = root / std::to_string(case_number++);
+            const auto source = case_root / "source.txt";
+            const auto target = case_root / "target.txt";
+            const auto journal = case_root / "run.journal";
+            WriteText(source, "NEW");
+            WriteText(target, "OLD");
+            fsx::BatchPlan plan;
+            if (atomic)
+                plan.AddAtomicWrite(target.string(), "NEW");
+            else
+                plan.AddSafeReplace(source.string(), target.string(), false);
+            fsx::RunOptions options;
+            options.journal_path = journal.string();
+            options.backup_suffix = suffix;
+            // AtomicWrite never selects the public SafeReplace backup suffix.
+            options.default_backup = atomic;
+            options.keep_journal_on_success = true;
+            const auto result = fsx::Run(plan, options);
+            ASSERT_TRUE(result.ok) << result.error;
+            EXPECT_EQ(result.completed_steps, 1U);
+            EXPECT_EQ(ReadText(target), "NEW");
+            const auto bytes = ReadText(journal);
+            ASSERT_GE(bytes.size(), 13U);
+            EXPECT_EQ(bytes.substr(0, 6), "FSXJ4\n");
+            EXPECT_EQ(bytes.substr(bytes.size() - 7), "COMMIT\n");
+            if (std::string(suffix) == ":backup")
+                EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(target.string() + suffix)));
+        }
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, NoJournalWindowsStreamSourceStillReachesNormalMissingSourceFailure)
+{
+    const auto root = TestRoot() / "no_journal_windows_stream_boundary";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::size_t case_number = 0;
+    for (const auto* suffix : {":journal", "::$DATA", "::$data"})
+    {
+        SCOPED_TRACE(suffix);
+        const auto case_root = root / std::to_string(case_number++);
+        const auto destination = case_root / "destination.txt";
+        WriteText(destination, "OLD");
+        const auto before = JournalBoundaryTreeState(case_root);
+        fsx::BatchPlan plan;
+        plan.AddSafeReplace((case_root / (std::string("missing.txt") + suffix)).string(), destination.string());
+        const auto result = fsx::Run(plan);
+        EXPECT_FALSE(result.ok);
+        ASSERT_EQ(result.steps.size(), 1U);
+        EXPECT_EQ(result.completed_steps, 0U);
+        EXPECT_NE(result.error.find("source file not found"), std::string::npos) << result.error;
+        EXPECT_EQ(JournalBoundaryTreeState(case_root), before);
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, JournaledOrdinaryAndExtendedDrivePathsCommitAndRecoverOldBytes)
+{
+    const auto root = TestRoot() / "journal_windows_drive_controls";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    for (const bool extended : {false, true})
+    {
+        SCOPED_TRACE(extended ? "extended drive" : "ordinary drive");
+        const auto case_root = root / (extended ? "extended" : "ordinary");
+        const auto target = case_root / "target.txt";
+        const auto source = case_root / "source.txt";
+        const auto destination = case_root / "destination.txt";
+        const auto journal = case_root / "run.journal";
+        const auto path_arg = [extended](const std::filesystem::path& path)
+        { return (extended ? ExtendedDrivePath(path) : path).string(); };
+        WriteText(target, "OLD");
+        WriteText(source, "SOURCE NEW");
+        WriteText(destination, "DESTINATION OLD");
+        fsx::BatchPlan successful;
+        successful.AddAtomicWrite(path_arg(target), "COMMITTED")
+            .AddSafeReplace(path_arg(source), path_arg(destination), true);
+        fsx::RunOptions options;
+        options.journal_path = path_arg(journal);
+        options.backup_suffix = ".keep";
+        options.keep_journal_on_success = true;
+        const auto committed = fsx::Run(successful, options);
+        ASSERT_TRUE(committed.ok) << committed.error;
+        EXPECT_EQ(committed.completed_steps, 2U);
+        EXPECT_EQ(ReadText(target), "COMMITTED");
+        EXPECT_EQ(ReadText(destination), "SOURCE NEW");
+        EXPECT_EQ(ReadText(std::filesystem::path(destination.string() + ".keep")), "DESTINATION OLD");
+        EXPECT_NE(ReadText(journal).find("\nCOMMIT\n"), std::string::npos);
+
+        WriteText(target, "OLD");
+        fsx::BatchPlan interrupted;
+        interrupted.AddAtomicWrite(path_arg(target), "NEW")
+            .AddSafeReplace(path_arg(case_root / "missing.txt"), path_arg(case_root / "later.txt"));
+        options.fail_fast = false;
+        const auto failed = fsx::Run(interrupted, options);
+        ASSERT_FALSE(failed.ok);
+        EXPECT_EQ(failed.completed_steps, 1U);
+        EXPECT_EQ(ReadText(target), "NEW");
+        EXPECT_FALSE(failed.rollback_attempted);
+        const auto recovered = fsx::RecoverFromJournal(path_arg(journal));
+        ASSERT_TRUE(recovered.ok) << recovered.error;
+        EXPECT_TRUE(recovered.rollback_complete);
+        EXPECT_EQ(ReadText(target), "OLD");
+        EXPECT_EQ(ReadText(std::filesystem::path(destination.string() + ".keep")), "DESTINATION OLD");
+        EXPECT_FALSE(std::filesystem::exists(journal));
+    }
+    std::filesystem::remove_all(root, ec);
+}
+#else
+TEST(FsxTests, JournaledPosixColonPathsAndRetainedBackupsCommitAndRecoverOldBytes)
+{
+    const auto root = TestRoot() / "journal_posix_colon_controls";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::size_t case_number = 0;
+    for (const auto* suffix : {":journal", "::$DATA", "::$data"})
+    {
+        SCOPED_TRACE(suffix);
+        const auto case_root = root / std::to_string(case_number++);
+        const auto target = case_root / (std::string("target.txt") + suffix);
+        const auto source = case_root / (std::string("source.txt") + suffix);
+        const auto destination = case_root / (std::string("destination.txt") + suffix);
+        const auto journal = case_root / (std::string("run.journal") + suffix);
+        WriteText(target, "OLD");
+        WriteText(source, "SOURCE NEW");
+        WriteText(destination, "DESTINATION OLD");
+        fsx::BatchPlan successful;
+        successful.AddAtomicWrite(target.string(), "COMMITTED")
+            .AddSafeReplace(source.string(), destination.string(), true);
+        fsx::RunOptions options;
+        options.journal_path = journal.string();
+        options.backup_suffix = ":backup";
+        options.keep_journal_on_success = true;
+        const auto committed = fsx::Run(successful, options);
+        ASSERT_TRUE(committed.ok) << committed.error;
+        EXPECT_EQ(committed.completed_steps, 2U);
+        EXPECT_EQ(ReadText(target), "COMMITTED");
+        EXPECT_EQ(ReadText(destination), "SOURCE NEW");
+        const auto backup = std::filesystem::path(destination.string() + options.backup_suffix);
+        EXPECT_EQ(ReadText(backup), "DESTINATION OLD");
+        EXPECT_NE(ReadText(journal).find("\nCOMMIT\n"), std::string::npos);
+
+        WriteText(target, "OLD");
+        fsx::BatchPlan interrupted;
+        interrupted.AddAtomicWrite(target.string(), "NEW")
+            .AddSafeReplace((case_root / "missing.txt").string(), (case_root / "later.txt").string());
+        options.fail_fast = false;
+        const auto failed = fsx::Run(interrupted, options);
+        ASSERT_FALSE(failed.ok);
+        EXPECT_EQ(failed.completed_steps, 1U);
+        EXPECT_EQ(ReadText(target), "NEW");
+        const auto recovered = fsx::RecoverFromJournal(journal.string());
+        ASSERT_TRUE(recovered.ok) << recovered.error;
+        EXPECT_TRUE(recovered.rollback_complete);
+        EXPECT_EQ(ReadText(target), "OLD");
+        EXPECT_EQ(ReadText(backup), "DESTINATION OLD");
+        EXPECT_FALSE(std::filesystem::exists(journal));
+    }
+    std::filesystem::remove_all(root, ec);
 }
 #endif
 

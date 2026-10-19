@@ -114,8 +114,20 @@ or protected path component is also a usage error. This includes `FILE::$DATA`
 and named streams, even when they are separate or the file does not yet exist.
 Ordinary drive roots and extended-drive roots such as `\\?\C:\path\file` retain
 their designator colon; later components still cannot contain stream syntax.
-Without logging, this Windows rule does not apply. On POSIX, literal colons in
-ordinary filenames retain their normal behavior.
+This logging-specific usage check does not run without logging. On POSIX, literal
+colons in ordinary filenames retain their normal behavior.
+
+Independently, when `--journal` is configured on Windows, `fsx` rejects explicit
+stream paths in the journal or publish batch (`--out` and any `--snapshot`) before
+the journal header or first mutation. This includes `FILE::$DATA`, named streams,
+and otherwise separate or nonexistent stream paths. No `--log-file` is needed
+to trigger this boundary. It is a publish error (exit `1`), with `ok=false`,
+`publish_attempted=true`, stage `publish`, zero completed execution steps and no
+rollback attempt: the publish API was called but rejected the plan before writing.
+Normal and recognized extended-drive roots remain usable. Move previously accepted
+stream paths to ordinary separate files; disabling logging does not bypass the
+journal boundary. Without a journal, existing fsx behavior is unchanged, and
+POSIX literal-colon paths remain ordinary filenames.
 Dry-run does not run the fsx publish plan or write out/snapshot/journal. A
 configured `--log-file` may be initialized while preparing logging; consult the
 [cross-CLI matrix](matrix.md) when strict no-write behavior is required.

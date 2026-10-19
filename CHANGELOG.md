@@ -21,6 +21,8 @@ Target: `v0.3.3` release candidate
 - Reject journal/target aliases and conflicting main/rotation log paths before
   mutation, unresolved logging-boundary links, missing-parent traversal and
   Windows explicit streams; preserve recognized extended-drive roots.
+- Reject unsupported Windows streams in configured journals, batch paths and
+  selected retained backups before mutation, including when no log is configured.
 
 ### Changed
 
@@ -37,6 +39,9 @@ Target: `v0.3.3` release candidate
   recovery completes; recover legacy relative J1–3 records from the original cwd.
 - Witnesses add disk/I/O cost. Windows replacement requires system/filesystem
   support and reader delete-sharing; failure does not use a two-rename fallback.
+- Previously accepted journaled Windows stream paths now fail before writes.
+  Migrate them to ordinary separate files; no-journal and POSIX filename boundaries
+  remain unchanged.
 - JSON additions remain additive under `schema_version=1`. Corrected trace,
   overlay, numeric spelling and rollback facts and stricter paths are explicit
   correctness exceptions, not zero-migration changes.

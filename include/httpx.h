@@ -195,7 +195,9 @@ struct DownloadOptions
 {
     HeaderList headers;
     // DownloadFile writes output_path + temp_suffix first, then replaces the
-    // destination on success. The suffix must be non-empty.
+    // destination on success. The suffix must be non-empty and name a sibling;
+    // an existing temporary path is rejected without modifying it. Windows
+    // stream paths are unsupported. Retries reset the exclusively owned file.
     std::string temp_suffix{".part"};
     // false fails when output_path already exists.
     bool overwrite{true};

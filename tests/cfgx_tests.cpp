@@ -327,6 +327,70 @@ TEST(CfgxPathTests, EmptyObjectKeysHaveDistinctRoundTrippablePaths)
     EXPECT_FALSE(cfgx::ParsePath("a..[]").ok);
 }
 
+TEST(CfgxJsonTests, UnicodeEscapesPreserveValuesAndDistinctKeys)
+{
+    const auto parsed = cfgx::ParseJson(R"({"name":"\u4e2d\u6587","emoji":"\ud83d\ude80","\u4e2d":1,"\u6587":2})");
+    ASSERT_TRUE(parsed.ok) << parsed.error;
+    EXPECT_EQ(parsed.value.Get("name")->AsString(), "\xE4\xB8\xAD\xE6\x96\x87");
+    EXPECT_EQ(parsed.value.Get("emoji")->AsString(), "\xF0\x9F\x9A\x80");
+    ASSERT_NE(parsed.value.Get("\xE4\xB8\xAD"), nullptr);
+    ASSERT_NE(parsed.value.Get("\xE6\x96\x87"), nullptr);
+    EXPECT_EQ(parsed.value.Get("\xE4\xB8\xAD")->AsInt(), 1);
+    EXPECT_EQ(parsed.value.Get("\xE6\x96\x87")->AsInt(), 2);
+
+    const auto boundary = cfgx::ParseJson(R"("\u007f\u0080\u07ff\u0800\ud7ff\ue000\uffff\ud800\udc00\udbff\udfff")");
+    ASSERT_TRUE(boundary.ok) << boundary.error;
+    EXPECT_EQ(boundary.value.AsString(),
+              "\x7F\xC2\x80\xDF\xBF\xE0\xA0\x80\xED\x9F\xBF\xEE\x80\x80\xEF\xBF\xBF\xF0\x90\x80\x80\xF4\x8F\xBF\xBF");
+    const auto roundtrip = cfgx::ParseJson(cfgx::ToJson(parsed.value, 0));
+    ASSERT_TRUE(roundtrip.ok) << roundtrip.error;
+    EXPECT_EQ(roundtrip.value.Get("emoji")->AsString(), parsed.value.Get("emoji")->AsString());
+}
+
+TEST(CfgxJsonTests, RejectsUnpairedSurrogatesAndMalformedEscapes)
+{
+    for (const auto* input : {R"("\ud800")", R"("\udfff")", R"("\ud800\u0041")", R"("\ud800x")", R"("\udc00\ud800")",
+                              R"("\ud800\u123")", R"("\u12xz")", R"("\u123")"})
+    {
+        SCOPED_TRACE(input);
+        EXPECT_FALSE(cfgx::ParseJson(input).ok);
+    }
+    EXPECT_EQ(cfgx::ParseJson(R"("\u0041\u0062")").value.AsString(), "Ab");
+}
+
+TEST(CfgxJsonTests, AllControlCharactersAreEscapedAndLiteralControlsRejected)
+{
+    for (int code = 0; code < 32; ++code)
+    {
+        SCOPED_TRACE(code);
+        const std::string value(1, static_cast<char>(code));
+        EXPECT_FALSE(cfgx::ParseJson("\"a" + value + "b\"").ok);
+        const auto rendered = cfgx::ToJson(cfgx::Node(value), 0);
+        EXPECT_TRUE(std::none_of(rendered.begin(), rendered.end(), [](unsigned char ch) { return ch < 0x20; }));
+        const auto parsed = cfgx::ParseJson(rendered);
+        ASSERT_TRUE(parsed.ok) << parsed.error;
+        EXPECT_EQ(parsed.value.AsString(), value);
+    }
+}
+
+TEST(CfgxJsonTests, UnicodeEscapesSurviveUnrelatedFileEdits)
+{
+    const auto file = TestTempPath("cfgx_unicode_edit.json");
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << R"({"name":"\u4e2d\u6587","emoji":"\ud83d\ude80"})";
+    }
+    auto loaded = cfgx::LoadFromFile(file.string());
+    ASSERT_TRUE(loaded.ok) << loaded.error;
+    ASSERT_TRUE(cfgx::SetNode(loaded.value, "added", cfgx::Node(true)).ok);
+    ASSERT_TRUE(cfgx::SaveToFile(loaded.value, file.string()).ok);
+    const auto saved = cfgx::LoadFromFile(file.string());
+    ASSERT_TRUE(saved.ok) << saved.error;
+    EXPECT_EQ(saved.value.Get("name")->AsString(), "\xE4\xB8\xAD\xE6\x96\x87");
+    EXPECT_EQ(saved.value.Get("emoji")->AsString(), "\xF0\x9F\x9A\x80");
+    EXPECT_TRUE(saved.value.Get("added")->AsBool());
+}
+
 TEST(CfgxJsonTests, RejectsNonJsonAndUnrepresentableNumbers)
 {
     for (const std::string literal : {"01", "01.2", "00e2", "1.", "1.e2", "1e", "1e+", "--1", "1e999", "-1e999"})

@@ -2591,8 +2591,124 @@ Status CreateArchive(std::string_view source_root, std::string_view archive_path
         return status;
     }
 
+    // Inspect the complete source before creating an output or its parents.
+    // An output inside this tree would become one of its own input members;
+    // an external hard link can alias a member without sharing its spelling.
+    const auto source_status = std::filesystem::status(root, ec);
+    const bool source_directory = std::filesystem::is_directory(source_status);
+    if (ec || (!source_directory && !std::filesystem::is_regular_file(source_status)))
+    {
+        status.error = utils::err::join_context("fsx", "tar", "source is not a regular file or directory");
+        return status;
+    }
+    WalkOptions walk_options;
+    walk_options.recursive = true;
+    walk_options.include_directories = true;
+    walk_options.include_files = true;
+    walk_options.relative_path = true;
+    const auto walked = source_directory ? WalkDirectory(root.string(), walk_options) : WalkResult{};
+    if (source_directory && !walked.ok)
+    {
+        status.error = walked.error;
+        return status;
+    }
+    const Path archive{std::string(archive_path)};
+#if defined(_WIN32)
+    if (journal_path_has_stream(root) || journal_path_has_stream(archive))
+    {
+        status.error = utils::err::join_context("fsx", "tar", "Windows stream archive paths are unsupported");
+        return status;
+    }
+#endif
+    auto resolved_root = std::filesystem::absolute(root, ec);
+    if (!ec)
+        resolved_root = std::filesystem::weakly_canonical(resolved_root, ec);
+    if (ec)
+    {
+        status.error = utils::err::join_context("fsx", "tar", "cannot resolve source: " + ec.message());
+        return status;
+    }
+    auto resolved_archive = std::filesystem::absolute(archive, ec);
+    if (!ec)
+    {
+        // weakly_canonical leaves a dangling link in its nonexistent suffix.
+        // Opening that spelling can still follow it back into the source.
+        auto prefix = resolved_archive.root_path();
+        bool missing_component = false;
+#if defined(_WIN32)
+        const bool extended_root = resolved_archive.root_name().native() == L"\\\\?";
+        bool first_component = true;
+#endif
+        for (const auto& component : resolved_archive.relative_path())
+        {
+#if defined(_WIN32)
+            const auto& native = component.native();
+            const bool extended_drive =
+                first_component && extended_root && native.size() == 2 && native[1] == L':' &&
+                ((native[0] >= L'A' && native[0] <= L'Z') || (native[0] >= L'a' && native[0] <= L'z'));
+            first_component = false;
+            if (extended_drive)
+            {
+                prefix += native;
+                prefix += Path::preferred_separator;
+                continue;
+            }
+#endif
+            if (missing_component && component == "..")
+            {
+                status.error = utils::err::join_context("fsx", "tar", "cannot confirm archive parent traversal");
+                return status;
+            }
+            prefix /= component;
+            const auto link_status = std::filesystem::symlink_status(prefix, ec);
+            if (ec == std::errc::no_such_file_or_directory ||
+                (!ec && link_status.type() == std::filesystem::file_type::not_found))
+            {
+                missing_component = true;
+                ec.clear();
+                continue;
+            }
+            if (ec)
+                break;
+            bool linked = std::filesystem::is_symlink(link_status);
+#if defined(_WIN32)
+            const auto attributes = GetFileAttributesW(prefix.c_str());
+            linked = linked || (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT));
+#endif
+            if (linked)
+            {
+                const auto target_status = std::filesystem::status(prefix, ec);
+                if (ec || !std::filesystem::exists(target_status) ||
+                    target_status.type() == std::filesystem::file_type::unknown)
+                {
+                    status.error = utils::err::join_context("fsx", "tar", "cannot confirm archive link target");
+                    return status;
+                }
+            }
+        }
+    }
+    if (!ec)
+        resolved_archive = std::filesystem::weakly_canonical(resolved_archive, ec);
+    if (ec)
+    {
+        status.error = utils::err::join_context("fsx", "tar", "cannot resolve archive: " + ec.message());
+        return status;
+    }
+    auto aliases_archive = [&](const Path& input)
+    {
+        std::error_code alias_ec;
+        return std::filesystem::equivalent(input, archive, alias_ec) && !alias_ec;
+    };
+    if (boundary_paths_overlap(resolved_root, resolved_archive) || aliases_archive(root) ||
+        std::any_of(walked.entries.begin(), walked.entries.end(),
+                    [&](const WalkEntry& entry) { return aliases_archive(root / Path(entry.path)); }))
+    {
+        status.error = utils::err::join_context("fsx", "tar", "archive output overlaps a source path");
+        return status;
+    }
+
     std::string ensure_error;
-    if (!ensure_parent(Path(std::string(archive_path)), &ensure_error))
+    if (!ensure_parent(archive, &ensure_error))
     {
         status.error = ensure_error;
         return status;
@@ -2611,12 +2727,6 @@ Status CreateArchive(std::string_view source_root, std::string_view archive_path
         return status;
     }
 
-    WalkOptions walk_options;
-    walk_options.recursive = true;
-    walk_options.include_directories = true;
-    walk_options.include_files = true;
-    walk_options.relative_path = true;
-
     if (options.include_root_directory)
     {
         std::string root_name = root.filename().generic_string();
@@ -2626,9 +2736,7 @@ Status CreateArchive(std::string_view source_root, std::string_view archive_path
         }
     }
 
-    const auto walked =
-        std::filesystem::is_directory(root, ec) ? WalkDirectory(root.string(), walk_options) : WalkResult{};
-    if (std::filesystem::is_regular_file(root, ec))
+    if (!source_directory)
     {
         const std::string name = root.filename().generic_string();
         const std::uintmax_t size = std::filesystem::file_size(root, ec);
@@ -2647,11 +2755,6 @@ Status CreateArchive(std::string_view source_root, std::string_view archive_path
     }
     else
     {
-        if (!walked.ok)
-        {
-            status.error = walked.error;
-            return status;
-        }
         for (const auto& entry : walked.entries)
         {
             if (!toolx_detail::SafeChildPath(root, Path(entry.path), &status.error))
@@ -2714,6 +2817,9 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
         return status;
     }
 
+    // A skipped directory entry that collides with a file also skips its
+    // descendants. Their payloads still have to be consumed from the stream.
+    std::vector<std::string> skipped_directories;
     for (;;)
     {
         std::array<char, 512> header{};
@@ -2740,38 +2846,75 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
         }
         const bool directory = header[156] == '5';
         const std::uintmax_t size = parse_tar_octal(header.data() + 124, 12);
+        // stat("file/") can report not-found even when "file" exists. Strip
+        // the tar directory marker before applying the conflict policy.
+        while (directory && !name.empty() && name.back() == '/')
+            name.pop_back();
         const Path target = root / Path(name);
-        if (!path_is_at_or_within(boundary_key(target), root_key))
+        const auto target_key = boundary_key(target);
+        if (!path_is_at_or_within(target_key, root_key))
         {
             status.error = utils::err::join_context("fsx", "tar", "archive entry escapes destination root");
             return status;
         }
 
-        if (directory)
+        const bool ancestor_skipped =
+            std::any_of(skipped_directories.begin(), skipped_directories.end(),
+                        [&](const std::string& key) { return path_is_at_or_within(target_key, key); });
+        const bool exists = !ancestor_skipped && std::filesystem::exists(target, ec);
+        if (ec)
         {
-            std::filesystem::create_directories(target, ec);
+            status.error = utils::err::join_context("fsx", "tar", "cannot inspect destination: " + ec.message());
+            return status;
+        }
+        const bool existing_directory = exists && std::filesystem::is_directory(target, ec);
+        if (ec)
+        {
+            status.error = utils::err::join_context("fsx", "tar", "cannot inspect destination: " + ec.message());
+            return status;
+        }
+        const bool skip = ancestor_skipped || (exists && options.conflict_policy == ConflictPolicy::Skip);
+        if (skip && directory && exists && !existing_directory)
+            skipped_directories.push_back(target_key);
+
+        std::ofstream out;
+        if (!skip)
+        {
+            if (exists && !(directory && existing_directory))
+            {
+                if (options.conflict_policy == ConflictPolicy::Fail)
+                {
+                    status.error = utils::err::join_context("fsx", "tar", "destination exists");
+                    return status;
+                }
+                if (directory || existing_directory)
+                {
+                    std::filesystem::remove_all(target, ec);
+                    if (ec)
+                    {
+                        status.error = utils::err::join_context("fsx", "tar", ec.message());
+                        return status;
+                    }
+                }
+            }
+            if (directory)
+                std::filesystem::create_directories(target, ec);
+            else
+            {
+                if (!ensure_parent(target, &status.error))
+                    return status;
+                out.open(target, std::ios::binary | std::ios::trunc);
+                if (!out.is_open())
+                {
+                    status.error = utils::err::join_context("fsx", "tar", "failed to create output file");
+                    return status;
+                }
+            }
             if (ec)
             {
                 status.error = utils::err::join_context("fsx", "tar", ec.message());
                 return status;
             }
-            continue;
-        }
-
-        if (path_exists(target) && options.conflict_policy == ConflictPolicy::Fail)
-        {
-            status.error = utils::err::join_context("fsx", "tar", "destination exists");
-            return status;
-        }
-        if (!ensure_parent(target, &status.error))
-        {
-            return status;
-        }
-        std::ofstream out(target, std::ios::binary | std::ios::trunc);
-        if (!out.is_open())
-        {
-            status.error = utils::err::join_context("fsx", "tar", "failed to create output file");
-            return status;
         }
 
         std::array<char, 4096> buffer{};
@@ -2785,7 +2928,8 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
                 status.error = utils::err::join_context("fsx", "tar", "truncated file payload");
                 return status;
             }
-            out.write(buffer.data(), chunk);
+            if (!skip && !directory)
+                out.write(buffer.data(), chunk);
             remaining -= static_cast<std::uintmax_t>(chunk);
         }
 
@@ -2793,6 +2937,20 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
         if (padding > 0)
         {
             in.ignore(static_cast<std::streamsize>(padding));
+            if (in.gcount() != static_cast<std::streamsize>(padding))
+            {
+                status.error = utils::err::join_context("fsx", "tar", "truncated file padding");
+                return status;
+            }
+        }
+        if (out.is_open())
+        {
+            out.flush();
+            if (!out.good())
+            {
+                status.error = utils::err::join_context("fsx", "tar", "failed to write output file");
+                return status;
+            }
         }
     }
 

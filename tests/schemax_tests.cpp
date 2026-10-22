@@ -133,3 +133,54 @@ TEST(SchemaxTests, FailFastAndCfgxIssueConversionWork)
     ASSERT_EQ(cfgx_issues.size(), 1u);
     EXPECT_NE(cfgx_issues[0].message.find("[required]"), std::string::npos);
 }
+
+TEST(SchemaxTests, AdditionalPropertiesWithoutPropertiesRejectsUnknownMembers)
+{
+    for (const auto* text : {R"({"type":"object","additionalProperties":false})",
+                             R"({"type":"object","properties":{},"additionalProperties":false})"})
+    {
+        const auto compiled = schemax::Compile(cfgx::ParseJson(text).value);
+        ASSERT_TRUE(compiled.ok) << compiled.error;
+        EXPECT_TRUE(schemax::Validate(Obj({}), compiled.value).empty());
+        const auto document = Obj({{"a", cfgx::Node(true)}, {"b", cfgx::Node(false)}});
+        for (bool fail_fast : {false, true})
+        {
+            schemax::Options options;
+            options.fail_fast = fail_fast;
+            const auto issues = schemax::Validate(document, compiled.value, options);
+            ASSERT_EQ(issues.size(), fail_fast ? 1u : 2u);
+            EXPECT_EQ(issues[0].path, "a");
+            EXPECT_EQ(issues[0].code, "additionalProperties");
+        }
+    }
+    const auto nested = schemax::Compile(
+        cfgx::ParseJson(R"({"type":"object","properties":{"child":{"type":"object","additionalProperties":false}}})")
+            .value);
+    ASSERT_TRUE(nested.ok);
+    const auto issues = schemax::Validate(Obj({{"child", Obj({{"extra", cfgx::Node(true)}})}}), nested.value);
+    ASSERT_EQ(issues.size(), 1u);
+    EXPECT_EQ(issues[0].path, "child.extra");
+    const auto allowed = schemax::Compile(Obj({{"additionalProperties", cfgx::Node(true)}}));
+    ASSERT_TRUE(allowed.ok);
+    EXPECT_TRUE(schemax::Validate(Obj({{"extra", cfgx::Node(true)}}), allowed.value).empty());
+}
+
+TEST(SchemaxTests, CompileRejectsNegativeStringLengthsAndKeepsNonnegativeBounds)
+{
+    for (const auto* keyword : {"minLength", "maxLength"})
+    {
+        const auto invalid = schemax::Compile(Obj({{keyword, cfgx::Node(std::int64_t(-1))}}));
+        EXPECT_FALSE(invalid.ok);
+        EXPECT_NE(invalid.error.find(keyword), std::string::npos);
+    }
+    const auto zero = schemax::Compile(Obj({{"maxLength", cfgx::Node(std::int64_t(0))}}));
+    ASSERT_TRUE(zero.ok);
+    EXPECT_TRUE(schemax::Validate(cfgx::Node(""), zero.value).empty());
+    EXPECT_EQ(schemax::Validate(cfgx::Node("a"), zero.value).size(), 1u);
+    const auto exact =
+        schemax::Compile(Obj({{"minLength", cfgx::Node(std::int64_t(3))}, {"maxLength", cfgx::Node(std::int64_t(3))}}));
+    ASSERT_TRUE(exact.ok);
+    EXPECT_TRUE(schemax::Validate(cfgx::Node("abc"), exact.value).empty());
+    EXPECT_EQ(schemax::Validate(cfgx::Node("ab"), exact.value).size(), 1u);
+    EXPECT_EQ(schemax::Validate(cfgx::Node("abcd"), exact.value).size(), 1u);
+}

@@ -152,7 +152,8 @@ struct LocalHttpServer
 };
 
 std::optional<LocalHttpServer> StartSingleResponseServer(std::string response, std::uint64_t response_delay_ms = 0,
-                                                         std::shared_ptr<std::string> captured_request = nullptr)
+                                                         std::shared_ptr<std::string> captured_request = nullptr,
+                                                         std::uint64_t close_delay_ms = 0)
 {
     if (!EnsureTestNetworkReady())
     {
@@ -194,7 +195,7 @@ std::optional<LocalHttpServer> StartSingleResponseServer(std::string response, s
     server.port = ntohs(bound.sin_port);
     server.captured_request = captured_request;
     server.worker = std::thread(
-        [listen_socket, response = std::move(response), response_delay_ms, captured_request]()
+        [listen_socket, response = std::move(response), response_delay_ms, captured_request, close_delay_ms]()
         {
             sockaddr_in client_addr{};
             socklen_t client_len = static_cast<socklen_t>(sizeof(client_addr));
@@ -300,6 +301,8 @@ std::optional<LocalHttpServer> StartSingleResponseServer(std::string response, s
                     sent += static_cast<std::size_t>(n);
                 }
 
+                if (close_delay_ms > 0)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(close_delay_ms));
                 CloseTestSocket(client);
             }
 
@@ -2230,6 +2233,378 @@ TEST(HttpxClientTests, SoakSequentialRequestsRemainStable)
     }
 
     ASSERT_EQ(static_cast<int>(captured->size()), kRounds);
+}
+
+TEST(HttpxClientTests, BodylessStatusesCompleteOnKeepAliveConnections)
+{
+    for (const int status : {204, 304})
+    {
+        for (const bool streaming : {false, true})
+        {
+            SCOPED_TRACE("status=" + std::to_string(status) + " streaming=" + std::to_string(streaming));
+            const auto server = StartSingleResponseServer(
+                "HTTP/1.1 " + std::to_string(status) + " No Body\r\nConnection: keep-alive\r\n" +
+                    (status == 304 ? "Content-Length: 100000000\r\n" : "") + "\r\n",
+                0, nullptr, 350);
+            ASSERT_TRUE(server.has_value());
+            httpx::ClientOptions options;
+            options.use_proxy_from_environment = false;
+            options.timeout.total_ms = 150;
+            options.timeout.read_write_ms = 150;
+            httpx::Client client(options);
+            httpx::Request request;
+            request.url = "http://127.0.0.1:" + std::to_string(server->port) + "/bodyless";
+            std::string delivered;
+            if (streaming)
+                request.on_response_chunk = [&](std::string_view chunk)
+                {
+                    delivered.append(chunk);
+                    return true;
+                };
+            const auto result = client.Send(request);
+            ASSERT_TRUE(result.ok) << result.error.message;
+            EXPECT_EQ(result.value.status_code, status);
+            EXPECT_TRUE(result.value.body.empty());
+            EXPECT_TRUE(delivered.empty());
+        }
+    }
+}
+
+TEST(HttpxClientTests, InformationalResponsesAndEmptyHeaderBlocks)
+{
+    for (const bool streaming : {false, true})
+    {
+        auto captured = std::make_shared<std::string>();
+        const auto server = StartSingleResponseServer(
+            "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </style.css>\r\n\r\n"
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+            0, captured);
+        ASSERT_TRUE(server.has_value());
+        httpx::ClientOptions options;
+        options.use_proxy_from_environment = false;
+        httpx::Client client(options);
+        httpx::Request request;
+        request.url = "http://127.0.0.1:" + std::to_string(server->port) + "/continue";
+        request.method = httpx::HttpMethod::Post;
+        request.headers = {{"Expect", "100-continue"}};
+        request.body = "payload";
+        std::string delivered;
+        if (streaming)
+            request.on_response_chunk = [&](std::string_view chunk)
+            {
+                delivered.append(chunk);
+                return true;
+            };
+        const auto result = client.Send(request);
+        ASSERT_TRUE(result.ok) << result.error.message;
+        EXPECT_EQ(result.value.status_code, 200);
+        EXPECT_EQ(result.value.body, "OK");
+        EXPECT_EQ(delivered, streaming ? "OK" : "");
+        EXPECT_NE(captured->find("Expect: 100-continue"), std::string::npos);
+        EXPECT_NE(captured->find("payload"), std::string::npos);
+    }
+    const auto server = StartSingleResponseServer("HTTP/1.1 200 OK\r\n\r\nbody");
+    ASSERT_TRUE(server.has_value());
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    const auto result =
+        httpx::Client(options).Get("http://127.0.0.1:" + std::to_string(server->port) + "/empty-headers");
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.body, "body");
+}
+
+TEST(HttpxClientTests, InterimResponsesRemainBoundedAndBodyDoesNotCountAsHeaders)
+{
+    std::string response;
+    for (int i = 0; i < 17; ++i)
+        response += "HTTP/1.1 103 Early Hints\r\n\r\n";
+    response += "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    const auto interim = StartSingleResponseServer(response);
+    ASSERT_TRUE(interim.has_value());
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    const auto rejected = httpx::Client(options).Get("http://127.0.0.1:" + std::to_string(interim->port) + "/interim");
+    EXPECT_FALSE(rejected.ok);
+    EXPECT_EQ(rejected.error.kind, httpx::ErrorKind::Protocol);
+
+    const std::string body(4096, 'x');
+    const auto final =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n" + body);
+    ASSERT_TRUE(final.has_value());
+    options.limits.max_header_bytes = 512;
+    const auto accepted = httpx::Client(options).Get("http://127.0.0.1:" + std::to_string(final->port) + "/body");
+    ASSERT_TRUE(accepted.ok) << accepted.error.message;
+    EXPECT_EQ(accepted.value.body, body);
+}
+
+TEST(HttpxClientTests, MultiHopRedirectStreamUsesEffectiveRequestPolicy)
+{
+    for (bool global_follow : {false, true})
+    {
+        for (const auto override_follow :
+             {std::optional<bool>{}, std::optional<bool>{false}, std::optional<bool>{true}})
+        {
+            SCOPED_TRACE(global_follow);
+            SCOPED_TRACE(override_follow.has_value() ? (*override_follow ? "true" : "false") : "inherit");
+            const bool follow = override_follow.value_or(global_follow);
+            std::vector<std::string> responses{
+                "HTTP/1.1 302 Found\r\nLocation: /middle\r\nContent-Length: 5\r\nConnection: close\r\n\r\nJUNK1"};
+            if (follow)
+            {
+                responses.push_back(
+                    "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 5\r\nConnection: close\r\n\r\nJUNK2");
+                responses.push_back("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+            }
+            auto captured = std::make_shared<std::vector<std::string>>();
+            const auto server = StartScriptedServer(std::move(responses), captured);
+            ASSERT_TRUE(server.has_value());
+            httpx::ClientOptions options;
+            options.use_proxy_from_environment = false;
+            options.redirects.follow = global_follow;
+            options.timeout.total_ms = 3000;
+            httpx::Request request;
+            request.url = "http://127.0.0.1:" + std::to_string(server->port) + "/start";
+            request.follow_redirect = override_follow;
+            std::string stream;
+            request.on_response_chunk = [&](std::string_view chunk)
+            {
+                stream += chunk;
+                return true;
+            };
+            const auto result = httpx::Client(options).Send(request);
+            ASSERT_TRUE(result.ok) << result.error.message;
+            EXPECT_EQ(result.value.status_code, follow ? 200 : 302);
+            EXPECT_EQ(result.value.body, follow ? "OK" : "JUNK1");
+            EXPECT_EQ(stream, result.value.body);
+            EXPECT_EQ(captured->size(), follow ? 3u : 1u);
+        }
+    }
+}
+
+TEST(HttpxClientTests, CustomMultiHopRedirectStreamPreservesRequestOverride)
+{
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.redirects.follow = false;
+    std::size_t attempts = 0;
+    options.transport = [&](const httpx::Request& request, const httpx::ClientOptions&)
+    {
+        ++attempts;
+        httpx::Result<httpx::Response> result;
+        result.ok = true;
+        const bool first = request.url.ends_with("/start");
+        const bool final = request.url.ends_with("/final");
+        result.value.status_code = final ? 200 : 302;
+        result.value.body = final ? "OK" : (first ? "JUNK1" : "JUNK2");
+        if (!final)
+            result.value.headers = {{"Location", first ? "/middle" : "/final"}};
+        EXPECT_TRUE(request.on_response_chunk(result.value.body));
+        return result;
+    };
+    httpx::Request request;
+    request.url = "http://example.test/start";
+    request.follow_redirect = true;
+    std::string stream;
+    request.on_response_chunk = [&](std::string_view chunk)
+    {
+        stream += chunk;
+        return true;
+    };
+    const auto result = httpx::Client(options).Send(request);
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.body, "OK");
+    EXPECT_EQ(stream, "OK");
+    EXPECT_EQ(attempts, 3u);
+}
+
+#if defined(HTTPX_ENABLE_OPENSSL)
+TEST(HttpxClientTests, OpenSslMultiHopRedirectStreamPreservesRequestOverride)
+{
+    const auto identity = MakeTlsTestIdentity();
+    ASSERT_NE(identity, nullptr);
+    const fs::path root = fs::current_path() / "toolx_test_tmp" / "httpx_openssl_redirect_override";
+    fs::create_directories(root);
+    const fs::path ca_file = root / "localhost-ca.pem";
+    ASSERT_TRUE(WritePublicCertificate(ca_file, identity->certificate));
+    const auto final =
+        StartSingleResponseTlsServer(identity, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+    ASSERT_TRUE(final.has_value());
+    const auto middle = StartSingleResponseTlsServer(
+        identity, "HTTP/1.1 302 Found\r\nLocation: https://localhost:" + std::to_string(final->port) +
+                      "/final\r\nContent-Length: 5\r\nConnection: close\r\n\r\nJUNK2");
+    ASSERT_TRUE(middle.has_value());
+    const auto first = StartSingleResponseTlsServer(
+        identity, "HTTP/1.1 302 Found\r\nLocation: https://localhost:" + std::to_string(middle->port) +
+                      "/middle\r\nContent-Length: 5\r\nConnection: close\r\n\r\nJUNK1");
+    ASSERT_TRUE(first.has_value());
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.redirects.follow = false;
+    options.tls.ca_file = ca_file.string();
+    options.timeout.total_ms = 5000;
+    httpx::Request request;
+    request.url = "https://localhost:" + std::to_string(first->port) + "/start";
+    request.follow_redirect = true;
+    std::string stream;
+    request.on_response_chunk = [&](std::string_view chunk)
+    {
+        stream += chunk;
+        return true;
+    };
+    const auto result = httpx::Client(options).Send(request);
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.body, "OK");
+    EXPECT_EQ(stream, "OK");
+}
+#endif
+
+TEST(HttpxClientTests, DownloadFileFollowsRedirectWithoutPublishingIntermediateBody)
+{
+    const auto root = fs::current_path() / "toolx_test_tmp" / "httpx_download_redirect";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    const auto target = root / "file.txt";
+    std::ofstream(target) << "original";
+    auto captured = std::make_shared<std::vector<std::string>>();
+    const auto server = StartScriptedServer(
+        {"HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 5\r\nConnection: close\r\n\r\nJUNK!",
+         "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"},
+        captured);
+    ASSERT_TRUE(server.has_value());
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.redirects.follow = true;
+    std::vector<std::uint64_t> progress;
+    httpx::DownloadOptions download;
+    download.on_progress = [&](std::uint64_t bytes) { progress.push_back(bytes); };
+    const auto status = httpx::Client(options).DownloadFile(
+        "http://127.0.0.1:" + std::to_string(server->port) + "/start", target.string(), download);
+    ASSERT_TRUE(status.ok) << status.error.message;
+    std::ifstream in(target, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "OK");
+    ASSERT_FALSE(progress.empty());
+    EXPECT_EQ(progress.back(), 2u);
+    EXPECT_TRUE(std::all_of(progress.begin(), progress.end(), [](auto bytes) { return bytes <= 2; }));
+    EXPECT_EQ(captured->size(), 2u);
+    EXPECT_FALSE(fs::exists(target.string() + ".part"));
+}
+
+TEST(HttpxClientTests, DownloadFileRejectsExistingTempAliasesWithoutChangingFiles)
+{
+    const auto root = fs::current_path() / "toolx_test_tmp" / "httpx_download_alias";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    const auto target = root / "file.txt";
+    const auto temp = root / "file.txt.part";
+    std::ofstream(target) << "original";
+    fs::create_hard_link(target, temp, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    const auto status = httpx::Client(options).DownloadFile("invalid-url", target.string());
+    EXPECT_FALSE(status.ok);
+    EXPECT_TRUE(fs::exists(temp));
+    std::ifstream in(target, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "original");
+    in.close();
+    fs::remove(temp, ec);
+    std::ofstream(temp) << "unrelated temporary data";
+    EXPECT_FALSE(httpx::Client(options).DownloadFile("invalid-url", target.string()).ok);
+    std::ifstream other(temp, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(other), {}), "unrelated temporary data");
+}
+
+TEST(HttpxClientTests, DownloadFileFailureCleansOnlyItsOwnTempAndPreservesDestination)
+{
+    const auto root = fs::current_path() / "toolx_test_tmp" / "httpx_download_failure";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    const auto target = root / "file.txt";
+    std::ofstream(target) << "original";
+    const auto server =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\npartial");
+    ASSERT_TRUE(server.has_value());
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    const auto status = httpx::Client(options).DownloadFile(
+        "http://127.0.0.1:" + std::to_string(server->port) + "/partial", target.string());
+    EXPECT_FALSE(status.ok);
+    EXPECT_FALSE(fs::exists(target.string() + ".part"));
+    std::ifstream in(target, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "original");
+}
+
+TEST(HttpxClientTests, DownloadFileRejectsSymlinkTempAndWindowsStreamAliases)
+{
+    const auto root = fs::current_path() / "toolx_test_tmp" / "httpx_download_link";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    const auto target = root / "file.txt";
+    const auto temp = root / "file.txt.part";
+    std::ofstream(target) << "original";
+    fs::create_symlink(target, temp, ec);
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    if (!ec)
+    {
+        EXPECT_FALSE(httpx::Client(options).DownloadFile("invalid-url", target.string()).ok);
+        EXPECT_TRUE(fs::is_symlink(temp));
+    }
+#if defined(_WIN32)
+    for (const auto& suffix : {":stream", "::$DATA"})
+    {
+        httpx::DownloadOptions download;
+        download.temp_suffix = suffix;
+        const auto status = httpx::Client(options).DownloadFile("invalid-url", target.string(), download);
+        EXPECT_FALSE(status.ok);
+        EXPECT_EQ(status.error.kind, httpx::ErrorKind::InvalidArgument);
+    }
+#else
+    ASSERT_FALSE(ec) << ec.message();
+#endif
+    std::ifstream in(target, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "original");
+}
+
+TEST(HttpxClientTests, DownloadFileCustomRedirectStreamsOnlyFinalChunksAndHandlesCallbackFailure)
+{
+    const auto root = fs::current_path() / "toolx_test_tmp" / "httpx_download_custom_redirect";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    const auto target = root / "file.txt";
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.redirects.follow = true;
+    options.transport = [](const httpx::Request& request, const httpx::ClientOptions&)
+    {
+        httpx::Result<httpx::Response> result;
+        const bool redirect = request.url.ends_with("/start");
+        EXPECT_TRUE(request.on_response_chunk(redirect ? "JUNK!" : "OK"));
+        result.ok = true;
+        result.value.status_code = redirect ? 302 : 200;
+        if (redirect)
+            result.value.headers = {{"Location", "/final"}};
+        return result;
+    };
+    httpx::DownloadOptions download;
+    std::vector<std::uint64_t> progress;
+    download.on_progress = [&](auto bytes) { progress.push_back(bytes); };
+    ASSERT_TRUE(httpx::Client(options).DownloadFile("http://example.test/start", target.string(), download).ok);
+    std::ifstream in(target, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "OK");
+    in.close();
+    ASSERT_EQ(progress.size(), 1u);
+    EXPECT_EQ(progress[0], 2u);
+    download.on_progress = [](std::uint64_t) { throw std::runtime_error("progress failure"); };
+    EXPECT_FALSE(httpx::Client(options).DownloadFile("http://example.test/start", target.string(), download).ok);
+    EXPECT_FALSE(fs::exists(target.string() + ".part"));
+    std::ifstream kept(target, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(kept), {}), "OK");
 }
 
 TEST(HttpxClientTests, DownloadFileWritesThroughTemporaryFile)

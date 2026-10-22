@@ -2,7 +2,7 @@
 
 > Audience: C++ applications and configuration-tool authors
 > Status: Stable core module guide
-> Applies to: `v0.3.3` release
+> Applies to: `v0.3.4` release
 > Source of truth for: intended `cfgx` use and public API grouping
 
 ## Role and boundary
@@ -86,6 +86,11 @@ The v0.3.3 JSON parser checks the number grammar and rejects numbers
 outside its representable integer/finite-double range, rather than serializing
 overflow as `inf`. Numeric range validation rejects non-finite bounds and
 values, including `Node` values constructed directly by a caller.
+
+The v0.3.4 maintenance release also decodes JSON `\u` escapes into UTF-8,
+including valid surrogate pairs, and rejects unpaired surrogates and literal
+U+0000–U+001F in strings. Serialization escapes every control character in that
+range, preserving strings and escaped object keys through editing and file saves.
 
 JSON serialization uses the classic locale and enough digits to round-trip
 finite doubles exactly. Integral doubles include a decimal point (for example,

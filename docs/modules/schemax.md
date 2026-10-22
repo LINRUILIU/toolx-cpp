@@ -2,7 +2,7 @@
 
 > Audience: C++ applications needing a small cfgx schema subset
 > Status: Experimental MVP module guide
-> Applies to: `v0.3.2` release
+> Applies to: `v0.3.4` release
 > Source of truth for: supported schema subset and validation behavior
 
 ## Role and boundary
@@ -39,6 +39,10 @@ const auto issues = schemax::Validate(document, schema.value);
 
 Unknown keywords and malformed keyword values make `Compile` fail. Document
 validation problems are returned as `Issue` data and are not transport errors.
+The v0.3.4 maintenance release enforces `additionalProperties:false`
+independently of a `properties` map; an absent map permits no named properties.
+`minLength` and `maxLength` must be nonnegative integers representable as native
+string lengths, otherwise compilation fails.
 Deterministic visit order supports fail-fast editor/CLI use, but callers should
 not treat message prose as a machine code; use `Issue::code` and `path`.
 

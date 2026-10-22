@@ -2,7 +2,7 @@
 
 > Audience: integrators composing multiple ToolX modules
 > Status: Stable support module guide
-> Applies to: `v0.3.3` release
+> Applies to: `v0.3.4` release
 > Source of truth for: cross-module result normalization
 
 ## Role and boundary

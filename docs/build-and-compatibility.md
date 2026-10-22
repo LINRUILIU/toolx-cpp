@@ -2,7 +2,7 @@
 
 > Audience: builders, package consumers, and release maintainers
 > Status: Canonical build guide
-> Applies to: `v0.3.3` release
+> Applies to: `v0.3.4` release
 > Source of truth for: supported build shapes and verified compatibility
 
 ## Requirements
@@ -27,6 +27,17 @@ ctest --preset dev
 
 The preset builds libraries, tools, examples, and tests while disabling
 benchmarks. Enabling tests fetches GoogleTest.
+
+The build and test presets select `Debug` on multi-config generators such as
+Visual Studio. To use `Release`, use matching overrides:
+
+```bash
+cmake --build --preset dev --config Release
+ctest --preset dev -C Release
+```
+
+For single-config generators such as Ninja, the configure-time
+`CMAKE_BUILD_TYPE` selects the build type; the configuration override is ignored.
 
 For an offline library/tools/examples build:
 

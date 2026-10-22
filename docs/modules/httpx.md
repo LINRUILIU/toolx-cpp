@@ -2,7 +2,7 @@
 
 > Audience: C++ clients requiring bounded HTTP workflows
 > Status: Bounded-stable module guide
-> Applies to: `v0.3.2` release
+> Applies to: `v0.3.4` release
 > Source of truth for: supported HTTP behavior and backend boundary
 
 ## Role and boundary
@@ -68,7 +68,13 @@ if (!response.ok) return 1;
 - Custom transport and logger callbacks run synchronously and must outlive the
   request that invokes them.
 - `DownloadFile` writes a temporary sibling and replaces the destination only
-  after a complete successful response. Every retry recreates the temp file.
+  after a complete successful response. Every retry resets its temporary content.
+- The v0.3.4 maintenance release exclusively creates the temporary sibling
+  and truncates that same owned file for retries. Pre-existing temporary paths
+  fail without modification. Temporary suffixes cannot contain directories;
+  Windows stream paths are unsupported. Redirect entities are excluded from the
+  final download stream and its progress counts. The effective per-request
+  redirect policy remains in force for every hop and its stream callbacks.
 - URL/header redaction is a diagnostic safeguard, not a substitute for avoiding
   secrets in URLs.
 

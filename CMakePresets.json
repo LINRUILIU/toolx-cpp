@@ -46,11 +46,13 @@
   "buildPresets": [
     {
       "name": "dev",
-      "configurePreset": "dev"
+      "configurePreset": "dev",
+      "configuration": "Debug"
     },
     {
       "name": "clang-tidy",
-      "configurePreset": "clang-tidy"
+      "configurePreset": "clang-tidy",
+      "configuration": "Debug"
     },
     {
       "name": "coverage",
@@ -64,6 +66,7 @@
     {
       "name": "dev",
       "configurePreset": "dev",
+      "configuration": "Debug",
       "output": {
         "outputOnFailure": true
       }
@@ -71,6 +74,7 @@
     {
       "name": "clang-tidy",
       "configurePreset": "clang-tidy",
+      "configuration": "Debug",
       "output": {
         "outputOnFailure": true
       }

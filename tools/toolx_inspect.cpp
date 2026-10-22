@@ -17,6 +17,16 @@
 #include "schemax.h"
 #include "tuix.h"
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace
 {
 namespace fs = std::filesystem;
@@ -855,7 +865,141 @@ void PrintPlainReport(const InspectConfig& config, const InspectReport& report)
     std::cout << "selected_path=" << report.selected_path << "\n";
 }
 
-void ConfigureLogging(const std::string& log_file)
+bool LoggingPathsOverlap(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+{
+    auto left = lhs.begin();
+    auto right = rhs.begin();
+    for (; left != lhs.end() && right != rhs.end(); ++left, ++right)
+    {
+#if defined(_WIN32)
+        if (CompareStringOrdinal(left->native().c_str(), -1, right->native().c_str(), -1, TRUE) != CSTR_EQUAL)
+#else
+        if (*left != *right)
+#endif
+            return false;
+    }
+    return true;
+}
+
+bool ResolveLoggingBoundaryPath(const std::filesystem::path& path, std::filesystem::path* resolved, std::string* error)
+{
+    std::error_code ec;
+    const auto absolute = std::filesystem::absolute(path, ec);
+    if (ec)
+    {
+        *error = ec.message();
+        return false;
+    }
+
+    // weakly_canonical leaves dangling links in its nonexistent suffix. Do not
+    // treat those as ordinary new paths that logging could later follow.
+    auto prefix = absolute.root_path();
+    bool missing_component = false;
+#if defined(_WIN32)
+    const bool extended_root = absolute.root_name().native() == L"\\\\?";
+    bool first_component = true;
+#endif
+    for (const auto& component : absolute.relative_path())
+    {
+#if defined(_WIN32)
+        const auto& native = component.native();
+        const bool extended_drive =
+            first_component && extended_root && native.size() == 2 && native[1] == L':' &&
+            ((native[0] >= L'A' && native[0] <= L'Z') || (native[0] >= L'a' && native[0] <= L'z'));
+        first_component = false;
+        if (extended_drive)
+        {
+            // MSVC exposes this designator as a relative component. Append it
+            // literally: operator/= would replace the extended root with D:.
+            prefix += native;
+            prefix += std::filesystem::path::preferred_separator;
+            continue;
+        }
+        // A stream spelling can alias a file before either entry exists.
+        if (native.find(L':') != std::filesystem::path::string_type::npos)
+        {
+            *error = "Windows stream paths are unsupported with --log-file: " + path.string();
+            return false;
+        }
+#endif
+        if (missing_component && component == "..")
+        {
+            // Publishing may create the missing directory before FileSink
+            // retries opening its original path, exposing a previously hidden link.
+            *error = "cannot confirm parent traversal after a missing path component: " + path.string();
+            return false;
+        }
+        prefix /= component;
+        const auto link_status = std::filesystem::symlink_status(prefix, ec);
+        if (ec == std::errc::no_such_file_or_directory ||
+            (!ec && link_status.type() == std::filesystem::file_type::not_found))
+        {
+            missing_component = true;
+            ec.clear();
+            continue;
+        }
+        if (ec)
+        {
+            *error = "cannot inspect path component " + prefix.string() + ": " + ec.message();
+            return false;
+        }
+        if (std::filesystem::is_symlink(link_status))
+        {
+            const auto target_status = std::filesystem::status(prefix, ec);
+            if (ec || !std::filesystem::exists(target_status) ||
+                target_status.type() == std::filesystem::file_type::unknown)
+            {
+                *error = "cannot confirm symbolic link target: " + prefix.string();
+                return false;
+            }
+        }
+    }
+
+    *resolved = std::filesystem::weakly_canonical(absolute, ec).lexically_normal();
+    if (ec)
+    {
+        *error = ec.message();
+        return false;
+    }
+    return true;
+}
+
+bool ValidateLogFilePath(const std::string& log_file, const std::vector<std::string>& protected_paths,
+                         std::string* error)
+{
+    if (log_file.empty())
+        return true;
+    const std::filesystem::path log_path(log_file);
+    std::filesystem::path resolved_log;
+    if (!ResolveLoggingBoundaryPath(log_path, &resolved_log, error))
+    {
+        *error = "cannot resolve --log-file path: " + *error;
+        return false;
+    }
+    for (const auto& name : protected_paths)
+    {
+        if (name.empty())
+            continue;
+        const std::filesystem::path path(name);
+        std::filesystem::path resolved;
+        if (!ResolveLoggingBoundaryPath(path, &resolved, error))
+        {
+            *error = "cannot resolve protected path for --log-file: " + name + ": " + *error;
+            return false;
+        }
+        std::error_code ec;
+        const bool same_file = std::filesystem::equivalent(log_path, path, ec) && !ec;
+        ec.clear();
+        if (same_file || LoggingPathsOverlap(resolved_log, resolved))
+        {
+            *error = "--log-file overlaps an input, output or journal path: " + name;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ConfigureLogging(const std::string& log_file, const std::vector<std::string>& protected_paths, std::string* error)
 {
     logsys::DefaultLoggerOptions options;
     options.level = logsys::LogLevel::Info;
@@ -866,9 +1010,27 @@ void ConfigureLogging(const std::string& log_file)
     options.file_path = log_file;
 
     auto& logger = logsys::Logger::Instance();
+    if (!ValidateLogFilePath(log_file, protected_paths, error))
+        return false;
+    // ConfigureDefaultLogger preserves this policy. Check every size-rotation
+    // path before creating its FileSink, even when the current log is small.
+    const auto rolling = logger.CurrentConfigV2().rolling;
+    if (!log_file.empty() && rolling.enabled && rolling.max_file_size_bytes > 0)
+    {
+        for (std::size_t i = 0; i < rolling.keep_recent_files; ++i)
+        {
+            const auto archive = log_file + "." + std::to_string(i + 1);
+            if (!ValidateLogFilePath(archive, protected_paths, error))
+            {
+                *error = "log rotation path " + archive + ": " + *error;
+                return false;
+            }
+        }
+    }
     logger.ConfigureDefaultLogger(options);
     logger.SetDefaultOrigin(logsys::ErrorSource::Business, logsys::ModuleId::BusinessCommon,
                             logsys::ErrorCategory::Business);
+    return true;
 }
 
 std::string ScriptToInput(std::string_view script)
@@ -1017,7 +1179,9 @@ int RunInteractive(const InspectConfig& config, const InspectReport& report)
 
 int RunCommand(const InspectConfig& config, bool json_mode)
 {
-    ConfigureLogging(config.log_file);
+    std::string logging_error;
+    if (!ConfigureLogging(config.log_file, {config.file, config.schema_file, config.manifest}, &logging_error))
+        return ExitError(json_mode, kExitUsageError, logging_error);
     auto report_result = BuildReport(config);
     if (!report_result.ok)
     {

@@ -146,3 +146,78 @@ if(NOT WIN32)
         endif()
     endforeach()
 endif()
+# Side-effect paths must be isolated before initializing logging or staging.
+set(boundary "${root}/output-boundaries")
+file(MAKE_DIRECTORY "${boundary}/src")
+file(WRITE "${boundary}/src/a.txt" "SOURCE-SENTINEL")
+file(WRITE "${boundary}/manifest.json" "{\"source\":\"${boundary}/src\",\"stage\":\"${boundary}/stage\"}")
+file(SHA256 "${boundary}/src/a.txt" source_hash)
+file(SHA256 "${boundary}/manifest.json" manifest_hash)
+function(expect_output_rejection case_name)
+    execute_process(COMMAND "${TOOLX_PACK_EXE}" ${ARGN} --json
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+    if(NOT result EQUAL 2 OR NOT output MATCHES "overlaps|aliases|unsupported")
+        message(FATAL_ERROR "${case_name}: expected side-effect path rejection: ${result} ${output} ${error}")
+    endif()
+    file(SHA256 "${boundary}/src/a.txt" actual_source_hash)
+    file(SHA256 "${boundary}/manifest.json" actual_manifest_hash)
+    if(NOT actual_source_hash STREQUAL source_hash OR NOT actual_manifest_hash STREQUAL manifest_hash)
+        message(FATAL_ERROR "${case_name}: rejected operation modified an input")
+    endif()
+    if(EXISTS "${boundary}/stage" OR EXISTS "${boundary}/archive.tar" OR EXISTS "${boundary}/audit.log")
+        message(FATAL_ERROR "${case_name}: rejected operation created business or log output")
+    endif()
+endfunction()
+expect_output_rejection(source_log stage --src "${boundary}/src" --out "${boundary}/stage"
+    --log-file "${boundary}/src/a.txt")
+expect_output_rejection(archive_source_log archive --src "${boundary}/src" --archive "${boundary}/archive.tar"
+    --log-file "${boundary}/src/a.txt")
+expect_output_rejection(manifest_log stage --manifest "${boundary}/manifest.json"
+    --log-file "${boundary}/manifest.json")
+expect_output_rejection(shared_journal_archive stage --src "${boundary}/src" --out "${boundary}/stage"
+    --journal "${boundary}/archive.tar" --archive "${boundary}/archive.tar" --log-file "${boundary}/audit.log")
+foreach(option IN ITEMS archive journal log-file)
+    expect_output_rejection(stage_${option} stage --src "${boundary}/src" --out "${boundary}/stage"
+        --${option} "${boundary}/stage/side-effect")
+endforeach()
+file(WRITE "${boundary}/retained.journal" "FSXJ4\nCOMMIT\n")
+expect_output_rejection(retained_journal_archive stage --src "${boundary}/src" --out "${boundary}/stage"
+    --journal "${boundary}/retained.journal" --archive "${boundary}/retained.journal")
+file(READ "${boundary}/retained.journal" retained)
+if(NOT retained STREQUAL "FSXJ4\nCOMMIT\n")
+    message(FATAL_ERROR "rejected archive/journal collision changed retained audit journal")
+endif()
+file(WRITE "${boundary}/audit.log.1" "rotation sentinel")
+expect_output_rejection(rotation_archive stage --src "${boundary}/src" --out "${boundary}/stage"
+    --archive "${boundary}/audit.log.1" --log-file "${boundary}/audit.log")
+file(READ "${boundary}/audit.log.1" rotated)
+if(NOT rotated STREQUAL "rotation sentinel")
+    message(FATAL_ERROR "rejected log rotation collision changed archive output")
+endif()
+file(CREATE_LINK "${boundary}/src/a.txt" "${boundary}/linked.log" RESULT hard_link_result)
+if(hard_link_result STREQUAL "0")
+    expect_output_rejection(hardlinked_source_log stage --src "${boundary}/src" --out "${boundary}/stage"
+        --log-file "${boundary}/linked.log")
+else()
+    message(STATUS "Hard-link output boundary check skipped: ${hard_link_result}")
+endif()
+
+# A disjoint log, journal and archive still succeed together.
+execute_process(COMMAND "${TOOLX_PACK_EXE}" stage --src "${boundary}/src" --out "${boundary}/stage"
+    --archive "${boundary}/archive.tar" --journal "${boundary}/fresh.journal" --log-file "${boundary}/audit.log" --json
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT result EQUAL 0)
+    message(FATAL_ERROR "Disjoint output paths were rejected: ${result} ${output} ${error}")
+endif()
+file(SHA256 "${boundary}/src/a.txt" actual_source_hash)
+file(SHA256 "${boundary}/stage/a.txt" staged_hash)
+file(READ "${boundary}/fresh.journal" journal)
+if(NOT actual_source_hash STREQUAL source_hash OR NOT staged_hash STREQUAL source_hash
+    OR NOT journal MATCHES "^FSXJ4\n" OR NOT journal MATCHES "COMMIT\n$")
+    message(FATAL_ERROR "Disjoint output success changed source or failed to retain committed journal")
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}" -E tar tf "${boundary}/archive.tar"
+    RESULT_VARIABLE tar_result OUTPUT_VARIABLE tar_output ERROR_VARIABLE tar_error)
+if(NOT tar_result EQUAL 0 OR NOT tar_output MATCHES "a.txt")
+    message(FATAL_ERROR "Disjoint output archive is invalid: ${tar_output} ${tar_error}")
+endif()

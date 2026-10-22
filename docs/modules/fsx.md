@@ -2,7 +2,7 @@
 
 > Audience: C++ tools that need planned filesystem mutation
 > Status: Stable core module guide
-> Applies to: `v0.3.3` release
+> Applies to: `v0.3.4` release
 > Source of truth for: intended `fsx` use and recovery boundaries
 
 ## Role and boundary

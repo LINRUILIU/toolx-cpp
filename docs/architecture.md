@@ -2,7 +2,7 @@
 
 > Audience: C++ consumers, CLI integrators, and maintainers
 > Status: Canonical architecture guide
-> Applies to: `v0.3.3` release
+> Applies to: `v0.3.4` release
 > Source of truth for: module dependencies and product composition
 
 ## Design shape

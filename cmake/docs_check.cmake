@@ -89,7 +89,8 @@ set(TOOLX_PUBLIC_DOCUMENTS
     docs/releases/v0.3.0.md
     docs/releases/v0.3.1.md
     docs/releases/v0.3.2.md
-    docs/releases/v0.3.3.md)
+    docs/releases/v0.3.3.md
+    docs/releases/v0.3.4.md)
 foreach(module IN LISTS TOOLX_MODULES)
     list(APPEND TOOLX_PUBLIC_DOCUMENTS "docs/modules/${module}.md")
 endforeach()
@@ -254,7 +255,8 @@ foreach(release_note IN ITEMS
         docs/releases/v0.3.0.md
         docs/releases/v0.3.1.md
         docs/releases/v0.3.2.md
-        docs/releases/v0.3.3.md)
+        docs/releases/v0.3.3.md
+        docs/releases/v0.3.4.md)
     foreach(section IN ITEMS
             "## Highlights"
             "## Compatibility"

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 
 namespace schemax
@@ -241,9 +242,12 @@ cfgx::Result<Schema> validate_schema_node(const cfgx::Node& schema, std::string_
 
     for (std::string_view length_key : {"minLength", "maxLength"})
     {
-        if (const auto* value = schema.Get(length_key); value != nullptr && value->Kind() != cfgx::NodeKind::Integer)
+        if (const auto* value = schema.Get(length_key);
+            value != nullptr && (value->Kind() != cfgx::NodeKind::Integer || value->AsInt() < 0 ||
+                                 static_cast<std::uint64_t>(value->AsInt()) > std::numeric_limits<std::size_t>::max()))
         {
-            return compile_error("schema " + std::string(length_key) + " must be an integer at " +
+            return compile_error("schema " + std::string(length_key) +
+                                 " must be a nonnegative representable length at " +
                                  std::string(path.empty() ? "$" : path));
         }
     }
@@ -309,14 +313,18 @@ void validate_node(const cfgx::Node& document, const cfgx::Node& schema, std::st
                 }
             }
         }
+    }
 
+    if (document.IsObject())
+    {
+        const auto* properties = schema.Get("properties");
         if (const auto* additional = schema.Get("additionalProperties");
             additional != nullptr && additional->Kind() == cfgx::NodeKind::Bool && !additional->AsBool())
         {
             const auto* doc_obj = document.TryObject();
             for (const auto& entry : *doc_obj)
             {
-                if (properties->Get(entry.first) == nullptr &&
+                if ((properties == nullptr || properties->Get(entry.first) == nullptr) &&
                     push_issue(issues, options,
                                Issue{append_path(path, entry.first), "additionalProperties",
                                      "additional property is not allowed"}))

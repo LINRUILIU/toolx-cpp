@@ -2,7 +2,7 @@
 
 > Audience: ToolX 维护者与发布负责人
 > Status: Canonical maintainer guide
-> Applies to: `v0.3.3` maintenance cycle
+> Applies to: `v0.3.4` maintenance cycle
 > Source of truth for: 本地质量门禁、打包、发布与维护流程
 
 公开构建要求位于
@@ -45,6 +45,11 @@ cmake --preset dev
 cmake --build --preset dev
 ctest --preset dev
 ```
+
+Visual Studio 等多配置生成器的 build/test preset 同时选择 `Debug`。若改用
+Release，构建使用 `--config Release`，CTest 同时使用 `-C Release`；直接调用
+`ctest --test-dir` 也需要 `-C`。Ninja 等单配置生成器仍由配置时的
+`CMAKE_BUILD_TYPE` 决定构建类型。
 
 文档/展示循环不要求下载 GoogleTest：
 

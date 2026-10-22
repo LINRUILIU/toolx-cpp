@@ -4,7 +4,43 @@ All notable user-visible changes to ToolX are recorded here. Detailed release
 narratives remain under [`docs/releases`](docs/releases/).
 
 > Status: Released
-> Applies to: v0.3.3
+> Applies to: v0.3.4
+
+## [0.3.4] - 2026-10-22
+
+### Fixed
+
+- Preserve JSON Unicode escapes and surrogate pairs without data loss; escape
+  every string control character and reject literal controls and malformed surrogates.
+- Reject archive outputs that alias source data, including dangling paths; honor
+  extraction's `Skip` policy while consuming skipped payload and padding.
+- Reject pack/inspect audit paths, rotation destinations and archive/journal
+  conflicts before writes. Plan and dry-run also validate output separation.
+- Exclusively create download temporary siblings and preserve existing files on
+  failure. Only the final followed response reaches bodies, stream callbacks and
+  progress; apply the effective per-request redirect policy on every hop.
+- Handle bodyless 204/304 responses, empty header blocks and up to 16 informational
+  responses; reject protocol switching.
+- Enforce `additionalProperties:false` without a `properties` block and reject
+  negative or unrepresentable string-length bounds during schema compilation.
+- Dynamically join TaskGroup/task cancellation, classify accepted skipped or
+  discarded work after waiting, and flush all logging routes once per sink.
+- Match multi-config build/test presets at Debug; document matching Release overrides.
+
+### Compatibility and migration
+
+- Public source signatures, thirteen library targets, six CLI products, JSON
+  schemas and default dependency/TLS choices remain unchanged. Rebuild C++ consumers:
+  `CancellationToken` has a changed private layout; ABI compatibility is not promised.
+- Use separate ordinary input, log, archive and journal paths. Existing temporary
+  download files must be inspected before removal or replaced by an unused sibling
+  suffix. Directory components in the suffix and Windows stream paths are rejected.
+- Review corrected Unicode values, stricter JSON/schema acceptance, final-response
+  callback expectations and wait-before-statistics ordering. Running cancellation
+  remains cooperative; a normally returning callback counts as completed.
+- FSXJ4 format and the v0.3.3 recovery migration remain unchanged. Preserve the
+  producing version, journals and dependent witnesses until recovery finishes.
+  See the [v0.3.4 migration notes](docs/releases/v0.3.4.md#migration).
 
 ## [0.3.3] - 2026-10-20
 

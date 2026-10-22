@@ -54,6 +54,12 @@ backslashes remain separators and drive-qualified paths remain rejected.
 `--remove-extra` deletes stage paths outside the selected source set. `plan` and
 `--dry-run` do not create or modify stage, archive, journal or log outputs.
 
+The v0.3.4 maintenance release rejects audit/archive/journal paths
+that alias protected source, stage or manifest data, and rejects archive/journal
+collisions before logging or staging writes. Audit rotation destinations are
+included. Use separate ordinary files; conflicts are usage error `2`. Archive
+creation also refuses an output that aliases its source, including source entries.
+
 ## Example manifest
 
 ```json

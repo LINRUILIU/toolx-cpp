@@ -2,7 +2,7 @@
 
 > Audience: C++ applications requiring bounded asynchronous work
 > Status: Stable core module guide
-> Applies to: `v0.3.2` release
+> Applies to: `v0.3.4` release
 > Source of truth for: intended `asyncx` use and public API grouping
 
 ## Role and boundary
@@ -50,6 +50,10 @@ pool.StopAndJoin(asyncx::StopMode::Drain);
 - Deadlines limit queue/wait operations and do not preempt already running work.
 - Cancellation tokens are thread-safe flags but cancellation-aware tasks must
   poll them.
+- The v0.3.4 maintenance release dynamically joins the TaskGroup and
+  per-task cancellation sources. Wait operations classify every accepted task,
+  including work skipped or discarded by the pool; query final group counts after
+  waiting. A running callback that returns normally still counts as completed.
 - A `ThreadPool` and `TaskGroup` are non-copyable. Futures remain caller-owned.
 
 ## Stability, compatibility, examples, and version changes

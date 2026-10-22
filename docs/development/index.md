@@ -15,6 +15,7 @@
 - [CLI 产品准入清单](cli-productization.md)
 - [根目录开发日志](../../README.dev.md)
 - [公开路线图](../roadmap.md)
+- [v0.3.4 维护发布、消费者重编与兼容迁移](../releases/v0.3.4.md)
 - [v0.3.3 维护发布与兼容迁移](../releases/v0.3.3.md)
 
 ## 审计材料

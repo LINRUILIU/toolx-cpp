@@ -73,10 +73,11 @@ behavior. When a safety or correctness fix requires a visible behavior change:
   called out in the changelog.
 - New CLI products do not enter the install set until they satisfy the internal
   productization checklist.
-- The current release is `v0.3.3`; its compatibility and behavior changes are
+- The current release is `v0.3.4`; its compatibility and behavior changes are
   recorded in the version-specific release notes.
-- The `v0.3.3` maintenance release includes explicit correctness exceptions
-  and recovery-format migration requirements in its [release notes](releases/v0.3.3.md).
+- The `v0.3.4` maintenance release documents correctness exceptions and consumer
+  rebuild requirements in its [release notes](releases/v0.3.4.md). The FSXJ4
+  recovery-format migration introduced by [v0.3.3](releases/v0.3.3.md) still applies.
 
 See [Architecture](architecture.md), [Build and compatibility](build-and-compatibility.md),
 and [Dependencies](dependencies.md) for boundaries outside API stability.

@@ -2,7 +2,7 @@
 
 > Audience: configuration publishers and automation users
 > Status: Bounded-stable CLI specification
-> Applies to: the `0.3.x` released baseline through v0.3.3
+> Applies to: the `0.3.x` released baseline through v0.3.4
 > Source of truth for: `toolx-sync` composition, publish and output contract
 
 `toolx-sync` composes a required base, an optional remote layer, and zero or

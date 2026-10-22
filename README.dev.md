@@ -2,7 +2,7 @@
 
 > Audience: ToolX 维护者与贡献者
 > Status: Current development and retained release-cycle summary
-> Applies to: v0.3.3 维护发布与保留的 `v0.3.2` 周期
+> Applies to: v0.3.4 维护发布与保留的 `v0.3.2` 周期
 > Source of truth for: 维护发行入口、v0.3.2 周期总结与阶段性工程记录
 
 本文件只记录开发主线、阶段性结论和进一步阅读入口。稳定的用户说明位于
@@ -12,9 +12,11 @@
 
 ## 当前开发
 
-当前按 [v0.3.3 维护版本](docs/releases/v0.3.3.md)收口：按风险修复既有契约，
-整理兼容迁移与短自动化资料。历史 v0.4 研究标签、审计正文和冻结证据
-保留原样；本次维护发行使用最终提交的门禁证据，不能将旧验证重标。
+当前按 [v0.3.4 维护版本](docs/releases/v0.3.4.md)收口：修复 JSON 数据保留、
+归档与下载副作用、HTTP 正文与每跳重定向策略、schema、TaskGroup 和日志刷新契约。
+本轮不扩张公共源码 API、十三库六 CLI 或默认依赖/TLS 边界；C++ 消费者需要重编。
+历史 v0.3.3 归档与 v0.4 研究标签、审计正文和冻结证据保留原样。
+本次发行结果以最终提交的 CI、安装与归档记录为准；仍在运行的检查不能记作通过。
 
 已有[契约审查与本地验证](docs/development/audits/v0.4-contract-update.md)和
 [Caddy AI 使用观察](docs/development/audits/v0.4-caddy-ai-observation.md)没有证明

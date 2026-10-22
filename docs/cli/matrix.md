@@ -2,7 +2,7 @@
 
 > Audience: automation authors and maintainers
 > Status: Canonical cross-product specification
-> Applies to: the `0.3.x` released baseline through v0.3.3
+> Applies to: the `0.3.x` released baseline through v0.3.4
 > Source of truth for: CLI comparison, side effects, precedence and implicit behavior
 
 ## Global rules
@@ -43,6 +43,13 @@ exception and migration policy; they do not create a common task protocol.
 | `toolx-http check` | URL/manifest/body file | Optional audit log | Not available |
 | `toolx-log summarize` | Log files/manifest | Optional audit log | Not available |
 | `toolx-inspect report/render/run` | Config/schema/manifest | Optional audit log | Not available |
+
+The v0.3.4 maintenance release rejects pack/inspect audit paths that
+alias or overlap protected business paths, including rotation destinations;
+pack also isolates archive and journal outputs. These usage errors (`2`) occur
+before logger initialization or business writes. Separate log destinations retain
+their optional write behavior. See the
+[compatibility notes](../releases/v0.3.4.md#migration).
 
 ## Exit and schema matrix
 

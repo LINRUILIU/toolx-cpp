@@ -108,12 +108,54 @@ CancellationToken::CancellationToken(std::shared_ptr<std::atomic_bool> state) : 
 
 bool CancellationToken::IsCancellationRequested() const noexcept
 {
-    return state_ != nullptr && state_->load(std::memory_order_relaxed);
+    if (state_ != nullptr && state_->load(std::memory_order_relaxed))
+    {
+        return true;
+    }
+    if (linked_states_ != nullptr)
+    {
+        for (const auto& state : *linked_states_)
+        {
+            if (state->load(std::memory_order_relaxed))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 bool CancellationToken::CanBeCancelled() const noexcept
 {
-    return state_ != nullptr;
+    return state_ != nullptr || linked_states_ != nullptr;
+}
+
+CancellationToken CancellationToken::Join(const CancellationToken& first, const CancellationToken& second)
+{
+    if (!first.CanBeCancelled())
+    {
+        return second;
+    }
+    if (!second.CanBeCancelled())
+    {
+        return first;
+    }
+
+    auto states = std::make_shared<std::vector<std::shared_ptr<std::atomic_bool>>>();
+    for (const auto* token : {&first, &second})
+    {
+        if (token->state_ != nullptr)
+        {
+            states->push_back(token->state_);
+        }
+        if (token->linked_states_ != nullptr)
+        {
+            states->insert(states->end(), token->linked_states_->begin(), token->linked_states_->end());
+        }
+    }
+    CancellationToken joined;
+    joined.linked_states_ = std::move(states);
+    return joined;
 }
 
 CancellationSource::CancellationSource() : state_(std::make_shared<std::atomic_bool>(false)) {}
@@ -965,48 +1007,29 @@ Status TaskGroup::Submit(TaskOptions options, std::function<void(CancellationTok
         return MakeErrorStatus(ErrorKind::Cancelled, "task group is cancelled");
     }
 
-    const CancellationToken group_token = source_.Token();
-    const CancellationToken user_token = options.cancellation;
-    if (!options.cancellation.CanBeCancelled())
-    {
-        options.cancellation = group_token;
-    }
+    const CancellationToken token = CancellationToken::Join(source_.Token(), options.cancellation);
+    options.cancellation = token;
 
-    std::promise<void> promise;
-    std::future<void> future = promise.get_future();
-    auto shared_promise = std::make_shared<std::promise<void>>(std::move(promise));
+    std::promise<TaskOutcome> promise;
+    std::future<TaskOutcome> future = promise.get_future();
+    auto shared_promise = std::make_shared<std::promise<TaskOutcome>>(std::move(promise));
 
-    auto wrapped =
-        [this, shared_promise, group_token, user_token, task = std::move(task)](const CancellationToken& token) mutable
+    auto wrapped = [shared_promise, task = std::move(task)](const CancellationToken& task_token) mutable
     {
-        const bool cancelled = group_token.IsCancellationRequested() || user_token.IsCancellationRequested() ||
-                               token.IsCancellationRequested();
-        if (cancelled)
+        if (task_token.IsCancellationRequested())
         {
-            {
-                std::lock_guard<sysx::sync::Mutex> lock(mu_);
-                ++stats_.cancelled;
-            }
-            shared_promise->set_value();
+            shared_promise->set_value(TaskOutcome::Cancelled);
             return;
         }
 
         try
         {
-            task(group_token);
-            {
-                std::lock_guard<sysx::sync::Mutex> lock(mu_);
-                ++stats_.completed;
-            }
-            shared_promise->set_value();
+            task(task_token);
+            shared_promise->set_value(TaskOutcome::Completed);
         }
         catch (...)
         {
-            {
-                std::lock_guard<sysx::sync::Mutex> lock(mu_);
-                ++stats_.failed;
-            }
-            shared_promise->set_exception(std::current_exception());
+            shared_promise->set_value(TaskOutcome::Failed);
         }
     };
 
@@ -1029,9 +1052,41 @@ void TaskGroup::Cancel() noexcept
     source_.Cancel();
 }
 
+void TaskGroup::RecordOutcome(std::future<TaskOutcome> future)
+{
+    TaskOutcome outcome = TaskOutcome::Cancelled;
+    try
+    {
+        outcome = future.get();
+    }
+    catch (const std::future_error& error)
+    {
+        // Skipped or discarded queued tasks destroy their promise without
+        // invoking the group wrapper. Every accepted task still has an outcome.
+        if (error.code() != std::make_error_code(std::future_errc::broken_promise))
+        {
+            outcome = TaskOutcome::Failed;
+        }
+    }
+
+    std::lock_guard<sysx::sync::Mutex> lock(mu_);
+    switch (outcome)
+    {
+    case TaskOutcome::Completed:
+        ++stats_.completed;
+        break;
+    case TaskOutcome::Cancelled:
+        ++stats_.cancelled;
+        break;
+    case TaskOutcome::Failed:
+        ++stats_.failed;
+        break;
+    }
+}
+
 Status TaskGroup::Wait()
 {
-    std::vector<std::future<void>> local;
+    std::vector<std::future<TaskOutcome>> local;
     {
         std::lock_guard<sysx::sync::Mutex> lock(mu_);
         local.swap(futures_);
@@ -1039,26 +1094,20 @@ Status TaskGroup::Wait()
 
     for (auto& future : local)
     {
-        try
-        {
-            future.get();
-        }
-        catch (...) // NOLINT(bugprone-empty-catch): failure is recorded by the task wrapper.
-        {
-        }
+        RecordOutcome(std::move(future));
     }
     return OkStatus();
 }
 
 Status TaskGroup::WaitUntil(std::chrono::steady_clock::time_point deadline)
 {
-    std::vector<std::future<void>> local;
+    std::vector<std::future<TaskOutcome>> local;
     {
         std::lock_guard<sysx::sync::Mutex> lock(mu_);
         local.swap(futures_);
     }
 
-    std::vector<std::future<void>> pending;
+    std::vector<std::future<TaskOutcome>> pending;
     for (auto& future : local)
     {
         const auto now = sysx::time::SteadyNow();
@@ -1073,13 +1122,7 @@ Status TaskGroup::WaitUntil(std::chrono::steady_clock::time_point deadline)
             pending.push_back(std::move(future));
             continue;
         }
-        try
-        {
-            future.get();
-        }
-        catch (...) // NOLINT(bugprone-empty-catch): failure is recorded by the task wrapper.
-        {
-        }
+        RecordOutcome(std::move(future));
     }
 
     if (!pending.empty())

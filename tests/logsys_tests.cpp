@@ -38,7 +38,61 @@ class MemorySink final : public logsys::ISink
 
     std::vector<std::string> lines;
 };
+
+class FlushCountingSink final : public logsys::ISink
+{
+  public:
+    void Write(const std::string&) override
+    {
+        ++writes;
+    }
+
+    void Flush() override
+    {
+        ++flushes;
+    }
+
+    std::atomic<unsigned> writes{0};
+    std::atomic<unsigned> flushes{0};
+};
 } // namespace
+
+TEST(LoggerTests, FlushIncludesLevelOnlySinksAndDeduplicatesSharedRoutes)
+{
+    auto& logger = logsys::Logger::Instance();
+    logger.ConfigureSimpleLogger(logsys::LogLevel::Trace, false, false, "", logsys::LogLevel::Trace);
+    logger.SetFlushOnFatal(false);
+    auto error_sink = std::make_shared<FlushCountingSink>();
+    auto fatal_sink = std::make_shared<FlushCountingSink>();
+    auto info_sink = std::make_shared<FlushCountingSink>();
+    auto default_sink = std::make_shared<FlushCountingSink>();
+    auto shared_sink = std::make_shared<FlushCountingSink>();
+    logger.AddLevelSink(logsys::LogLevel::Error, error_sink);
+    logger.AddLevelSink(logsys::LogLevel::Fatal, fatal_sink);
+    logger.AddLevelSink(logsys::LogLevel::Info, info_sink);
+    logger.AddDefaultSink(default_sink);
+    logger.AddDefaultSink(shared_sink);
+    logger.AddLevelSink(logsys::LogLevel::Error, shared_sink);
+    logger.AddLevelSink(logsys::LogLevel::Fatal, shared_sink);
+    for (const auto level : {logsys::LogLevel::Info, logsys::LogLevel::Error, logsys::LogLevel::Fatal})
+    {
+        logsys::LogEvent event;
+        event.level = level;
+        event.message = "flush routing regression";
+        logger.Enqueue(std::move(event));
+    }
+    logger.Flush();
+    EXPECT_EQ(error_sink->writes.load(), 1u);
+    EXPECT_EQ(fatal_sink->writes.load(), 1u);
+    EXPECT_EQ(info_sink->writes.load(), 1u);
+    EXPECT_EQ(default_sink->writes.load(), 3u);
+    EXPECT_EQ(error_sink->flushes.load(), 1u);
+    EXPECT_EQ(fatal_sink->flushes.load(), 1u);
+    EXPECT_EQ(info_sink->flushes.load(), 1u);
+    EXPECT_EQ(default_sink->flushes.load(), 1u);
+    EXPECT_EQ(shared_sink->flushes.load(), 1u);
+    logger.ConfigureSimpleLogger();
+}
 
 TEST(LoggerTests, CounterByCodeAndCategory)
 {

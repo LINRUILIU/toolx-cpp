@@ -2587,7 +2587,17 @@ void Logger::Flush()
     {
         std::lock_guard<std::mutex> lk(mu_);
         FlushGroupedOutputsLocked();
-        sinks = router_.Resolve(LogLevel::Info);
+        for (const auto level : {LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warning, LogLevel::Error,
+                                 LogLevel::Fatal, LogLevel::Critical})
+        {
+            for (const auto& sink : router_.Resolve(level))
+            {
+                if (sink && std::find(sinks.begin(), sinks.end(), sink) == sinks.end())
+                {
+                    sinks.push_back(sink);
+                }
+            }
+        }
     }
     for (const auto& sink : sinks)
     {

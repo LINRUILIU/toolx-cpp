@@ -827,6 +827,205 @@ cfgx::Node BuildData(const PackConfig& config, const PackPlan& plan, std::size_t
     });
 }
 
+bool PackPathsOverlap(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+{
+    auto left = lhs.begin();
+    auto right = rhs.begin();
+    for (; left != lhs.end() && right != rhs.end(); ++left, ++right)
+    {
+#if defined(_WIN32)
+        if (CompareStringOrdinal(left->native().c_str(), -1, right->native().c_str(), -1, TRUE) != CSTR_EQUAL)
+#else
+        if (*left != *right)
+#endif
+            return false;
+    }
+    return true;
+}
+
+bool ResolvePackBoundaryPath(const std::filesystem::path& path, std::filesystem::path* resolved, std::string* error)
+{
+    std::error_code ec;
+    const auto absolute = std::filesystem::absolute(path, ec);
+    if (ec)
+    {
+        *error = ec.message();
+        return false;
+    }
+
+    // weakly_canonical leaves dangling links in its nonexistent suffix. Do not
+    // treat those as ordinary new paths that logging could later follow.
+    auto prefix = absolute.root_path();
+    bool missing_component = false;
+#if defined(_WIN32)
+    const bool extended_root = absolute.root_name().native() == L"\\\\?";
+    bool first_component = true;
+#endif
+    for (const auto& component : absolute.relative_path())
+    {
+#if defined(_WIN32)
+        const auto& native = component.native();
+        const bool extended_drive =
+            first_component && extended_root && native.size() == 2 && native[1] == L':' &&
+            ((native[0] >= L'A' && native[0] <= L'Z') || (native[0] >= L'a' && native[0] <= L'z'));
+        first_component = false;
+        if (extended_drive)
+        {
+            // MSVC exposes this designator as a relative component. Append it
+            // literally: operator/= would replace the extended root with D:.
+            prefix += native;
+            prefix += std::filesystem::path::preferred_separator;
+            continue;
+        }
+        // A stream spelling can alias a file before either entry exists.
+        if (native.find(L':') != std::filesystem::path::string_type::npos)
+        {
+            *error = "Windows stream paths are unsupported for pack outputs: " + path.string();
+            return false;
+        }
+#endif
+        if (missing_component && component == "..")
+        {
+            // Publishing may create the missing directory before FileSink
+            // retries opening its original path, exposing a previously hidden link.
+            *error = "cannot confirm parent traversal after a missing path component: " + path.string();
+            return false;
+        }
+        prefix /= component;
+        const auto link_status = std::filesystem::symlink_status(prefix, ec);
+        if (ec == std::errc::no_such_file_or_directory ||
+            (!ec && link_status.type() == std::filesystem::file_type::not_found))
+        {
+            missing_component = true;
+            ec.clear();
+            continue;
+        }
+        if (ec)
+        {
+            *error = "cannot inspect path component " + prefix.string() + ": " + ec.message();
+            return false;
+        }
+        if (std::filesystem::is_symlink(link_status))
+        {
+            const auto target_status = std::filesystem::status(prefix, ec);
+            if (ec || !std::filesystem::exists(target_status) ||
+                target_status.type() == std::filesystem::file_type::unknown)
+            {
+                *error = "cannot confirm symbolic link target: " + prefix.string();
+                return false;
+            }
+        }
+    }
+
+    *resolved = std::filesystem::weakly_canonical(absolute, ec).lexically_normal();
+    if (ec)
+    {
+        *error = ec.message();
+        return false;
+    }
+    return true;
+}
+
+bool ValidateOutputPaths(const PackConfig& config, std::string* error)
+{
+    struct OutputPath
+    {
+        std::string name;
+        fs::path path;
+        fs::path resolved;
+    };
+    std::vector<OutputPath> outputs;
+    auto add_output = [&](const std::string& name, const std::string& value)
+    {
+        if (value.empty())
+            return true;
+        OutputPath output{name, fs::path(value), {}};
+        if (!ResolvePackBoundaryPath(output.path, &output.resolved, error))
+        {
+            *error = "cannot resolve " + name + ": " + *error;
+            return false;
+        }
+        outputs.push_back(std::move(output));
+        return true;
+    };
+    if (!add_output("archive", config.archive) || !add_output("journal", config.journal) ||
+        !add_output("log-file", config.log_file))
+        return false;
+    const auto rolling = logsys::Logger::Instance().CurrentConfigV2().rolling;
+    if (!config.log_file.empty() && rolling.enabled && rolling.max_file_size_bytes > 0)
+    {
+        for (std::size_t i = 0; i < rolling.keep_recent_files; ++i)
+            if (!add_output("log rotation", config.log_file + "." + std::to_string(i + 1)))
+                return false;
+    }
+    auto same_file = [](const fs::path& lhs, const fs::path& rhs)
+    {
+        std::error_code ec;
+        return fs::equivalent(lhs, rhs, ec) && !ec;
+    };
+    for (std::size_t i = 0; i < outputs.size(); ++i)
+    {
+        const auto& output = outputs[i];
+        for (std::size_t j = 0; j < i; ++j)
+        {
+            if (PackPathsOverlap(output.resolved, outputs[j].resolved) || same_file(output.path, outputs[j].path))
+            {
+                *error = output.name + " overlaps " + outputs[j].name;
+                return false;
+            }
+        }
+        for (const auto& input : {config.source, config.stage, config.manifest})
+        {
+            if (input.empty())
+                continue;
+            fs::path resolved;
+            if (!ResolvePackBoundaryPath(fs::path(input), &resolved, error))
+                return false;
+            if (PackPathsOverlap(output.resolved, resolved) || same_file(output.path, fs::path(input)))
+            {
+                *error = output.name + " overlaps an input or stage path: " + input;
+                return false;
+            }
+        }
+    }
+    // Canonical ancestors catch path aliases. Existing hard links can also
+    // alias source/stage members from outside either tree, including entries
+    // excluded from this particular stage selection.
+    for (const auto& tree : {config.source, config.stage})
+    {
+        if (tree.empty() || outputs.empty())
+            continue;
+        std::error_code ec;
+        const bool exists = fs::exists(tree, ec);
+        if (ec)
+        {
+            *error = "cannot inspect protected tree: " + ec.message();
+            return false;
+        }
+        if (!exists)
+            continue;
+        fs::recursive_directory_iterator it(tree, ec), end;
+        while (!ec && it != end)
+        {
+            for (const auto& output : outputs)
+            {
+                if (same_file(output.path, it->path()))
+                {
+                    *error = output.name + " aliases an input or stage member: " + it->path().string();
+                    return false;
+                }
+            }
+            it.increment(ec);
+        }
+        if (ec)
+        {
+            *error = "cannot inspect protected tree: " + ec.message();
+            return false;
+        }
+    }
+    return true;
+}
+
 void ConfigureLogging(const std::string& log_file)
 {
     logsys::DefaultLoggerOptions options;
@@ -859,6 +1058,10 @@ int RunStage(const PackConfig& config, bool json_mode)
     {
         return ExitError(json_mode, kExitNotFound, plan.error);
     }
+
+    std::string boundary_error;
+    if (!ValidateOutputPaths(config, &boundary_error))
+        return ExitError(json_mode, kExitUsageError, boundary_error);
 
     std::vector<std::string> warnings;
     if (config.dry_run)
@@ -973,6 +1176,10 @@ int RunArchive(PackConfig config, bool json_mode)
         plan.files.push_back(SelectedFile{entry.path, PathString(source_file), entry.path, size});
     }
     plan.planned_steps.push_back(PlannedStep{"create_archive", config.source, config.archive});
+
+    std::string boundary_error;
+    if (!ValidateOutputPaths(config, &boundary_error))
+        return ExitError(json_mode, kExitUsageError, boundary_error);
 
     std::vector<std::string> warnings;
     if (config.dry_run)

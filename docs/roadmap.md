@@ -2,22 +2,22 @@
 
 > Audience: users and maintainers
 > Status: Active direction, not a release promise
-> Applies to: `v0.3.3` maintenance release and later evidence-led work
+> Applies to: `v0.3.4` maintenance release and later evidence-led work
 > Source of truth for: current product direction and deferred scope
 
-## Now — maintain v0.3.3
+## Now — maintain v0.3.4
 
-`v0.3.3` is a maintenance release. It repairs composition, failure-reporting, replacement and recovery
-contracts and improves the [automation guide](automation.md). The six CLIs and
-thirteen library targets remain the product set. See the
-[release notes](releases/v0.3.3.md) for visible corrections, migration costs and
-release status. `v0.4` remains subject to the product admission gate below.
+`v0.3.4` repairs JSON data preservation, archive/download output isolation, HTTP
+response handling and per-hop redirect policy, supported schema enforcement,
+TaskGroup cancellation/outcomes and logging flush. The six CLIs and thirteen
+library targets remain the product set. See the
+[release notes](releases/v0.3.4.md) for corrections, rebuild requirements and
+migration guidance. This maintenance release does not revive stopped v0.4 work.
 
-Maintenance includes accurate layer traces, ordered overlays, finite-number and
-path-index checks, retained failure and rollback facts, native single-target
-replacement, FSXJ4 recovery and logging-path isolation. These fixes do not establish
-lower model adoption or verification costs. FSXJ4 has a real recovery-version,
-storage and I/O cost; the [filesystem guide](modules/fsx.md) defines it.
+The v0.3.3 composition, failure-reporting, native replacement and FSXJ4 recovery
+repairs remain part of the maintained baseline. FSXJ4 retains its recovery-version,
+storage and I/O costs; the [filesystem guide](modules/fsx.md) defines them.
+No measured AI adoption or verification-cost benefit is claimed.
 
 Keep existing platform, installation, archive, coverage, TLS and documentation
 gates. Historical local passes and observation binaries cannot substitute for

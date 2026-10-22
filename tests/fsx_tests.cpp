@@ -146,7 +146,7 @@ void WriteOctal(char* field, std::size_t width, std::uintmax_t value)
     std::snprintf(field, width, "%0*llo", static_cast<int>(width - 1), static_cast<unsigned long long>(value));
 }
 
-void WriteTarWithSingleEntry(const std::filesystem::path& archive, const std::string& name, const std::string& payload)
+void WriteTarEntry(std::ostream& out, const std::string& name, const std::string& payload, bool directory = false)
 {
     std::array<char, 512> header{};
     std::memcpy(header.data(), name.data(), std::min<std::size_t>(name.size(), 100));
@@ -156,7 +156,7 @@ void WriteTarWithSingleEntry(const std::filesystem::path& archive, const std::st
     WriteOctal(header.data() + 124, 12, payload.size());
     WriteOctal(header.data() + 136, 12, 0);
     std::memset(header.data() + 148, ' ', 8);
-    header[156] = '0';
+    header[156] = directory ? '5' : '0';
     std::memcpy(header.data() + 257, "ustar", 5);
     std::memcpy(header.data() + 263, "00", 2);
 
@@ -169,7 +169,6 @@ void WriteTarWithSingleEntry(const std::filesystem::path& archive, const std::st
     header[154] = '\0';
     header[155] = ' ';
 
-    std::ofstream out(archive, std::ios::binary | std::ios::trunc);
     out.write(header.data(), static_cast<std::streamsize>(header.size()));
     out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
     const std::size_t padding = (512 - (payload.size() % 512)) % 512;
@@ -178,7 +177,13 @@ void WriteTarWithSingleEntry(const std::filesystem::path& archive, const std::st
     {
         out.write(zeros.data(), static_cast<std::streamsize>(padding));
     }
-    out.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+}
+
+void WriteTarWithSingleEntry(const std::filesystem::path& archive, const std::string& name, const std::string& payload)
+{
+    std::ofstream out(archive, std::ios::binary | std::ios::trunc);
+    WriteTarEntry(out, name, payload);
+    std::array<char, 1024> zeros{};
     out.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
 }
 
@@ -1870,6 +1875,181 @@ TEST(FsxTests, TarArchiveCreateAndExtractRoundTrip)
 
     EXPECT_EQ(ReadText(out / "a.txt"), "alpha");
     EXPECT_EQ(ReadText(out / "nested" / "b.txt"), "beta");
+}
+
+TEST(FsxTests, ArchiveRejectsSourceOutputOverlapBeforeCreatingAnything)
+{
+    const auto root = TestRoot() / "tar_source_overlap";
+    const auto src = root / "src";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(src / "a.txt", "SOURCE-SENTINEL");
+
+    for (const auto& source : {src, src / "a.txt"})
+    {
+        const auto result = fsx::CreateArchive(source.string(), (src / "a.txt").string());
+        EXPECT_FALSE(result.ok);
+        EXPECT_NE(result.error.find("overlaps"), std::string::npos) << result.error;
+        EXPECT_EQ(ReadText(src / "a.txt"), "SOURCE-SENTINEL");
+    }
+    const auto nested_archive = src / "not-created" / "bundle.tar";
+    EXPECT_FALSE(fsx::CreateArchive(src.string(), nested_archive.string()).ok);
+    EXPECT_FALSE(std::filesystem::exists(src / "not-created"));
+    EXPECT_EQ(ReadText(src / "a.txt"), "SOURCE-SENTINEL");
+
+    ASSERT_TRUE(fsx::CreateArchive(src.string(), (root / "outside" / "bundle.tar").string()).ok);
+    ASSERT_TRUE(fsx::ExtractArchive((root / "outside" / "bundle.tar").string(), (root / "unpacked").string()).ok);
+    EXPECT_EQ(ReadText(root / "unpacked" / "a.txt"), "SOURCE-SENTINEL");
+    EXPECT_EQ(ReadText(src / "a.txt"), "SOURCE-SENTINEL");
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, ArchiveRejectsExternalHardLinkToSourceMember)
+{
+    const auto root = TestRoot() / "tar_source_hardlink";
+    const auto src = root / "src";
+    const auto archive = root / "alias.tar";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(src / "a.txt", "SOURCE-SENTINEL");
+    std::filesystem::create_hard_link(src / "a.txt", archive, ec);
+    if (ec)
+        GTEST_SKIP() << "hard links unavailable: " << ec.message();
+    for (const auto& source : {src, src / "a.txt"})
+    {
+        EXPECT_FALSE(fsx::CreateArchive(source.string(), archive.string()).ok);
+        EXPECT_EQ(ReadText(archive), "SOURCE-SENTINEL");
+        EXPECT_EQ(ReadText(src / "a.txt"), "SOURCE-SENTINEL");
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+#if !defined(_WIN32)
+TEST(FsxTests, ArchiveRejectsDanglingOutputLinkBeforeCreatingSourceMember)
+{
+    const auto root = TestRoot() / "tar_dangling_output";
+    const auto src = root / "src";
+    const auto output = root / "output.tar";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(src / "a.txt", "SOURCE-SENTINEL");
+    std::filesystem::create_symlink(src / "new.tar", output, ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    const auto result = fsx::CreateArchive(src.string(), output.string());
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error.find("link"), std::string::npos) << result.error;
+    EXPECT_FALSE(std::filesystem::exists(src / "new.tar"));
+    EXPECT_TRUE(std::filesystem::is_symlink(output));
+    EXPECT_EQ(ReadText(src / "a.txt"), "SOURCE-SENTINEL");
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, ArchiveRejectsDanglingOutputParentWithoutCreatingDirectories)
+{
+    const auto root = TestRoot() / "tar_dangling_parent";
+    const auto src = root / "src";
+    const auto link = root / "linked-parent";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(src / "a.txt", "SOURCE-SENTINEL");
+    std::filesystem::create_directory_symlink(src / "not-created", link, ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    EXPECT_FALSE(fsx::CreateArchive(src.string(), (link / "nested" / "bundle.tar").string()).ok);
+    EXPECT_FALSE(std::filesystem::exists(src / "not-created"));
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(ReadText(src / "a.txt"), "SOURCE-SENTINEL");
+
+    const auto ordinary = root / "ordinary" / "bundle.tar";
+    ASSERT_TRUE(fsx::CreateArchive(src.string(), ordinary.string()).ok);
+    ASSERT_TRUE(fsx::ExtractArchive(ordinary.string(), (root / "unpacked").string()).ok);
+    EXPECT_EQ(ReadText(root / "unpacked" / "a.txt"), "SOURCE-SENTINEL");
+    std::filesystem::remove_all(root, ec);
+}
+#endif
+
+TEST(FsxTests, ExtractArchiveConflictPoliciesConsumeSkippedPayloadAndPadding)
+{
+    const auto root = TestRoot() / "tar_skip_payload";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root);
+    const auto archive = root / "input.tar";
+    const std::string payload(702, 'A');
+    {
+        std::ofstream out(archive, std::ios::binary);
+        WriteTarEntry(out, "a.txt", payload);
+        WriteTarEntry(out, "b.txt", "SECOND");
+        std::array<char, 1024> zeros{};
+        out.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+    }
+    for (const auto policy : {fsx::ConflictPolicy::Skip, fsx::ConflictPolicy::Fail, fsx::ConflictPolicy::Overwrite})
+    {
+        for (const bool existing_directory : {false, true})
+        {
+            const auto dest = root / (std::string(fsx::ToString(policy)) + (existing_directory ? "_dir" : "_file"));
+            if (existing_directory)
+                WriteText(dest / "a.txt" / "keep", "OLD");
+            else
+                WriteText(dest / "a.txt", "OLD");
+            fsx::ArchiveOptions options;
+            options.conflict_policy = policy;
+            const auto result = fsx::ExtractArchive(archive.string(), dest.string(), options);
+            EXPECT_EQ(result.ok, policy != fsx::ConflictPolicy::Fail) << result.error;
+            if (policy == fsx::ConflictPolicy::Overwrite)
+                EXPECT_EQ(ReadText(dest / "a.txt"), payload);
+            else
+                EXPECT_EQ(ReadText(existing_directory ? dest / "a.txt" / "keep" : dest / "a.txt"), "OLD");
+            if (policy == fsx::ConflictPolicy::Fail)
+                EXPECT_FALSE(std::filesystem::exists(dest / "b.txt"));
+            else
+                EXPECT_EQ(ReadText(dest / "b.txt"), "SECOND");
+        }
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, ExtractArchiveDirectoryTypeConflictsFollowPolicy)
+{
+    const auto root = TestRoot() / "tar_skip_directory";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root);
+    const auto archive = root / "input.tar";
+    {
+        std::ofstream out(archive, std::ios::binary);
+        WriteTarEntry(out, "dir/", "", true);
+        WriteTarEntry(out, "dir/child", std::string(702, 'C'));
+        WriteTarEntry(out, "b.txt", "SECOND");
+        std::array<char, 1024> zeros{};
+        out.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+    }
+    for (const auto policy : {fsx::ConflictPolicy::Skip, fsx::ConflictPolicy::Fail, fsx::ConflictPolicy::Overwrite})
+    {
+        const auto dest = root / fsx::ToString(policy);
+        WriteText(dest / "dir", "OLD FILE");
+        fsx::ArchiveOptions options;
+        options.conflict_policy = policy;
+        const auto result = fsx::ExtractArchive(archive.string(), dest.string(), options);
+        EXPECT_EQ(result.ok, policy != fsx::ConflictPolicy::Fail) << result.error;
+        if (policy == fsx::ConflictPolicy::Overwrite)
+            EXPECT_EQ(ReadText(dest / "dir" / "child"), std::string(702, 'C'));
+        else
+            EXPECT_EQ(ReadText(dest / "dir"), "OLD FILE");
+        if (policy == fsx::ConflictPolicy::Fail)
+            EXPECT_FALSE(std::filesystem::exists(dest / "b.txt"));
+        else
+            EXPECT_EQ(ReadText(dest / "b.txt"), "SECOND");
+    }
+    const auto merge = root / "existing-dir";
+    WriteText(merge / "dir" / "keep", "KEEP");
+    fsx::ArchiveOptions skip;
+    skip.conflict_policy = fsx::ConflictPolicy::Skip;
+    EXPECT_TRUE(fsx::ExtractArchive(archive.string(), merge.string(), skip).ok);
+    EXPECT_EQ(ReadText(merge / "dir" / "keep"), "KEEP");
+    EXPECT_EQ(ReadText(merge / "dir" / "child"), std::string(702, 'C'));
+    std::filesystem::remove_all(root, ec);
 }
 
 TEST(FsxTests, ExtractArchiveRejectsTraversalEntry)

@@ -37,6 +37,11 @@ Manifest fields are `file`, `schema`, `format`, `path`, `contains`,
 `max_paths`, `max_issues`, `focus`, `width`, `height`, and `allow_issues`.
 Unknown fields fail validation.
 
+The v0.3.4 maintenance release checks audit paths before initializing
+logging: the main log and its rotation archives must not alias or overlap config,
+schema or manifest inputs. Conflicts return usage error `2` without changing those
+inputs. Unresolved link components and Windows stream paths are also refused.
+
 ## Contract
 
 | Exit | Meaning |

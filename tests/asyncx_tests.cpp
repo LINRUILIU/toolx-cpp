@@ -870,3 +870,132 @@ TEST(AsyncxTests, PostWithOptionsHonorsPreCancelledToken)
 
     EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::Drain).ok);
 }
+
+TEST(AsyncxTests, TaskGroupCountsAcceptedQueuedCancellationFromEverySource)
+{
+    enum class CancelMode
+    {
+        Group,
+        GroupWithUserToken,
+        User,
+        Pool,
+    };
+    for (const auto mode : {CancelMode::Group, CancelMode::GroupWithUserToken, CancelMode::User, CancelMode::Pool})
+    {
+        SCOPED_TRACE(static_cast<int>(mode));
+        asyncx::PoolOptions options;
+        options.worker_count = 1;
+        options.queue_capacity = 4;
+        asyncx::ThreadPool pool(options);
+        std::promise<void> started_promise;
+        auto started = started_promise.get_future();
+        std::promise<void> release_promise;
+        auto release = release_promise.get_future().share();
+        ASSERT_TRUE(pool.Post(
+                            [&started_promise, release]()
+                            {
+                                started_promise.set_value();
+                                (void)release.wait_for(std::chrono::seconds(2));
+                            })
+                        .ok);
+        ASSERT_EQ(started.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+
+        asyncx::TaskGroup group(pool);
+        asyncx::CancellationSource user;
+        asyncx::TaskOptions task_options;
+        if (mode != CancelMode::Group)
+        {
+            task_options.cancellation = user.Token();
+        }
+        std::atomic<bool> ran{false};
+        ASSERT_TRUE(group.Submit(task_options, [&ran](asyncx::CancellationToken) { ran = true; }).ok);
+        if (mode == CancelMode::Group || mode == CancelMode::GroupWithUserToken)
+        {
+            group.Cancel();
+        }
+        else if (mode == CancelMode::User)
+        {
+            user.Cancel();
+        }
+        else
+        {
+            ASSERT_TRUE(pool.Stop(asyncx::StopMode::CancelPending).ok);
+        }
+        release_promise.set_value();
+        ASSERT_TRUE(group.WaitFor(std::chrono::seconds(1)).ok);
+        EXPECT_FALSE(ran.load());
+        const auto stats = group.Stats();
+        EXPECT_EQ(stats.submitted, 1u);
+        EXPECT_EQ(stats.completed, 0u);
+        EXPECT_EQ(stats.cancelled, 1u);
+        EXPECT_EQ(stats.failed, 0u);
+        EXPECT_TRUE(group.Wait().ok);
+        EXPECT_EQ(group.Stats().cancelled, 1u);
+        EXPECT_TRUE(pool.StopAndJoin().ok);
+    }
+}
+
+TEST(AsyncxTests, TaskGroupRunningTaskObservesBothCancellationSources)
+{
+    for (const bool cancel_group : {false, true})
+    {
+        SCOPED_TRACE(cancel_group);
+        asyncx::PoolOptions options;
+        options.worker_count = 1;
+        asyncx::ThreadPool pool(options);
+        asyncx::TaskGroup group(pool);
+        asyncx::CancellationSource user;
+        asyncx::TaskOptions task_options;
+        task_options.cancellation = user.Token();
+        std::promise<void> started_promise;
+        auto started = started_promise.get_future();
+        std::promise<void> release_promise;
+        auto release = release_promise.get_future().share();
+        bool observed = false;
+        ASSERT_TRUE(group
+                        .Submit(task_options,
+                                [&started_promise, release, &observed](asyncx::CancellationToken token)
+                                {
+                                    started_promise.set_value();
+                                    (void)release.wait_for(std::chrono::seconds(2));
+                                    observed = token.IsCancellationRequested();
+                                })
+                        .ok);
+        ASSERT_EQ(started.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+        EXPECT_FALSE(group.WaitFor(std::chrono::milliseconds(0)).ok);
+        if (cancel_group)
+        {
+            group.Cancel();
+        }
+        else
+        {
+            user.Cancel();
+        }
+        release_promise.set_value();
+        ASSERT_TRUE(group.WaitUntil(sysx::time::SteadyNow() + std::chrono::seconds(1)).ok);
+        EXPECT_TRUE(observed);
+        const auto stats = group.Stats();
+        EXPECT_EQ(stats.submitted, 1u);
+        EXPECT_EQ(stats.completed, 1u);
+        EXPECT_EQ(stats.cancelled, 0u);
+        EXPECT_EQ(stats.failed, 0u);
+        EXPECT_TRUE(pool.StopAndJoin().ok);
+    }
+}
+
+TEST(AsyncxTests, TaskGroupUserBrokenPromiseExceptionIsFailure)
+{
+    asyncx::ThreadPool pool;
+    asyncx::TaskGroup group(pool);
+    ASSERT_TRUE(group
+                    .Submit(asyncx::TaskOptions{}, [](asyncx::CancellationToken)
+                            { throw std::future_error(std::future_errc::broken_promise); })
+                    .ok);
+    ASSERT_TRUE(group.WaitFor(std::chrono::seconds(1)).ok);
+    const auto stats = group.Stats();
+    EXPECT_EQ(stats.submitted, 1u);
+    EXPECT_EQ(stats.completed, 0u);
+    EXPECT_EQ(stats.cancelled, 0u);
+    EXPECT_EQ(stats.failed, 1u);
+    EXPECT_TRUE(pool.StopAndJoin().ok);
+}

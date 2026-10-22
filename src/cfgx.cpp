@@ -785,7 +785,17 @@ std::string EscapeJsonString(std::string_view text)
             out += "\\f";
             break;
         default:
-            out += c;
+            if (static_cast<unsigned char>(c) < 0x20)
+            {
+                constexpr char hex[] = "0123456789abcdef";
+                out += "\\u00";
+                out += hex[static_cast<unsigned char>(c) >> 4];
+                out += hex[static_cast<unsigned char>(c) & 0x0f];
+            }
+            else
+            {
+                out += c;
+            }
             break;
         }
     }
@@ -876,6 +886,27 @@ class JsonParser
         return Result<Node>{false, Node{}, oss.str()};
     }
 
+    bool ReadUnicodeQuad(unsigned int* code)
+    {
+        if (text_.size() - pos_ < 4)
+            return false;
+        *code = 0;
+        for (int i = 0; i < 4; ++i)
+        {
+            const char ch = Advance();
+            *code <<= 4;
+            if (ch >= '0' && ch <= '9')
+                *code += static_cast<unsigned int>(ch - '0');
+            else if (ch >= 'a' && ch <= 'f')
+                *code += static_cast<unsigned int>(10 + ch - 'a');
+            else if (ch >= 'A' && ch <= 'F')
+                *code += static_cast<unsigned int>(10 + ch - 'A');
+            else
+                return false;
+        }
+        return true;
+    }
+
     Result<std::string> ParseStringLiteral()
     {
         if (Peek() != '"')
@@ -895,6 +926,8 @@ class JsonParser
 
             if (ch != '\\')
             {
+                if (static_cast<unsigned char>(ch) < 0x20)
+                    return Result<std::string>{false, "", "unescaped control character in string"};
                 out += ch;
                 continue;
             }
@@ -933,46 +966,47 @@ class JsonParser
                 break;
             case 'u':
             {
-                if (pos_ + 4 > text_.size())
+                unsigned int code = 0;
+                if (!ReadUnicodeQuad(&code))
                 {
                     return Result<std::string>{false, "", "invalid unicode escape"};
                 }
-
-                unsigned int code = 0;
-                for (int i = 0; i < 4; ++i)
+                if (code >= 0xd800 && code <= 0xdbff)
                 {
-                    const char hc = text_[pos_ + i];
-                    code <<= 4;
-                    if (hc >= '0' && hc <= '9')
+                    if (text_.size() - pos_ < 2 || Peek() != '\\' || text_[pos_ + 1] != 'u')
                     {
-                        code += static_cast<unsigned int>(hc - '0');
+                        return Result<std::string>{false, "", "missing low surrogate"};
                     }
-                    else if (hc >= 'a' && hc <= 'f')
-                    {
-                        code += static_cast<unsigned int>(10 + hc - 'a');
-                    }
-                    else if (hc >= 'A' && hc <= 'F')
-                    {
-                        code += static_cast<unsigned int>(10 + hc - 'A');
-                    }
-                    else
-                    {
-                        return Result<std::string>{false, "", "invalid unicode escape"};
-                    }
+                    Advance();
+                    Advance();
+                    unsigned int low = 0;
+                    if (!ReadUnicodeQuad(&low) || low < 0xdc00 || low > 0xdfff)
+                        return Result<std::string>{false, "", "invalid low surrogate"};
+                    code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
                 }
-
-                // Keep V1 simple: ASCII unicode escapes are decoded, others fallback to '?'.
+                else if (code >= 0xdc00 && code <= 0xdfff)
+                    return Result<std::string>{false, "", "unexpected low surrogate"};
                 if (code <= 0x7F)
                 {
                     out += static_cast<char>(code);
                 }
+                else if (code <= 0x7ff)
+                {
+                    out += static_cast<char>(0xc0 | (code >> 6));
+                    out += static_cast<char>(0x80 | (code & 0x3f));
+                }
+                else if (code <= 0xffff)
+                {
+                    out += static_cast<char>(0xe0 | (code >> 12));
+                    out += static_cast<char>(0x80 | ((code >> 6) & 0x3f));
+                    out += static_cast<char>(0x80 | (code & 0x3f));
+                }
                 else
                 {
-                    out += '?';
-                }
-                for (int i = 0; i < 4; ++i)
-                {
-                    Advance();
+                    out += static_cast<char>(0xf0 | (code >> 18));
+                    out += static_cast<char>(0x80 | ((code >> 12) & 0x3f));
+                    out += static_cast<char>(0x80 | ((code >> 6) & 0x3f));
+                    out += static_cast<char>(0x80 | (code & 0x3f));
                 }
                 break;
             }

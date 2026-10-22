@@ -7,12 +7,12 @@ rendering, schemas, codecs, hashes, and platform utilities. Six installable CLIs
 compose those libraries into a practical release workflow.
 
 > Status: Released
-> Applies to: v0.3.3
-> Latest release: v0.3.3
+> Applies to: v0.3.4
+> Latest release: v0.3.4
 
-`v0.3.3` delivers correctness and contract repairs within the `0.3.x`
-maintenance line. Review the compatibility and migration
-notes before upgrading, especially if you retain filesystem recovery journals.
+`v0.3.4` repairs data preservation, HTTP response handling, schema validation,
+cancellation and logging within the `0.3.x` maintenance line. Rebuild C++ consumers
+and review the compatibility and migration notes before upgrading.
 
 ## Understand ToolX in one minute
 
@@ -130,22 +130,22 @@ compared in the [cross-CLI matrix](docs/cli/matrix.md).
 See [Build and compatibility](docs/build-and-compatibility.md) and
 [Dependencies](docs/dependencies.md) before choosing a TLS or test configuration.
 
-## What changed in `v0.3.3`
+## What changed in `v0.3.4`
 
-- Configuration layers apply in the documented order; numeric parsing and JSON
-  serialization reject invalid values and preserve finite double precision.
-- Filesystem recovery writes FSXJ4 journals with checked replacement witnesses.
-  Older binaries cannot recover FSXJ4; recovery files and witnesses must stay
-  together until recovery completes.
-- `toolx-sync` rejects log paths that could alias or overlap protected inputs,
-  outputs, journals or backups, including rotation archives and Windows streams.
-- Trace, rollback and result reporting have regression coverage for corrected
-  behavior; source packages exclude generated test fixtures and Python caches.
-- Automation guidance and the roadmap distinguish tested maintenance fixes from
-  product hypotheses. `v0.4.0` awaits evidence from repeated real use.
+- JSON Unicode escapes preserve values and distinct keys; serialized controls
+  are escaped, while malformed surrogates and literal controls fail parsing.
+- Archives and pack/inspect audit outputs cannot overlap protected data.
+  Downloads exclusively own their temporary siblings and preserve existing files.
+- Followed HTTP redirects deliver only the final body and callbacks, including
+  per-request policy overrides across multiple hops. Bodyless and informational
+  responses follow the bounded HTTP contract.
+- Supported schema restrictions are enforced, TaskGroup cancellation and outcome
+  accounting are corrected, and explicit log flush reaches every route once.
+- Build and test presets agree on multi-config builds. Public source signatures,
+  thirteen targets, six CLIs and default dependency/TLS choices remain unchanged.
 
 User-visible history is maintained in [CHANGELOG.md](CHANGELOG.md); detailed
-release details are in [the v0.3.3 release notes](docs/releases/v0.3.3.md).
+compatibility and migration guidance is in [the v0.3.4 release notes](docs/releases/v0.3.4.md).
 
 ## Repository map
 

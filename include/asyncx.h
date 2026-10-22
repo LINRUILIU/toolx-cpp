@@ -67,10 +67,13 @@ class CancellationToken
 
   private:
     explicit CancellationToken(std::shared_ptr<std::atomic_bool> state);
+    static CancellationToken Join(const CancellationToken& first, const CancellationToken& second);
 
     std::shared_ptr<std::atomic_bool> state_;
+    std::shared_ptr<const std::vector<std::shared_ptr<std::atomic_bool>>> linked_states_;
 
     friend class CancellationSource;
+    friend class TaskGroup;
 };
 
 class CancellationSource
@@ -486,10 +489,19 @@ class TaskGroup
     CancellationToken Token() const noexcept;
 
   private:
+    enum class TaskOutcome
+    {
+        Completed,
+        Cancelled,
+        Failed,
+    };
+
+    void RecordOutcome(std::future<TaskOutcome> future);
+
     ThreadPool* pool_{nullptr};
     CancellationSource source_{};
     mutable sysx::sync::Mutex mu_{};
-    std::vector<std::future<void>> futures_{};
+    std::vector<std::future<TaskOutcome>> futures_{};
     TaskGroupStats stats_{};
 };
 

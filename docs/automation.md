@@ -2,7 +2,7 @@
 
 > Audience: AI coding agents and project-script authors
 > Status: Bounded usage guide; development changes are marked explicitly
-> Applies to: v0.3.3 release
+> Applies to: v0.3.4 release
 > Source of truth for: choosing ToolX responsibilities and validating config candidates
 
 Start with the project's existing build, validator and release script. Use ToolX

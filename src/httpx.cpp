@@ -32,6 +32,7 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #else
 #include <arpa/inet.h>
 #include <errno.h>
@@ -40,6 +41,7 @@
 #include <poll.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -2253,7 +2255,10 @@ bool AppendBodyChunk(httpx::Response* response, std::string_view chunk, const ht
         return false;
     }
 
-    if (request.on_response_chunk)
+    // Intermediate redirect entities are not part of the final response stream.
+    const bool followed_redirect =
+        request.follow_redirect.value_or(options.redirects.follow) && IsRedirectStatus(response->status_code);
+    if (request.on_response_chunk && !followed_redirect)
     {
         bool accepted = false;
         try
@@ -2276,9 +2281,9 @@ bool AppendBodyChunk(httpx::Response* response, std::string_view chunk, const ht
     return true;
 }
 
-httpx::Result<httpx::Response> ReadHttpResponse(SocketHandle socket, const httpx::Request& request,
-                                                const httpx::ClientOptions& options,
-                                                std::chrono::steady_clock::time_point deadline)
+template <typename RecvFn>
+httpx::Result<httpx::Response> ReadHttpResponseWithCustomRecv(const httpx::Request& request,
+                                                              const httpx::ClientOptions& options, RecvFn recv_fn)
 {
     httpx::Result<httpx::Response> out;
 
@@ -2287,44 +2292,62 @@ httpx::Result<httpx::Response> ReadHttpResponse(SocketHandle socket, const httpx
     std::string wire;
     wire.reserve(io_buffer_bytes);
 
-    std::size_t header_end = std::string::npos;
-    while (header_end == std::string::npos)
+    httpx::Result<ParsedHeaderBlock> parsed_headers;
+    std::size_t header_bytes = 0;
+    std::size_t interim_count = 0;
+    for (;;)
     {
-        const auto chunk = RecvSome(socket, io_buffer.data(), io_buffer.size(), options, deadline);
-        if (!chunk.ok)
+        auto header_end = wire.find("\r\n\r\n");
+        while (header_end == std::string::npos)
         {
-            out.error = chunk.error;
-            return out;
+            if (wire.size() > options.limits.max_header_bytes - header_bytes)
+            {
+                out.error = MakeError(httpx::ErrorKind::Protocol, "response headers exceed configured limit");
+                return out;
+            }
+            const auto chunk = recv_fn(io_buffer.data(), io_buffer.size());
+            if (!chunk.ok)
+            {
+                out.error = chunk.error;
+                return out;
+            }
+            if (chunk.value == 0)
+            {
+                out.error = MakeError(httpx::ErrorKind::Protocol, "connection closed before response headers");
+                return out;
+            }
+            wire.append(io_buffer.data(), chunk.value);
+            header_end = wire.find("\r\n\r\n");
         }
-
-        if (chunk.value == 0)
-        {
-            out.error = MakeError(httpx::ErrorKind::Protocol, "connection closed before response headers");
-            return out;
-        }
-
-        wire.append(io_buffer.data(), chunk.value);
-        if (wire.size() > options.limits.max_header_bytes)
+        if (header_end + 4 > options.limits.max_header_bytes - header_bytes)
         {
             out.error = MakeError(httpx::ErrorKind::Protocol, "response headers exceed configured limit");
             return out;
         }
-
-        header_end = wire.find("\r\n\r\n");
-    }
-
-    const auto parsed_headers = ParseHeaderBlock(std::string_view(wire).substr(0, header_end));
-    if (!parsed_headers.ok)
-    {
-        out.error = parsed_headers.error;
-        return out;
+        header_bytes += header_end + 4;
+        // Retain the status line's CRLF even when there are no header fields.
+        parsed_headers = ParseHeaderBlock(std::string_view(wire).substr(0, header_end + 2));
+        if (!parsed_headers.ok)
+        {
+            out.error = parsed_headers.error;
+            return out;
+        }
+        wire.erase(0, header_end + 4);
+        const int status = parsed_headers.value.response.status_code;
+        if (status < 100 || status >= 200)
+            break;
+        if (status == 101 || ++interim_count > 16)
+        {
+            out.error =
+                MakeError(httpx::ErrorKind::Protocol, "unsupported protocol switch or too many interim responses");
+            return out;
+        }
     }
 
     out.value = parsed_headers.value.response;
+    std::string remainder = std::move(wire);
 
-    std::string remainder = wire.substr(header_end + 4);
-
-    if (request.method == httpx::HttpMethod::Head)
+    if (request.method == httpx::HttpMethod::Head || out.value.status_code == 204 || out.value.status_code == 304)
     {
         out.ok = true;
         out.value.body.clear();
@@ -2338,7 +2361,7 @@ httpx::Result<httpx::Response> ReadHttpResponse(SocketHandle socket, const httpx
 
         auto fill_chunk_wire = [&]() -> bool
         {
-            const auto chunk = RecvSome(socket, io_buffer.data(), io_buffer.size(), options, deadline);
+            const auto chunk = recv_fn(io_buffer.data(), io_buffer.size());
             if (!chunk.ok)
             {
                 out.error = chunk.error;
@@ -2459,7 +2482,7 @@ httpx::Result<httpx::Response> ReadHttpResponse(SocketHandle socket, const httpx
 
         while (out.value.body.size() < parsed_headers.value.content_length)
         {
-            const auto chunk = RecvSome(socket, io_buffer.data(), io_buffer.size(), options, deadline);
+            const auto chunk = recv_fn(io_buffer.data(), io_buffer.size());
             if (!chunk.ok)
             {
                 out.error = chunk.error;
@@ -2498,7 +2521,7 @@ httpx::Result<httpx::Response> ReadHttpResponse(SocketHandle socket, const httpx
 
     for (;;)
     {
-        const auto chunk = RecvSome(socket, io_buffer.data(), io_buffer.size(), options, deadline);
+        const auto chunk = recv_fn(io_buffer.data(), io_buffer.size());
         if (!chunk.ok)
         {
             out.error = chunk.error;
@@ -2522,249 +2545,12 @@ httpx::Result<httpx::Response> ReadHttpResponse(SocketHandle socket, const httpx
     return out;
 }
 
-template <typename RecvFn>
-httpx::Result<httpx::Response> ReadHttpResponseWithCustomRecv(const httpx::Request& request,
-                                                              const httpx::ClientOptions& options, RecvFn recv_fn)
+httpx::Result<httpx::Response> ReadHttpResponse(SocketHandle socket, const httpx::Request& request,
+                                                const httpx::ClientOptions& options,
+                                                std::chrono::steady_clock::time_point deadline)
 {
-    httpx::Result<httpx::Response> out;
-
-    const std::size_t io_buffer_bytes = std::max<std::size_t>(1024u, options.io_buffer_bytes);
-    std::vector<char> io_buffer(io_buffer_bytes, '\0');
-    std::string wire;
-    wire.reserve(io_buffer_bytes);
-
-    std::size_t header_end = std::string::npos;
-    while (header_end == std::string::npos)
-    {
-        const auto chunk = recv_fn(io_buffer.data(), io_buffer.size());
-        if (!chunk.ok)
-        {
-            out.error = chunk.error;
-            return out;
-        }
-
-        if (chunk.value == 0)
-        {
-            out.error = MakeError(httpx::ErrorKind::Protocol, "connection closed before response headers");
-            return out;
-        }
-
-        wire.append(io_buffer.data(), chunk.value);
-        if (wire.size() > options.limits.max_header_bytes)
-        {
-            out.error = MakeError(httpx::ErrorKind::Protocol, "response headers exceed configured limit");
-            return out;
-        }
-
-        header_end = wire.find("\r\n\r\n");
-    }
-
-    const auto parsed_headers = ParseHeaderBlock(std::string_view(wire).substr(0, header_end));
-    if (!parsed_headers.ok)
-    {
-        out.error = parsed_headers.error;
-        return out;
-    }
-
-    out.value = parsed_headers.value.response;
-    std::string remainder = wire.substr(header_end + 4);
-
-    if (request.method == httpx::HttpMethod::Head)
-    {
-        out.ok = true;
-        out.value.body.clear();
-        return out;
-    }
-
-    if (parsed_headers.value.chunked)
-    {
-        std::string chunk_wire = std::move(remainder);
-        std::size_t cursor = 0;
-
-        auto fill_chunk_wire = [&]() -> bool
-        {
-            const auto chunk = recv_fn(io_buffer.data(), io_buffer.size());
-            if (!chunk.ok)
-            {
-                out.error = chunk.error;
-                return false;
-            }
-            if (chunk.value == 0)
-            {
-                out.error = MakeError(httpx::ErrorKind::Protocol, "connection closed during chunked response decode");
-                return false;
-            }
-
-            chunk_wire.append(io_buffer.data(), chunk.value);
-            if (chunk_wire.size() > options.limits.max_header_bytes + options.limits.max_body_bytes)
-            {
-                out.error = MakeError(httpx::ErrorKind::Protocol, "chunked response exceeded configured limits");
-                return false;
-            }
-            return true;
-        };
-
-        for (;;)
-        {
-            std::size_t line_end = std::string::npos;
-            while (line_end == std::string::npos)
-            {
-                line_end = chunk_wire.find("\r\n", cursor);
-                if (line_end == std::string::npos)
-                {
-                    if (!fill_chunk_wire())
-                    {
-                        return out;
-                    }
-                }
-            }
-
-            const auto line = std::string_view(chunk_wire).substr(cursor, line_end - cursor);
-            std::size_t chunk_size = 0;
-            if (!ParseChunkSize(line, &chunk_size))
-            {
-                out.error = MakeError(httpx::ErrorKind::Protocol, "invalid chunk size line");
-                return out;
-            }
-            cursor = line_end + 2;
-
-            if (chunk_size == 0)
-            {
-                for (;;)
-                {
-                    std::size_t trailer_end = std::string::npos;
-                    while (trailer_end == std::string::npos)
-                    {
-                        trailer_end = chunk_wire.find("\r\n", cursor);
-                        if (trailer_end == std::string::npos)
-                        {
-                            if (!fill_chunk_wire())
-                            {
-                                return out;
-                            }
-                        }
-                    }
-
-                    if (trailer_end == cursor)
-                    {
-                        out.ok = true;
-                        return out;
-                    }
-                    cursor = trailer_end + 2;
-                }
-            }
-
-            const std::size_t need = chunk_size + 2;
-            while ((chunk_wire.size() - cursor) < need)
-            {
-                if (!fill_chunk_wire())
-                {
-                    return out;
-                }
-            }
-
-            httpx::Error append_error;
-            if (!AppendBodyChunk(&out.value, std::string_view(chunk_wire).substr(cursor, chunk_size), request, options,
-                                 &append_error))
-            {
-                out.error = append_error;
-                return out;
-            }
-
-            if (chunk_wire[cursor + chunk_size] != '\r' || chunk_wire[cursor + chunk_size + 1] != '\n')
-            {
-                out.error = MakeError(httpx::ErrorKind::Protocol, "chunk data must end with CRLF");
-                return out;
-            }
-            cursor += need;
-
-            if (cursor > std::size_t{64} * 1024u)
-            {
-                chunk_wire.erase(0, cursor);
-                cursor = 0;
-            }
-        }
-    }
-
-    if (parsed_headers.value.has_content_length)
-    {
-        if (parsed_headers.value.content_length > options.limits.max_body_bytes)
-        {
-            out.error = MakeError(httpx::ErrorKind::Protocol, "response body exceeds configured limit");
-            return out;
-        }
-
-        const std::size_t take = std::min(parsed_headers.value.content_length, remainder.size());
-        httpx::Error append_error;
-        if (!AppendBodyChunk(&out.value, std::string_view(remainder).substr(0, take), request, options, &append_error))
-        {
-            out.error = append_error;
-            return out;
-        }
-
-        while (out.value.body.size() < parsed_headers.value.content_length)
-        {
-            const auto chunk = recv_fn(io_buffer.data(), io_buffer.size());
-            if (!chunk.ok)
-            {
-                out.error = chunk.error;
-                return out;
-            }
-            if (chunk.value == 0)
-            {
-                out.error = MakeError(httpx::ErrorKind::Protocol,
-                                      "connection closed before expected content-length body was complete");
-                return out;
-            }
-
-            const auto need = std::min(parsed_headers.value.content_length - out.value.body.size(), chunk.value);
-            httpx::Error append_error_loop;
-            if (!AppendBodyChunk(&out.value, std::string_view(io_buffer.data(), need), request, options,
-                                 &append_error_loop))
-            {
-                out.error = append_error_loop;
-                return out;
-            }
-        }
-
-        out.ok = true;
-        return out;
-    }
-
-    if (!remainder.empty())
-    {
-        httpx::Error append_error;
-        if (!AppendBodyChunk(&out.value, std::string_view(remainder), request, options, &append_error))
-        {
-            out.error = append_error;
-            return out;
-        }
-    }
-
-    for (;;)
-    {
-        const auto chunk = recv_fn(io_buffer.data(), io_buffer.size());
-        if (!chunk.ok)
-        {
-            out.error = chunk.error;
-            return out;
-        }
-        if (chunk.value == 0)
-        {
-            break;
-        }
-
-        httpx::Error append_error_loop;
-        if (!AppendBodyChunk(&out.value, std::string_view(io_buffer.data(), chunk.value), request, options,
-                             &append_error_loop))
-        {
-            out.error = append_error_loop;
-            return out;
-        }
-    }
-
-    out.ok = true;
-    return out;
+    return ReadHttpResponseWithCustomRecv(request, options, [&](char* buffer, std::size_t size)
+                                          { return RecvSome(socket, buffer, size, options, deadline); });
 }
 
 template <typename WriteFn>
@@ -4047,6 +3833,143 @@ bool ShouldBypassProxyFromEnvironment(const ParsedUrl& url)
                        [&url](const std::string& rule) { return NoProxyRuleMatches(rule, url); });
 }
 
+class DownloadTempFile
+{
+  public:
+    DownloadTempFile() = default;
+    DownloadTempFile(const DownloadTempFile&) = delete;
+    DownloadTempFile& operator=(const DownloadTempFile&) = delete;
+    ~DownloadTempFile()
+    {
+        Remove();
+    }
+
+    bool Open(const std::filesystem::path& path)
+    {
+#if defined(_WIN32)
+        handle_ = CreateFileW(path.c_str(), GENERIC_WRITE | DELETE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                              CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+        if (handle_ == INVALID_HANDLE_VALUE)
+            return false;
+#else
+        handle_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (handle_ < 0)
+            return false;
+#endif
+        path_ = path;
+        return true;
+    }
+
+    bool Reset()
+    {
+#if defined(_WIN32)
+        LARGE_INTEGER start{};
+        return SetFilePointerEx(handle_, start, nullptr, FILE_BEGIN) && SetEndOfFile(handle_);
+#else
+        return ::lseek(handle_, 0, SEEK_SET) == 0 && ::ftruncate(handle_, 0) == 0;
+#endif
+    }
+
+    bool Write(std::string_view bytes)
+    {
+        while (!bytes.empty())
+        {
+#if defined(_WIN32)
+            DWORD written = 0;
+            const auto count = static_cast<DWORD>(std::min<std::size_t>(bytes.size(), MAXDWORD));
+            if (!WriteFile(handle_, bytes.data(), count, &written, nullptr) || written == 0)
+                return false;
+#else
+            const auto written = ::write(handle_, bytes.data(),
+                                         std::min<std::size_t>(bytes.size(), std::numeric_limits<ssize_t>::max()));
+            if (written < 0 && errno == EINTR)
+                continue;
+            if (written <= 0)
+                return false;
+#endif
+            bytes.remove_prefix(static_cast<std::size_t>(written));
+        }
+        return true;
+    }
+
+    bool Finish()
+    {
+#if defined(_WIN32)
+        return FlushFileBuffers(handle_) != 0;
+#else
+        return ::fsync(handle_) == 0;
+#endif
+    }
+
+    bool OwnsPath() const
+    {
+#if defined(_WIN32)
+        const HANDLE named = CreateFileW(path_.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                         nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (named == INVALID_HANDLE_VALUE)
+            return false;
+        BY_HANDLE_FILE_INFORMATION owned_info{};
+        BY_HANDLE_FILE_INFORMATION named_info{};
+        const bool same = GetFileInformationByHandle(handle_, &owned_info) &&
+                          GetFileInformationByHandle(named, &named_info) &&
+                          owned_info.dwVolumeSerialNumber == named_info.dwVolumeSerialNumber &&
+                          owned_info.nFileIndexHigh == named_info.nFileIndexHigh &&
+                          owned_info.nFileIndexLow == named_info.nFileIndexLow &&
+                          (named_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+        CloseHandle(named);
+        return same;
+#else
+        struct stat owned{};
+        struct stat named{};
+        return ::fstat(handle_, &owned) == 0 && ::lstat(path_.c_str(), &named) == 0 && owned.st_dev == named.st_dev &&
+               owned.st_ino == named.st_ino;
+#endif
+    }
+
+    void Release()
+    {
+        path_.clear();
+        Close();
+    }
+
+    void Remove()
+    {
+        if (!path_.empty())
+        {
+#if defined(_WIN32)
+            // Delete the object we created, even if its pathname was renamed.
+            FILE_DISPOSITION_INFO disposition{TRUE};
+            (void)SetFileInformationByHandle(handle_, FileDispositionInfo, &disposition, sizeof(disposition));
+#else
+            if (OwnsPath())
+                (void)::unlink(path_.c_str());
+#endif
+            path_.clear();
+        }
+        Close();
+    }
+
+  private:
+    void Close()
+    {
+#if defined(_WIN32)
+        if (handle_ != INVALID_HANDLE_VALUE)
+            CloseHandle(handle_);
+        handle_ = INVALID_HANDLE_VALUE;
+#else
+        if (handle_ >= 0)
+            ::close(handle_);
+        handle_ = -1;
+#endif
+    }
+    std::filesystem::path path_;
+#if defined(_WIN32)
+    HANDLE handle_{INVALID_HANDLE_VALUE};
+#else
+    int handle_{-1};
+#endif
+};
+
 std::filesystem::path MakeDownloadBackupPath(const std::filesystem::path& target, std::error_code* error)
 {
     if (error != nullptr)
@@ -4872,11 +4795,22 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
         return status;
     }
     const std::filesystem::path temp = target.string() + options.temp_suffix;
-    if (temp.lexically_normal() == target.lexically_normal())
+    if (std::filesystem::path(options.temp_suffix).has_parent_path() ||
+        temp.lexically_normal() == target.lexically_normal())
     {
         status.error = MakeError(ErrorKind::InvalidArgument, "temporary download path must differ from output path");
         return status;
     }
+#if defined(_WIN32)
+    // Named/default Windows streams share their host file's replacement lifetime.
+    // A suffix may not turn the temporary sibling into a stream of the target.
+    if (options.temp_suffix.find(':') != std::string::npos ||
+        target.filename().native().find(L':') != std::wstring::npos)
+    {
+        status.error = MakeError(ErrorKind::InvalidArgument, "Windows stream download paths are unsupported");
+        return status;
+    }
+#endif
 
     std::error_code ec;
     if (std::filesystem::exists(target, ec) && !options.overwrite)
@@ -4894,10 +4828,10 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
         }
     }
 
-    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-    if (!out.is_open())
+    DownloadTempFile out;
+    if (!out.Open(temp))
     {
-        status.error = MakeError(ErrorKind::Internal, "failed to open temporary download file");
+        status.error = MakeError(ErrorKind::Internal, "failed to exclusively create temporary download file");
         return status;
     }
 
@@ -4931,10 +4865,7 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
             return true;
         }
 
-        out.close();
-        out.clear();
-        out.open(temp, std::ios::binary | std::ios::trunc);
-        if (!out.is_open())
+        if (!out.Reset())
         {
             return false;
         }
@@ -4944,8 +4875,7 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
     };
     request.on_response_chunk = [&](std::string_view chunk)
     {
-        out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
-        if (!out.good())
+        if (!out.Write(chunk))
         {
             return false;
         }
@@ -4958,34 +4888,30 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
     const auto response = Send(request);
     if (!response.ok)
     {
-        out.close();
-        std::filesystem::remove(temp, ec);
+        out.Remove();
         status.error = response.error;
         return status;
     }
 
     if (!wrote_chunks && !response.value.body.empty())
     {
-        out.write(response.value.body.data(), static_cast<std::streamsize>(response.value.body.size()));
-        if (!out.good())
+        if (!out.Write(response.value.body))
         {
-            std::filesystem::remove(temp, ec);
+            out.Remove();
             status.error = MakeError(ErrorKind::Internal, "failed to write downloaded file");
             return status;
         }
         received += static_cast<std::uint64_t>(response.value.body.size());
         if (!report_progress())
         {
-            out.close();
-            std::filesystem::remove(temp, ec);
+            out.Remove();
             status.error = MakeError(ErrorKind::Internal, "download progress callback threw an exception");
             return status;
         }
     }
-    out.close();
-    if (!out.good())
+    if (!out.Finish() || !out.OwnsPath())
     {
-        std::filesystem::remove(temp, ec);
+        out.Remove();
         status.error = MakeError(ErrorKind::Internal, "failed to write downloaded file");
         return status;
     }
@@ -4994,7 +4920,7 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
     if (ec)
     {
         const std::string inspect_error = ec.message();
-        std::filesystem::remove(temp, ec);
+        out.Remove();
         status.error = MakeError(ErrorKind::Internal, "failed to inspect output file: " + inspect_error);
         return status;
     }
@@ -5004,14 +4930,14 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
     {
         if (std::filesystem::is_directory(target, ec))
         {
-            std::filesystem::remove(temp, ec);
+            out.Remove();
             status.error = MakeError(ErrorKind::InvalidArgument, "output path is a directory");
             return status;
         }
         if (ec)
         {
             const std::string inspect_error = ec.message();
-            std::filesystem::remove(temp, ec);
+            out.Remove();
             status.error = MakeError(ErrorKind::Internal, "failed to inspect output file type: " + inspect_error);
             return status;
         }
@@ -5020,7 +4946,7 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
         backup = MakeDownloadBackupPath(target, &backup_ec);
         if (backup->empty())
         {
-            std::filesystem::remove(temp, ec);
+            out.Remove();
             const std::string reason = backup_ec ? backup_ec.message() : "no available backup path";
             status.error = MakeError(ErrorKind::Internal, "failed to prepare output backup: " + reason);
             return status;
@@ -5030,7 +4956,7 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
         if (ec)
         {
             const std::string replace_error = ec.message();
-            std::filesystem::remove(temp, ec);
+            out.Remove();
             status.error = MakeError(ErrorKind::Internal, "failed to prepare output replacement: " + replace_error);
             return status;
         }
@@ -5045,7 +4971,7 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
         {
             std::filesystem::rename(*backup, target, restore_ec);
         }
-        std::filesystem::remove(temp, ec);
+        out.Remove();
         if (restore_ec)
         {
             status.error =
@@ -5058,6 +4984,7 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
         }
         return status;
     }
+    out.Release();
     if (backup.has_value())
     {
         std::filesystem::remove(*backup, ec);
@@ -5171,6 +5098,9 @@ Result<Response> Client::SendOnce(const Request& request, const ClientOptions& e
         }
 
         Request normalized = current;
+        // Every response reader must use the policy selected for the entire
+        // redirect chain, including a per-request override of the client default.
+        normalized.follow_redirect = follow_redirect;
         if (!ContainsHeader(normalized.headers, "user-agent") && !effective_options.user_agent.empty())
         {
             normalized.headers.push_back({"User-Agent", effective_options.user_agent});
@@ -5188,6 +5118,25 @@ Result<Response> Client::SendOnce(const Request& request, const ClientOptions& e
         Result<Response> out;
         if (!ValidateRequestMetadata(normalized, effective_options, &out.error))
             return out;
+        // A custom transport reports status only after it invokes callbacks.
+        // Defer those chunks until the redirect decision is known.
+        std::vector<std::string> deferred_chunks;
+        std::size_t deferred_bytes = 0;
+        bool deferred_limit_exceeded = false;
+        if (effective_options.transport && follow_redirect && current.on_response_chunk)
+        {
+            normalized.on_response_chunk = [&](std::string_view chunk)
+            {
+                if (chunk.size() > effective_options.limits.max_body_bytes - deferred_bytes)
+                {
+                    deferred_limit_exceeded = true;
+                    return false;
+                }
+                deferred_bytes += chunk.size();
+                deferred_chunks.emplace_back(chunk);
+                return true;
+            };
+        }
         if (effective_options.transport)
         {
             out = effective_options.transport(normalized, effective_options);
@@ -5211,7 +5160,7 @@ Result<Response> Client::SendOnce(const Request& request, const ClientOptions& e
             return rejected;
         }
 
-        if (out.value.body.size() > effective_options.limits.max_body_bytes)
+        if (out.value.body.size() > effective_options.limits.max_body_bytes || deferred_limit_exceeded)
         {
             Result<Response> rejected;
             rejected.error = MakeError(ErrorKind::Protocol, "response body exceeds configured limit");
@@ -5220,6 +5169,22 @@ Result<Response> Client::SendOnce(const Request& request, const ClientOptions& e
 
         if (!follow_redirect || !IsRedirectStatus(out.value.status_code))
         {
+            for (const auto& chunk : deferred_chunks)
+            {
+                try
+                {
+                    if (current.on_response_chunk(chunk))
+                        continue;
+                    out.ok = false;
+                    out.error = MakeError(ErrorKind::Internal, "response chunk callback aborted stream");
+                }
+                catch (...)
+                {
+                    out.ok = false;
+                    out.error = MakeError(ErrorKind::Internal, "response chunk callback threw an exception");
+                }
+                return out;
+            }
             return out;
         }
 

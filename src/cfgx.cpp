@@ -4559,6 +4559,7 @@ std::optional<std::string> TryRenderIniWithCommentPreserve(const Node& root, std
                                                     return TryParseIniSection(line, ignored);
                                                 });
         std::vector<std::string> top_lines;
+        top_lines.reserve(missing_top.size());
         for (const auto& kv : missing_top)
             top_lines.push_back(kv.first + "=" + kv.second);
         lines.insert(first_section, top_lines.begin(), top_lines.end());

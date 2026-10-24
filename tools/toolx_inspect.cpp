@@ -566,7 +566,13 @@ void CollectPaths(const cfgx::Node& node, const std::string& path, InspectReport
                     key.push_back(ch);
                 }
             }
-            const std::string child = path == "$" ? key : path + "." + key;
+            std::string child;
+            if (path != "$")
+            {
+                child = path;
+                child += '.';
+            }
+            child += key;
             CollectPaths(entry.second, child, report, all);
         }
         return;

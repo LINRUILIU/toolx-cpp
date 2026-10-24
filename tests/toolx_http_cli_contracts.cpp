@@ -524,6 +524,90 @@ int main(int argc, char** argv)
     AssertContains("missing-body", missing_body.out, "body file not found");
     AssertJsonEnvelope("missing-body", missing_body.out, "toolx.http.result", false, 3);
 
+    const auto body_directory = root / "body-directory";
+    std::filesystem::create_directories(body_directory);
+    const auto directory_body =
+        RunTool(tool, root, "directory-body",
+                {"check", "--url", "http://127.0.0.1:1", "--body-file", body_directory.string(), "--json"});
+    AssertCode("directory-body", directory_body, 1);
+    AssertJsonEnvelope("directory-body", directory_body.out, "toolx.http.result", false, 1);
+
+    {
+        const auto body_path = root / "protected-body.txt";
+        const auto manifest_path = root / "protected-manifest.json";
+        const std::string body = "preserve request payload";
+        const std::string manifest =
+            "{\"checks\":[{\"url\":\"http://127.0.0.1:1\",\"body_file\":\"" + body_path.generic_string() + "\"}]}";
+        WriteFile(body_path, body);
+        WriteFile(manifest_path, manifest);
+        for (const auto& input : {body_path, manifest_path})
+        {
+            auto collision = RunTool(tool, root, "audit-input-collision",
+                                     {"check", "--manifest", manifest_path.string(), "--log-file", input.string(),
+                                      "--no-proxy-from-env", "--timeout-ms", "50", "--json"});
+            AssertCode("audit-input-collision", collision, 2);
+            AssertJsonEnvelope("audit-input-collision", collision.out, "toolx.http.result", false, 2);
+            if (ReadFile(body_path) != body || ReadFile(manifest_path) != manifest)
+            {
+                Fail("HTTP audit changed a protected input");
+            }
+        }
+
+        const auto nul_manifest = root / "nul-body-manifest.json";
+        WriteFile(nul_manifest, "{\"checks\":[{\"url\":\"http://127.0.0.1:1\",\"body_file\":\"" +
+                                    body_path.generic_string() + "\\u0000ignored\"}]}");
+        auto nul_collision = RunTool(tool, root, "audit-nul-collision",
+                                     {"check", "--manifest", nul_manifest.string(), "--log-file", body_path.string(),
+                                      "--no-proxy-from-env", "--json"});
+        AssertCode("audit-nul-collision", nul_collision, 2);
+        if (ReadFile(body_path) != body)
+            Fail("HTTP audit changed input through a NUL-truncated manifest path");
+
+        const auto alias = root / "body-audit-hardlink.log";
+        std::error_code ec;
+        fs::create_hard_link(body_path, alias, ec);
+        if (!ec)
+        {
+            auto collision = RunTool(tool, root, "audit-hardlink-collision",
+                                     {"check", "--manifest", manifest_path.string(), "--log-file", alias.string(),
+                                      "--no-proxy-from-env", "--json"});
+            AssertCode("audit-hardlink-collision", collision, 2);
+            if (ReadFile(body_path) != body)
+                Fail("HTTP audit changed request payload through a hardlink");
+        }
+        else
+        {
+            std::cout << "HTTP audit hardlink case skipped: " << ec.message() << "\n";
+        }
+#if defined(_WIN32)
+        auto stream_collision = RunTool(tool, root, "audit-stream-collision",
+                                        {"check", "--manifest", manifest_path.string(), "--log-file",
+                                         body_path.string() + ":audit", "--no-proxy-from-env", "--json"});
+        AssertCode("audit-stream-collision", stream_collision, 2);
+#endif
+
+        const auto rotation_log = root / "http-rotation-audit.log";
+        const auto rotation_input = fs::path(rotation_log.string() + ".1");
+        WriteFile(rotation_input, body);
+        auto rotation = RunTool(tool, root, "audit-rotation-collision",
+                                {"check", "--url", "http://127.0.0.1:1", "--body-file", rotation_input.string(),
+                                 "--log-file", rotation_log.string(), "--no-proxy-from-env", "--json"});
+        AssertCode("audit-rotation-collision", rotation, 2);
+        if (ReadFile(rotation_input) != body || fs::exists(rotation_log))
+            Fail("HTTP audit initialized logging or changed a rotation-conflict input");
+
+        auto server = StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        if (!server)
+            Fail("failed to start local server");
+        const auto separate_log = root / "separate-http-audit.log";
+        auto separate = RunTool(tool, root, "separate-audit",
+                                {"check", "--url", UrlFor(*server), "--method", "POST", "--body-file",
+                                 body_path.string(), "--log-file", separate_log.string(), "--json"});
+        AssertCode("separate-audit", separate, 0);
+        if (ReadFile(body_path) != body || !fs::exists(separate_log))
+            Fail("Separate HTTP audit changed input or was not created");
+    }
+
     {
         auto server =
             StartSingleResponseServer("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");

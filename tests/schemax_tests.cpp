@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
+
 namespace
 {
 cfgx::Node Obj(std::initializer_list<std::pair<std::string, cfgx::Node>> fields)
@@ -29,6 +31,38 @@ TEST(SchemaxTests, CompileRejectsUnknownKeysAndBadShapes)
     const auto bad_required = schemax::Compile(Obj({{"type", cfgx::Node("object")}, {"required", cfgx::Node("name")}}));
     EXPECT_FALSE(bad_required.ok);
     EXPECT_NE(bad_required.error.find("required"), std::string::npos);
+}
+
+TEST(SchemaxTests, IssuePathsResolveEscapedObjectKeysAndRootArrayItems)
+{
+    cfgx::Node document = cfgx::Node::MakeObject();
+    cfgx::Node properties = cfgx::Node::MakeObject();
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"a.b", "a\\.b"}, {"", "[]"}, {"[]", "\\[\\]"}, {"$", "\\$"}, {"back\\key", "back\\\\key"}};
+    for (const auto& [key, path] : cases)
+    {
+        ASSERT_TRUE(document.Set(key, cfgx::Node(key)).ok);
+        ASSERT_TRUE(properties.Set(key, Obj({{"type", cfgx::Node("integer")}})).ok);
+    }
+    const auto compiled = schemax::Compile(Obj({{"properties", properties}}));
+    ASSERT_TRUE(compiled.ok) << compiled.error;
+    const auto issues = schemax::Validate(document, compiled.value);
+    ASSERT_EQ(issues.size(), cases.size());
+    for (std::size_t i = 0; i < cases.size(); ++i)
+    {
+        EXPECT_EQ(issues[i].path, cases[i].second);
+        const auto found = cfgx::GetNode(document, issues[i].path);
+        ASSERT_TRUE(found.ok) << issues[i].path << ": " << found.error;
+        EXPECT_EQ(found.value->AsString(), cases[i].first);
+    }
+
+    const auto array_schema = schemax::Compile(Obj({{"items", Obj({{"type", cfgx::Node("integer")}})}}));
+    ASSERT_TRUE(array_schema.ok) << array_schema.error;
+    const auto array = Arr({cfgx::Node("wrong")});
+    const auto array_issues = schemax::Validate(array, array_schema.value);
+    ASSERT_EQ(array_issues.size(), 1u);
+    EXPECT_EQ(array_issues.front().path, "[0]");
+    EXPECT_TRUE(cfgx::GetNode(array, array_issues.front().path).ok);
 }
 
 TEST(SchemaxTests, ValidatesObjectPropertiesAndRequiredFields)
@@ -183,4 +217,66 @@ TEST(SchemaxTests, CompileRejectsNegativeStringLengthsAndKeepsNonnegativeBounds)
     EXPECT_TRUE(schemax::Validate(cfgx::Node("abc"), exact.value).empty());
     EXPECT_EQ(schemax::Validate(cfgx::Node("ab"), exact.value).size(), 1u);
     EXPECT_EQ(schemax::Validate(cfgx::Node("abcd"), exact.value).size(), 1u);
+}
+
+TEST(SchemaxTests, IntegerBoundsKeepPrecisionBeyondDoubleMantissa)
+{
+    for (const std::int64_t bound :
+         {std::int64_t(9007199254740992), std::int64_t(-9007199254740992), std::numeric_limits<std::int64_t>::max() - 1,
+          std::numeric_limits<std::int64_t>::min() + 1})
+    {
+        SCOPED_TRACE(bound);
+        const auto minimum = schemax::Compile(Obj({{"minimum", cfgx::Node(bound)}}));
+        ASSERT_TRUE(minimum.ok);
+        EXPECT_TRUE(schemax::Validate(cfgx::Node(bound), minimum.value).empty());
+        const auto below = schemax::Validate(cfgx::Node(bound - 1), minimum.value);
+        ASSERT_EQ(below.size(), 1u);
+        EXPECT_EQ(below[0].code, "minimum");
+
+        const auto maximum = schemax::Compile(Obj({{"maximum", cfgx::Node(bound)}}));
+        ASSERT_TRUE(maximum.ok);
+        EXPECT_TRUE(schemax::Validate(cfgx::Node(bound), maximum.value).empty());
+        const auto above = schemax::Validate(cfgx::Node(bound + 1), maximum.value);
+        ASSERT_EQ(above.size(), 1u);
+        EXPECT_EQ(above[0].code, "maximum");
+    }
+}
+
+TEST(SchemaxTests, MixedNumericBoundsCompareInt64EndpointsAndFractionsExactly)
+{
+    const auto maximum = schemax::Compile(Obj({{"maximum", cfgx::Node(std::numeric_limits<std::int64_t>::max())}}));
+    ASSERT_TRUE(maximum.ok);
+    EXPECT_EQ(schemax::Validate(cfgx::Node(9223372036854775808.0), maximum.value).size(), 1u);
+
+    const auto minimum = schemax::Compile(Obj({{"minimum", cfgx::Node(std::numeric_limits<std::int64_t>::min() + 1)}}));
+    ASSERT_TRUE(minimum.ok);
+    EXPECT_EQ(schemax::Validate(cfgx::Node(-9223372036854775808.0), minimum.value).size(), 1u);
+
+    const auto fractional = schemax::Compile(Obj({{"minimum", cfgx::Node(-1.5)}, {"maximum", cfgx::Node(1.5)}}));
+    ASSERT_TRUE(fractional.ok);
+    EXPECT_TRUE(schemax::Validate(cfgx::Node(std::int64_t(-1)), fractional.value).empty());
+    EXPECT_TRUE(schemax::Validate(cfgx::Node(std::int64_t(1)), fractional.value).empty());
+    EXPECT_EQ(schemax::Validate(cfgx::Node(std::int64_t(-2)), fractional.value).size(), 1u);
+    EXPECT_EQ(schemax::Validate(cfgx::Node(std::int64_t(2)), fractional.value).size(), 1u);
+}
+
+TEST(SchemaxTests, MixedNumericEnumDoesNotRoundLargeIntegersToDouble)
+{
+    const auto doubles = schemax::Compile(Obj({{"enum", Arr({cfgx::Node(9007199254740992.0)})}}));
+    ASSERT_TRUE(doubles.ok);
+    EXPECT_TRUE(schemax::Validate(cfgx::Node(std::int64_t(9007199254740992)), doubles.value).empty());
+    EXPECT_EQ(schemax::Validate(cfgx::Node(std::int64_t(9007199254740993)), doubles.value).size(), 1u);
+
+    const auto integers = schemax::Compile(Obj({{"enum", Arr({cfgx::Node(std::int64_t(9007199254740993))})}}));
+    ASSERT_TRUE(integers.ok);
+    EXPECT_EQ(schemax::Validate(cfgx::Node(9007199254740992.0), integers.value).size(), 1u);
+
+    const auto endpoint =
+        schemax::Compile(Obj({{"enum", Arr({cfgx::Node(std::numeric_limits<std::int64_t>::max())})}}));
+    ASSERT_TRUE(endpoint.ok);
+    EXPECT_EQ(schemax::Validate(cfgx::Node(9223372036854775808.0), endpoint.value).size(), 1u);
+
+    const auto ordinary = schemax::Compile(Obj({{"enum", Arr({cfgx::Node(std::int64_t(1))})}}));
+    ASSERT_TRUE(ordinary.ok);
+    EXPECT_TRUE(schemax::Validate(cfgx::Node(1.0), ordinary.value).empty());
 }

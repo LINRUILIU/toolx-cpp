@@ -7,6 +7,10 @@
 
 ## Stability terms
 
+Manual maintenance ended with the final release, v0.3.5, on 2026-10-25. The
+classifications below describe the retained API contracts; they do not promise
+future fixes, security updates or issue triage. See the [final release notes](releases/v0.3.5.md).
+
 | Level | Promise |
 | --- | --- |
 | Stable core | Documented public source APIs remain compatible within `0.3.x` unless a safety/correctness issue requires a break. |
@@ -73,8 +77,8 @@ behavior. When a safety or correctness fix requires a visible behavior change:
   called out in the changelog.
 - New CLI products do not enter the install set until they satisfy the internal
   productization checklist.
-- The current release is `v0.3.4`; its compatibility and behavior changes are
-  recorded in the version-specific release notes.
+- The final manually maintained release is `v0.3.5`; its correctness exceptions
+  and rebuild requirements are in the [release notes](releases/v0.3.5.md).
 - The `v0.3.4` maintenance release documents correctness exceptions and consumer
   rebuild requirements in its [release notes](releases/v0.3.4.md). The FSXJ4
   recovery-format migration introduced by [v0.3.3](releases/v0.3.3.md) still applies.

@@ -845,6 +845,11 @@ bool PackPathsOverlap(const std::filesystem::path& lhs, const std::filesystem::p
 
 bool ResolvePackBoundaryPath(const std::filesystem::path& path, std::filesystem::path* resolved, std::string* error)
 {
+    if (path.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos)
+    {
+        *error = "embedded null bytes are unsupported in protected paths";
+        return false;
+    }
     std::error_code ec;
     const auto absolute = std::filesystem::absolute(path, ec);
     if (ec)
@@ -893,6 +898,24 @@ bool ResolvePackBoundaryPath(const std::filesystem::path& path, std::filesystem:
         }
         prefix /= component;
         const auto link_status = std::filesystem::symlink_status(prefix, ec);
+        bool linked = std::filesystem::is_symlink(link_status);
+#if defined(_WIN32)
+        // MSVC may report a dangling junction as not-found. Native attributes
+        // still identify its reparse point before the missing-path fast path.
+        const auto attributes = GetFileAttributesW(prefix.c_str());
+        linked = linked || (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT));
+#endif
+        if (linked)
+        {
+            std::error_code target_ec;
+            const auto target_status = std::filesystem::status(prefix, target_ec);
+            if (target_ec || !std::filesystem::exists(target_status) ||
+                target_status.type() == std::filesystem::file_type::unknown)
+            {
+                *error = "cannot confirm symbolic link or reparse point target: " + prefix.string();
+                return false;
+            }
+        }
         if (ec == std::errc::no_such_file_or_directory ||
             (!ec && link_status.type() == std::filesystem::file_type::not_found))
         {
@@ -904,16 +927,6 @@ bool ResolvePackBoundaryPath(const std::filesystem::path& path, std::filesystem:
         {
             *error = "cannot inspect path component " + prefix.string() + ": " + ec.message();
             return false;
-        }
-        if (std::filesystem::is_symlink(link_status))
-        {
-            const auto target_status = std::filesystem::status(prefix, ec);
-            if (ec || !std::filesystem::exists(target_status) ||
-                target_status.type() == std::filesystem::file_type::unknown)
-            {
-                *error = "cannot confirm symbolic link target: " + prefix.string();
-                return false;
-            }
         }
     }
 

@@ -401,6 +401,56 @@ TEST(ArgtoolTests, BuiltinConvertersSupportUnits)
     EXPECT_DOUBLE_EQ(result.GetDouble("window"), 1536.0);
 }
 
+TEST(ArgtoolTests, BuiltinDoubleConverterPreservesPrecisionBeforeRangeValidation)
+{
+    argtool::Parser parser;
+    parser.Option("ratio").Double().Done();
+    for (const auto* value : {"1.2345678901234567", "1.0000000000000002", "1.7976931348623157e308"})
+    {
+        SCOPED_TRACE(value);
+        const std::vector<std::string> args = {"app", std::string("--ratio=") + value};
+        const auto argv = ToArgv(args);
+        const auto result = parser.Parse(static_cast<int>(argv.size()), argv.data());
+        ASSERT_TRUE(result.ok);
+        EXPECT_EQ(result.GetDouble("ratio"), std::stod(value));
+    }
+
+    argtool::Parser bounded;
+    bounded.Option("ratio").Double().Range(1.23456, 1.23456).Done();
+    const std::vector<std::string> args = {"app", "--ratio=1.234564"};
+    const auto argv = ToArgv(args);
+    const auto outside = bounded.Parse(static_cast<int>(argv.size()), argv.data());
+    ASSERT_FALSE(outside.ok);
+    ASSERT_TRUE(outside.error.has_value());
+    EXPECT_EQ(outside.error->kind, argtool::ParseErrorKind::RangeError);
+}
+
+TEST(ArgtoolTests, BuiltinNumericConvertersRejectNonFiniteInputsAndScaledOverflow)
+{
+    for (const bool integer : {false, true})
+    {
+        argtool::Parser parser;
+        auto option = parser.Option("number");
+        if (integer)
+        {
+            option.Int();
+        }
+        else
+        {
+            option.Double();
+        }
+        option.Done();
+        for (const auto* value : {"1e309", "-1e309", "1e308h", "nan(1)"})
+        {
+            SCOPED_TRACE(value);
+            const std::vector<std::string> args = {"app", std::string("--number=") + value};
+            const auto argv = ToArgv(args);
+            const auto result = parser.Parse(static_cast<int>(argv.size()), argv.data());
+            EXPECT_FALSE(result.ok);
+        }
+    }
+}
+
 TEST(ArgtoolTests, LocalConverterOverridesGlobalConverter)
 {
     argtool::Parser parser;

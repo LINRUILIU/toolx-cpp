@@ -1110,14 +1110,7 @@ Status TaskGroup::WaitUntil(std::chrono::steady_clock::time_point deadline)
     std::vector<std::future<TaskOutcome>> pending;
     for (auto& future : local)
     {
-        const auto now = sysx::time::SteadyNow();
-        if (now >= deadline)
-        {
-            pending.push_back(std::move(future));
-            continue;
-        }
-
-        if (future.wait_for(deadline - now) == std::future_status::timeout)
+        if (future.wait_until(deadline) == std::future_status::timeout)
         {
             pending.push_back(std::move(future));
             continue;

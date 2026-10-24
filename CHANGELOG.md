@@ -4,7 +4,68 @@ All notable user-visible changes to ToolX are recorded here. Detailed release
 narratives remain under [`docs/releases`](docs/releases/).
 
 > Status: Released
-> Applies to: v0.3.4
+> Applies to: v0.3.5
+
+## [0.3.5] - 2026-10-25
+
+### Maintenance status
+
+- This is the final manually maintained release. Manual bug/security fixes,
+  feature work and issue triage end with v0.3.5 on 2026-10-25. Sources and
+  historical releases remain available for consumers to maintain in their forks.
+
+### Fixed
+
+- Reject out-of-range double-to-int64 conversion and impossible direct array
+  expansion. Report buffered file-save failures, including encrypted saves.
+- Validate snapshots before restoring them; rejection preserves current config,
+  source trace and audit history. Return errors for failed file/directory reads
+  in config, upload/request-body and logger-config paths.
+- Preserve INI string/double types and precision, remove obsolete assignments
+  while retaining comments, and place new root keys before section headers.
+  Reject invalid `toolx-config set --type double` input before modifying files.
+- Reject retained-backup aliases before safe replacement. Create replacement
+  links before publishing so failed creation/publication preserves old data;
+  reject self/alias links. Check tar extraction paths for dangling links, preserve
+  the input archive and its hard-link aliases, and check archive I/O on close.
+- Bound retry delays and stalled uploads by the HTTP total deadline, saturate
+  oversized timeout arithmetic, and release sockets on failed SOCKS handshakes.
+- Keep socket-write failures local to HTTP/TLS calls without changing process
+  signal policy. Reuse one OpenSSL BIO type index across sessions.
+- Escape all JSON control characters in logs and CLI diagnostics. Escape special object keys in
+  schema issue paths and inspector navigation rather than selecting other keys.
+- Preserve floating-point CLI precision before range validation; reject non-finite
+  numeric input, scaled overflow and embedded-NUL suffixes instead of accepting
+  truncated or rounded values.
+- Compare schema integer bounds and mixed integer/double enum members exactly
+  at large integer values and int64 endpoints.
+- Create tar archives containing empty files correctly and avoid a conflicting
+  directory header when archiving a single file with `include_root_directory`.
+- Reject overflowing HTTP chunk sizes and chunks beyond the remaining body
+  budget before reading or streaming them. Avoid overflow when combining receive
+  limits, preserving valid large chunked responses with a maximum body budget.
+- Treat already-ready futures as ready even for zero or expired wait deadlines,
+  including TaskGroup waits and final statistics.
+- Wake periodic logger flushing promptly during stop, reconfiguration and
+  shutdown instead of waiting the full configured interval.
+- Reject HTTP/log audit paths and size-rotation destinations that alias protected
+  manifests, request bodies or log inputs before logger initialization. Reject
+  embedded NULs in audit boundaries, preserve absent inputs, and report log
+  read failures rather than successful empty summaries.
+- Reject unresolved Windows junctions before missing-path handling, preserving
+  output isolation when later workflow steps create their targets.
+- Keep generated experiment runs, virtual environments and installed dependency
+  trees out of release-document contract fixtures and source archives; exclude
+  generated experiment logs from source packages.
+
+### Compatibility
+
+- No public source signatures, CLI JSON envelopes, target/CLI set, recovery format
+  or dependency defaults change. Rebuild consumers because Logger's private
+  synchronization state changed; ABI compatibility is not promised.
+- Previously rounded numeric strings, silently accepted non-finite input,
+  imprecise schema matches and conflicting audit destinations change behavior
+  under the correctness exception. See the [migration notes](docs/releases/v0.3.5.md).
 
 ## [0.3.4] - 2026-10-22
 

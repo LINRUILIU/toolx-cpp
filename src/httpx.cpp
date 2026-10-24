@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -839,6 +840,39 @@ bool IsWouldBlockError(int code)
 #endif
 }
 
+bool ConfigureSocketWriteSafety(SocketHandle socket)
+{
+#if !defined(_WIN32) && defined(SO_NOSIGPIPE)
+    const int enabled = 1;
+    return setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) == 0;
+#elif defined(_WIN32) || defined(MSG_NOSIGNAL)
+    (void)socket;
+    return true;
+#else
+    // Never change the application's signal disposition as a fallback.
+    // Platforms need one of the socket-local SIGPIPE suppression APIs.
+    (void)socket;
+    errno = ENOTSUP;
+    return false;
+#endif
+}
+
+int SendSocketBytes(SocketHandle socket, const char* bytes, std::size_t size)
+{
+    const auto count = std::min<std::size_t>(size, std::numeric_limits<int>::max());
+#if defined(_WIN32)
+    return ::send(socket, bytes, static_cast<int>(count), 0);
+#else
+#if defined(MSG_NOSIGNAL)
+    constexpr int flags = MSG_NOSIGNAL;
+#else
+    // ConfigureSocketWriteSafety has enabled SO_NOSIGPIPE on this socket.
+    constexpr int flags = 0;
+#endif
+    return static_cast<int>(::send(socket, bytes, count, flags));
+#endif
+}
+
 bool SetBlockingMode(SocketHandle socket, bool blocking)
 {
 #if defined(_WIN32)
@@ -921,6 +955,24 @@ std::uint64_t EffectiveTimeoutMs(std::uint64_t preferred, std::chrono::steady_cl
     return std::min(preferred, remaining);
 }
 
+std::chrono::steady_clock::time_point DeadlineAfterMilliseconds(std::chrono::steady_clock::time_point started_at,
+                                                                std::uint64_t timeout_ms)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto maximum_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::duration::max()).count();
+    if (timeout_ms > static_cast<std::uint64_t>(maximum_ms))
+    {
+        return Clock::time_point::max();
+    }
+    const auto timeout = std::chrono::duration_cast<Clock::duration>(
+        std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(timeout_ms)));
+    if (started_at > Clock::time_point::max() - timeout)
+    {
+        return Clock::time_point::max();
+    }
+    return started_at + timeout;
+}
+
 WaitState WaitSocketReady(SocketHandle socket, bool want_read, std::uint64_t timeout_ms, int* error_code)
 {
     if (error_code != nullptr)
@@ -947,7 +999,7 @@ WaitState WaitSocketReady(SocketHandle socket, bool want_read, std::uint64_t tim
     FD_SET(socket, &error_set);
 
     timeval tv{};
-    tv.tv_sec = static_cast<long>(timeout_ms / 1000u);
+    tv.tv_sec = static_cast<long>(std::min<std::uint64_t>(timeout_ms / 1000u, std::numeric_limits<long>::max()));
     tv.tv_usec = static_cast<long>((timeout_ms % 1000u) * 1000u);
 
     const int rc = select(0, &read_set, &write_set, &error_set, &tv);
@@ -1267,6 +1319,13 @@ httpx::Result<SocketHandle> ConnectEndpoint(const Endpoint& endpoint, std::uint6
 
     ScopedSocket guard(socket);
 
+    if (!ConfigureSocketWriteSafety(socket))
+    {
+        out.error = MakeError(httpx::ErrorKind::Network,
+                              "configure safe socket writes failed: " + SocketErrorText(LastSocketError()), true);
+        return out;
+    }
+
     if (!SetBlockingMode(socket, false))
     {
         out.error = MakeError(httpx::ErrorKind::Network,
@@ -1309,13 +1368,9 @@ httpx::Result<SocketHandle> ConnectEndpoint(const Endpoint& endpoint, std::uint6
         }
     }
 
-    if (!SetBlockingMode(socket, true))
-    {
-        out.error = MakeError(httpx::ErrorKind::Network,
-                              "restore blocking mode failed: " + SocketErrorText(LastSocketError()), true);
-        return out;
-    }
-
+    // Keep the socket non-blocking after connect. Readiness only promises that
+    // some bytes can be transferred; a blocking send of the full payload can
+    // otherwise outlive both the I/O timeout and the total request deadline.
     out.ok = true;
     out.value = guard.Release();
     return out;
@@ -1443,15 +1498,16 @@ httpx::Status SendRawBytes(SocketHandle socket, std::string_view payload, const 
             return st;
         }
 
-#if defined(_WIN32)
-        const int n = ::send(socket, payload.data() + sent, static_cast<int>(payload.size() - sent), 0);
-#else
-        const int n = static_cast<int>(::send(socket, payload.data() + sent, payload.size() - sent, 0));
-#endif
+        const int n = SendSocketBytes(socket, payload.data() + sent, payload.size() - sent);
         if (n <= 0)
         {
+            const int send_error = LastSocketError();
+            if (n < 0 && IsWouldBlockError(send_error))
+            {
+                continue;
+            }
             st.ok = false;
-            st.error = MakeError(httpx::ErrorKind::Network, "send failed: " + SocketErrorText(LastSocketError()), true);
+            st.error = MakeError(httpx::ErrorKind::Network, "send failed: " + SocketErrorText(send_error), true);
             return st;
         }
         sent += static_cast<std::size_t>(n);
@@ -1940,27 +1996,14 @@ bool ParseChunkSize(std::string_view line, std::size_t* size_out)
         return false;
     }
 
-    for (const char ch : size_token)
-    {
-        if (!std::isxdigit(static_cast<unsigned char>(ch)))
-        {
-            return false;
-        }
-    }
-
-    char* end = nullptr;
-    const auto parsed = std::strtoull(size_token.c_str(), &end, 16);
-    if (end == nullptr || *end != '\0')
+    std::size_t parsed = 0;
+    const auto result = std::from_chars(size_token.data(), size_token.data() + size_token.size(), parsed, 16);
+    if (result.ec != std::errc{} || result.ptr != size_token.data() + size_token.size())
     {
         return false;
     }
 
-    if (parsed > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max()))
-    {
-        return false;
-    }
-
-    *size_out = static_cast<std::size_t>(parsed);
+    *size_out = parsed;
     return true;
 }
 
@@ -2061,41 +2104,48 @@ httpx::Result<std::size_t> RecvSome(SocketHandle socket, char* buffer, std::size
                                     const httpx::ClientOptions& options, std::chrono::steady_clock::time_point deadline)
 {
     httpx::Result<std::size_t> out;
+    for (;;)
+    {
+        const auto timeout_ms = EffectiveTimeoutMs(options.timeout.read_write_ms, deadline);
+        if (timeout_ms == 0)
+        {
+            out.error = MakeError(httpx::ErrorKind::Timeout, "read timed out", true);
+            return out;
+        }
 
-    const auto timeout_ms = EffectiveTimeoutMs(options.timeout.read_write_ms, deadline);
-    if (timeout_ms == 0)
-    {
-        out.error = MakeError(httpx::ErrorKind::Timeout, "read timed out", true);
-        return out;
-    }
-
-    int wait_error = 0;
-    const auto wait_state = WaitSocketReady(socket, true, timeout_ms, &wait_error);
-    if (wait_state == WaitState::Timeout)
-    {
-        out.error = MakeError(httpx::ErrorKind::Timeout, "read timed out", true);
-        return out;
-    }
-    if (wait_state == WaitState::Error)
-    {
-        out.error = MakeError(httpx::ErrorKind::Network, "read wait failed: " + SocketErrorText(wait_error), true);
-        return out;
-    }
+        int wait_error = 0;
+        const auto wait_state = WaitSocketReady(socket, true, timeout_ms, &wait_error);
+        if (wait_state == WaitState::Timeout)
+        {
+            out.error = MakeError(httpx::ErrorKind::Timeout, "read timed out", true);
+            return out;
+        }
+        if (wait_state == WaitState::Error)
+        {
+            out.error = MakeError(httpx::ErrorKind::Network, "read wait failed: " + SocketErrorText(wait_error), true);
+            return out;
+        }
 
 #if defined(_WIN32)
-    const int read_size = ::recv(socket, buffer, static_cast<int>(buffer_size), 0);
+        const int read_size = ::recv(socket, buffer, static_cast<int>(buffer_size), 0);
 #else
-    const int read_size = static_cast<int>(::recv(socket, buffer, buffer_size, 0));
+        const int read_size = static_cast<int>(::recv(socket, buffer, buffer_size, 0));
 #endif
-    if (read_size < 0)
-    {
-        out.error = MakeError(httpx::ErrorKind::Network, "recv failed: " + SocketErrorText(LastSocketError()), true);
+        if (read_size < 0)
+        {
+            const int read_error = LastSocketError();
+            if (IsWouldBlockError(read_error))
+            {
+                continue;
+            }
+            out.error = MakeError(httpx::ErrorKind::Network, "recv failed: " + SocketErrorText(read_error), true);
+            return out;
+        }
+
+        out.ok = true;
+        out.value = static_cast<std::size_t>(read_size);
         return out;
     }
-
-    out.ok = true;
-    out.value = static_cast<std::size_t>(read_size);
-    return out;
 }
 
 httpx::Status SendAll(SocketHandle socket, std::string_view payload, const httpx::Request& request,
@@ -2135,15 +2185,16 @@ httpx::Status SendAll(SocketHandle socket, std::string_view payload, const httpx
         }
 
         const std::size_t remain = payload.size() - sent;
-#if defined(_WIN32)
-        const int n = ::send(socket, payload.data() + sent, static_cast<int>(remain), 0);
-#else
-        const int n = static_cast<int>(::send(socket, payload.data() + sent, remain, 0));
-#endif
+        const int n = SendSocketBytes(socket, payload.data() + sent, remain);
         if (n <= 0)
         {
+            const int send_error = LastSocketError();
+            if (n < 0 && IsWouldBlockError(send_error))
+            {
+                continue;
+            }
             st.ok = false;
-            st.error = MakeError(httpx::ErrorKind::Network, "send failed: " + SocketErrorText(LastSocketError()), true);
+            st.error = MakeError(httpx::ErrorKind::Network, "send failed: " + SocketErrorText(send_error), true);
             return st;
         }
 
@@ -2249,7 +2300,8 @@ bool AppendBodyChunk(httpx::Response* response, std::string_view chunk, const ht
         return true;
     }
 
-    if (response->body.size() + chunk.size() > options.limits.max_body_bytes)
+    if (response->body.size() > options.limits.max_body_bytes ||
+        chunk.size() > options.limits.max_body_bytes - response->body.size())
     {
         *error = MakeError(httpx::ErrorKind::Protocol, "response body exceeds configured limit");
         return false;
@@ -2374,7 +2426,8 @@ httpx::Result<httpx::Response> ReadHttpResponseWithCustomRecv(const httpx::Reque
             }
 
             chunk_wire.append(io_buffer.data(), chunk.value);
-            if (chunk_wire.size() > options.limits.max_header_bytes + options.limits.max_body_bytes)
+            if (chunk_wire.size() > options.limits.max_header_bytes &&
+                chunk_wire.size() - options.limits.max_header_bytes > options.limits.max_body_bytes)
             {
                 out.error = MakeError(httpx::ErrorKind::Protocol, "chunked response exceeded configured limits");
                 return false;
@@ -2405,6 +2458,15 @@ httpx::Result<httpx::Response> ReadHttpResponseWithCustomRecv(const httpx::Reque
                 return out;
             }
             cursor = line_end + 2;
+
+            // Reject the declared size before waiting for data or adding its
+            // CRLF. A near-SIZE_MAX size can otherwise wrap need and cursor.
+            if (chunk_size > options.limits.max_body_bytes - out.value.body.size() ||
+                chunk_size > std::numeric_limits<std::size_t>::max() - 2)
+            {
+                out.error = MakeError(httpx::ErrorKind::Protocol, "response body exceeds configured limit");
+                return out;
+            }
 
             if (chunk_size == 0)
             {
@@ -2612,6 +2674,80 @@ httpx::Error RewriteProxyError(httpx::Error error, bool using_proxy)
 }
 
 #if defined(HTTPX_ENABLE_OPENSSL)
+// The built-in OpenSSL socket BIO does not offer per-send MSG_NOSIGNAL.
+// Route every TLS write (including handshake/read-triggered writes) through
+// the same socket-local suppression as plaintext and proxy traffic.
+std::unique_ptr<BIO_METHOD, decltype(&BIO_meth_free)> MakeOpenSslSocketMethod()
+{
+    // Custom BIO type indices are a small process-wide, non-reclaimable pool.
+    // All sessions implement the same type, so reserve at most one index.
+    static const int socket_type = BIO_get_new_index();
+    if (socket_type < 0)
+        return {nullptr, BIO_meth_free};
+    std::unique_ptr<BIO_METHOD, decltype(&BIO_meth_free)> method(
+        BIO_meth_new(BIO_TYPE_SOURCE_SINK | socket_type, "httpx socket"), BIO_meth_free);
+    if (!method)
+    {
+        return method;
+    }
+    const bool configured =
+        BIO_meth_set_create(method.get(),
+                            [](BIO* bio)
+                            {
+                                BIO_set_init(bio, 1);
+                                BIO_set_data(bio, nullptr);
+                                BIO_set_shutdown(bio, BIO_NOCLOSE);
+                                return 1;
+                            }) == 1 &&
+        BIO_meth_set_destroy(method.get(),
+                             [](BIO* bio)
+                             {
+                                 BIO_set_data(bio, nullptr);
+                                 BIO_set_init(bio, 0);
+                                 return 1;
+                             }) == 1 &&
+        BIO_meth_set_write(method.get(),
+                           [](BIO* bio, const char* bytes, int size)
+                           {
+                               BIO_clear_retry_flags(bio);
+                               const auto* socket = static_cast<const SocketHandle*>(BIO_get_data(bio));
+                               if (socket == nullptr || bytes == nullptr || size <= 0)
+                                   return 0;
+                               const int sent = SendSocketBytes(*socket, bytes, static_cast<std::size_t>(size));
+                               if (sent < 0 && IsWouldBlockError(LastSocketError()))
+                                   BIO_set_retry_write(bio);
+                               return sent;
+                           }) == 1 &&
+        BIO_meth_set_read(method.get(),
+                          [](BIO* bio, char* bytes, int size)
+                          {
+                              BIO_clear_retry_flags(bio);
+                              const auto* socket = static_cast<const SocketHandle*>(BIO_get_data(bio));
+                              if (socket == nullptr || bytes == nullptr || size <= 0)
+                                  return 0;
+#if defined(_WIN32)
+                              const int received = ::recv(*socket, bytes, size, 0);
+#else
+            const int received = static_cast<int>(::recv(*socket, bytes, static_cast<std::size_t>(size), 0));
+#endif
+                              if (received < 0 && IsWouldBlockError(LastSocketError()))
+                                  BIO_set_retry_read(bio);
+                              return received;
+                          }) == 1 &&
+        BIO_meth_set_ctrl(method.get(),
+                          [](BIO*, int command, long, void*) -> long
+                          {
+                              // Unbuffered socket I/O has nothing pending to flush. Descriptor
+                              // ownership remains exclusively with ScopedSocket, including free.
+                              return command == BIO_CTRL_FLUSH ? 1L : 0L;
+                          }) == 1;
+    if (!configured)
+    {
+        method.reset();
+    }
+    return method;
+}
+
 class OpenSslSession
 {
   public:
@@ -2630,6 +2766,9 @@ class OpenSslSession
 
     SSL_CTX* ctx{nullptr};
     SSL* ssl{nullptr};
+    // SSL_free destroys its BIO before this method and socket storage expire.
+    std::unique_ptr<BIO_METHOD, decltype(&BIO_meth_free)> socket_method{nullptr, BIO_meth_free};
+    SocketHandle socket{kInvalidSocket};
 };
 
 bool EnsureOpenSslReady(std::string* error_message)
@@ -2841,11 +2980,17 @@ httpx::Result<httpx::Response> SendByOpenSslTransport(const httpx::Request& requ
         return out;
     }
 
-    if (SSL_set_fd(session.ssl, static_cast<int>(guard.Get())) != 1)
+    session.socket_method = MakeOpenSslSocketMethod();
+    BIO* socket_bio = session.socket_method ? BIO_new(session.socket_method.get()) : nullptr;
+    if (socket_bio == nullptr)
     {
-        out.error = MakeError(httpx::ErrorKind::Tls, "SSL_set_fd failed: " + OpenSslLastErrorText());
+        out.error = MakeError(httpx::ErrorKind::Tls, "create socket BIO failed: " + OpenSslLastErrorText());
         return out;
     }
+    session.socket = guard.Get();
+    BIO_set_data(socket_bio, &session.socket);
+    // SSL owns one shared read/write BIO; it never owns the guarded socket.
+    SSL_set_bio(session.ssl, socket_bio, socket_bio);
 
     if (SSL_set_tlsext_host_name(session.ssl, parsed_url.host.c_str()) != 1)
     {
@@ -2979,15 +3124,9 @@ int MbedTlsBioSend(void* ctx, const unsigned char* buf, std::size_t len)
     }
 
     auto* socket = reinterpret_cast<SocketHandle*>(ctx);
-#if defined(_WIN32)
-    const int n = ::send(*socket, reinterpret_cast<const char*>(buf), static_cast<int>(len), 0);
-    if (n == SOCKET_ERROR)
-    {
-#else
-    const int n = static_cast<int>(::send(*socket, buf, len, 0));
+    const int n = SendSocketBytes(*socket, reinterpret_cast<const char*>(buf), len);
     if (n < 0)
     {
-#endif
         const int err = LastSocketError();
         if (IsWouldBlockError(err))
         {
@@ -3402,6 +3541,7 @@ httpx::Result<httpx::Response> SendByDefaultTransport(const httpx::Client* owner
         fresh_connection = true;
     }
 
+    ScopedSocket guard(socket);
     if (using_socks5_proxy && fresh_connection)
     {
         const auto tunnel_status = EstablishSocks5NoAuthTunnel(socket, parsed_url.value, options, deadline);
@@ -3412,8 +3552,6 @@ httpx::Result<httpx::Response> SendByDefaultTransport(const httpx::Client* owner
             return out;
         }
     }
-
-    ScopedSocket guard(socket);
 
     const bool use_proxy_absolute_form = using_proxy && !using_socks5_proxy;
     const auto payload = BuildRequestPayload(wire_request, parsed_url.value, options, use_proxy_absolute_form);
@@ -4484,7 +4622,7 @@ Result<Response> Client::Send(const Request& request)
         std::scoped_lock lock(mu_);
         effective = options_;
     }
-    const auto deadline = started_at + std::chrono::milliseconds(effective.timeout.total_ms);
+    const auto deadline = DeadlineAfterMilliseconds(started_at, effective.timeout.total_ms);
 
     if (effective.circuit_breaker.enabled)
     {
@@ -4495,8 +4633,8 @@ Result<Response> Client::Send(const Request& request)
             {
                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - circuit_opened_at_);
-                reject_for_open_circuit =
-                    elapsed.count() < static_cast<long long>(effective.circuit_breaker.reset_timeout_ms);
+                reject_for_open_circuit = elapsed.count() >= 0 && static_cast<std::uint64_t>(elapsed.count()) <
+                                                                      effective.circuit_breaker.reset_timeout_ms;
             }
         }
         if (reject_for_open_circuit)
@@ -4655,7 +4793,9 @@ Result<Response> Client::Send(const Request& request)
         ++retries_used;
         if (effective.retry_policy.delay_ms > 0)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(effective.retry_policy.delay_ms));
+            const auto retry_at =
+                DeadlineAfterMilliseconds(std::chrono::steady_clock::now(), effective.retry_policy.delay_ms);
+            std::this_thread::sleep_until(std::min(retry_at, deadline));
         }
     }
 
@@ -5005,14 +5145,25 @@ Result<Response> Client::UploadFile(std::string url, std::string field_name, std
         out.error = MakeError(ErrorKind::InvalidArgument, "upload file cannot be opened");
         return out;
     }
-    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::string data;
+    std::array<char, 8192> buffer{};
+    while (in)
+    {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        data.append(buffer.data(), static_cast<std::size_t>(in.gcount()));
+    }
+    if (in.bad() || !in.eof())
+    {
+        out.error = MakeError(ErrorKind::InvalidArgument, "upload file cannot be read completely");
+        return out;
+    }
 
     Request request;
     request.method = HttpMethod::Post;
     request.url = std::move(url);
     request.headers = std::move(headers);
     request.multipart.push_back({std::move(field_name), std::filesystem::path(file_path).filename().string(),
-                                 "application/octet-stream", data});
+                                 "application/octet-stream", std::move(data)});
     return Send(request);
 }
 

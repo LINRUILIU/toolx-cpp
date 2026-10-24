@@ -539,13 +539,7 @@ Status WaitAllFor(std::vector<std::future<T>>& futures, std::chrono::duration<Re
 
     for (auto& future : futures)
     {
-        const auto now = sysx::time::SteadyNow();
-        if (now >= deadline)
-        {
-            return MakeErrorStatus(ErrorKind::Timeout, "wait all timed out", true);
-        }
-
-        if (future.wait_for(deadline - now) == std::future_status::timeout)
+        if (future.wait_until(deadline) == std::future_status::timeout)
         {
             return MakeErrorStatus(ErrorKind::Timeout, "wait all timed out", true);
         }

@@ -2,7 +2,7 @@
 
 > Audience: automation authors and maintainers
 > Status: Canonical cross-product specification
-> Applies to: the `0.3.x` released baseline through v0.3.4
+> Applies to: the `0.3.x` baseline and v0.3.5 maintenance candidate
 > Source of truth for: CLI comparison, side effects, precedence and implicit behavior
 
 ## Global rules
@@ -50,6 +50,13 @@ pack also isolates archive and journal outputs. These usage errors (`2`) occur
 before logger initialization or business writes. Separate log destinations retain
 their optional write behavior. See the
 [compatibility notes](../releases/v0.3.4.md#migration).
+
+The v0.3.5 candidate applies the same input isolation to HTTP/log audit paths
+and size-rotation destinations. Conflicts with manifests, request bodies or
+input logs produce usage error `2` before file logging or network work.
+Embedded-NUL audit boundaries are rejected. Log reading failures produce
+runtime error `1`; logging cannot create a missing input and then summarize it
+as a valid empty file. See the [candidate notes](../releases/v0.3.5.md#migration).
 
 ## Exit and schema matrix
 

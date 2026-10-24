@@ -77,6 +77,11 @@ method, success, status, duration, error kind/message, expected status and body
 match. Any transport failure selects overall exit `1`; completed expectation
 failures select `4`.
 
+Audit destinations must be separate from the manifest and every request body
+file, including native aliases and size-rotation destinations. Conflicts and
+unsupported audit path spellings produce usage exit `2` before file logging or
+network work. See the [v0.3.5 candidate migration](../releases/v0.3.5.md#migration).
+
 ## Examples
 
 ```bash

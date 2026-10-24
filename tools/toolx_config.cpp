@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -278,8 +280,10 @@ cfgx::Result<cfgx::Node> BuildNodeFromRaw(std::string_view type_text, std::strin
     {
         char* parse_end = nullptr;
         const std::string copy(raw);
+        errno = 0;
         const double value = std::strtod(copy.c_str(), &parse_end);
-        if (parse_end == nullptr || *parse_end != '\0')
+        if (parse_end == copy.data() || parse_end != copy.data() + copy.size() || errno == ERANGE ||
+            !std::isfinite(value))
         {
             return cfgx::Result<cfgx::Node>{false, cfgx::Node{}, "invalid double value"};
         }

@@ -510,6 +510,41 @@ TEST(AsyncxTests, WaitAllAndWaitAnyHelpersWork)
     EXPECT_TRUE(pool.StopAndJoin(asyncx::StopMode::Drain).ok);
 }
 
+TEST(AsyncxTests, WaitAllForPollsAlreadyReadyFuturesAtExpiredDeadline)
+{
+    std::promise<int> first;
+    std::promise<int> second;
+    std::vector<std::future<int>> futures;
+    futures.push_back(first.get_future());
+    futures.push_back(second.get_future());
+    first.set_value(10);
+    second.set_value(20);
+
+    EXPECT_TRUE(asyncx::WaitAllFor(futures, std::chrono::milliseconds(0)).ok);
+    EXPECT_TRUE(asyncx::WaitAllFor(futures, std::chrono::milliseconds(-1)).ok);
+    EXPECT_EQ(futures[0].get(), 10);
+    EXPECT_EQ(futures[1].get(), 20);
+}
+
+TEST(AsyncxTests, TaskGroupPollsReadyOutcomesAtExpiredDeadline)
+{
+    asyncx::PoolOptions options;
+    options.worker_count = 1;
+    asyncx::ThreadPool pool(options);
+    asyncx::TaskGroup group(pool);
+    ASSERT_TRUE(group.Submit(asyncx::TaskOptions{}, [](asyncx::CancellationToken) {}).ok);
+    ASSERT_TRUE(pool.WaitForIdleFor(std::chrono::seconds(1)).ok);
+
+    EXPECT_TRUE(group.WaitFor(std::chrono::milliseconds(0)).ok);
+    EXPECT_EQ(group.Stats().completed, 1u);
+
+    ASSERT_TRUE(group.Submit(asyncx::TaskOptions{}, [](asyncx::CancellationToken) {}).ok);
+    ASSERT_TRUE(pool.WaitForIdleFor(std::chrono::seconds(1)).ok);
+    EXPECT_TRUE(group.WaitUntil(sysx::time::SteadyNow() - std::chrono::milliseconds(1)).ok);
+    EXPECT_EQ(group.Stats().completed, 2u);
+    EXPECT_TRUE(pool.StopAndJoin().ok);
+}
+
 TEST(AsyncxTests, WaitAllForCanTimeout)
 {
     asyncx::ThreadPool pool;

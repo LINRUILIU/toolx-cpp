@@ -946,7 +946,7 @@ bool replace_existing_file(const Path& candidate, const Path& target, std::strin
             std::memcpy(info->name, destination.data(), byte_count);
             HANDLE handle = CreateFileW(candidate.c_str(), DELETE | SYNCHRONIZE,
                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                                        FILE_ATTRIBUTE_NORMAL, nullptr);
+                                        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
             if (handle == INVALID_HANDLE_VALUE)
                 ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
             else
@@ -1190,6 +1190,28 @@ bool safe_replace_file(const Path& src, const Path& dst, bool backup, const RunO
         return false;
     }
 
+    const bool keep_backup = backup || options.default_backup;
+    if (keep_backup && options.conflict_policy == ConflictPolicy::Overwrite && path_exists(dst))
+    {
+        const Path retained_backup(dst.string() + options.backup_suffix);
+        const auto resolved_backup = journal_boundary_path(retained_backup);
+        auto overlaps_backup = [&](const Path& path)
+        {
+            std::error_code ec;
+            const bool same_file = std::filesystem::equivalent(retained_backup, path, ec) && !ec;
+            return same_file || boundary_paths_overlap(resolved_backup, journal_boundary_path(path));
+        };
+        // Moving a pre-existing backup aside must never move the replacement
+        // source (or an ancestor) into a temporary path that commit will delete.
+        // Check before creating parents or recording any destructive mutation.
+        if (overlaps_backup(src) || overlaps_backup(dst))
+        {
+            *error = utils::err::join_context("fsx", "safe_replace",
+                                              "retained backup overlaps a source or destination path");
+            return false;
+        }
+    }
+
     if (!ensure_parent(dst, error))
     {
         return false;
@@ -1213,7 +1235,6 @@ bool safe_replace_file(const Path& src, const Path& dst, bool backup, const RunO
             return false;
         }
 
-        const bool keep_backup = backup || options.default_backup;
         const Path destination_backup =
             keep_backup ? Path(dst.string() + options.backup_suffix) : make_temp_path(dst, "old");
         if (!move_existing_destination_to_backup(dst, destination_backup, keep_backup, state, "safe_replace", error))
@@ -2578,6 +2599,42 @@ std::size_t bounded_cstr_len(const char* text, std::size_t max_len)
     }
     return len;
 }
+
+bool write_tar_file_payload(std::ostream& out, const Path& path, std::uintmax_t size, std::string* error)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open())
+    {
+        *error = utils::err::join_context("fsx", "tar", "failed to open source file");
+        return false;
+    }
+
+    // Copy the bytes declared by the header. Inserting an empty streambuf
+    // into an ostream sets failbit, so it cannot be used for empty files.
+    std::array<char, 4096> buffer{};
+    std::uintmax_t remaining = size;
+    while (remaining > 0)
+    {
+        const auto chunk = static_cast<std::streamsize>(std::min<std::uintmax_t>(remaining, buffer.size()));
+        in.read(buffer.data(), chunk);
+        if (in.gcount() != chunk)
+        {
+            *error = utils::err::join_context("fsx", "tar", "failed to read source file payload");
+            return false;
+        }
+        out.write(buffer.data(), chunk);
+        remaining -= static_cast<std::uintmax_t>(chunk);
+    }
+    const std::uintmax_t padding = (512u - (size % 512u)) % 512u;
+    if (padding > 0)
+    {
+        std::array<char, 512> zeros{};
+        out.write(zeros.data(), static_cast<std::streamsize>(padding));
+    }
+    if (!out.good())
+        *error = utils::err::join_context("fsx", "tar", "failed to write archive payload");
+    return out.good();
+}
 } // namespace
 
 Status CreateArchive(std::string_view source_root, std::string_view archive_path, const ArchiveOptions& options)
@@ -2727,7 +2784,7 @@ Status CreateArchive(std::string_view source_root, std::string_view archive_path
         return status;
     }
 
-    if (options.include_root_directory)
+    if (source_directory && options.include_root_directory)
     {
         std::string root_name = root.filename().generic_string();
         if (!write_tar_header(out, root_name, true, 0, &status.error))
@@ -2740,18 +2797,17 @@ Status CreateArchive(std::string_view source_root, std::string_view archive_path
     {
         const std::string name = root.filename().generic_string();
         const std::uintmax_t size = std::filesystem::file_size(root, ec);
+        if (ec)
+        {
+            status.error = utils::err::join_context("fsx", "tar", "failed to inspect source file: " + ec.message());
+            return status;
+        }
         if (!write_tar_header(out, name, false, size, &status.error))
         {
             return status;
         }
-        std::ifstream in(root, std::ios::binary);
-        out << in.rdbuf();
-        const std::uintmax_t padding = (512u - (size % 512u)) % 512u;
-        if (padding > 0)
-        {
-            std::array<char, 512> zeros{};
-            out.write(zeros.data(), static_cast<std::streamsize>(padding));
-        }
+        if (!write_tar_file_payload(out, root, size, &status.error))
+            return status;
     }
     else
     {
@@ -2770,20 +2826,15 @@ Status CreateArchive(std::string_view source_root, std::string_view archive_path
             }
             if (!entry.is_directory)
             {
-                std::ifstream in(root / Path(entry.path), std::ios::binary);
-                out << in.rdbuf();
-                const std::uintmax_t padding = (512u - (entry.size % 512u)) % 512u;
-                if (padding > 0)
-                {
-                    std::array<char, 512> zeros{};
-                    out.write(zeros.data(), static_cast<std::streamsize>(padding));
-                }
+                if (!write_tar_file_payload(out, root / Path(entry.path), entry.size, &status.error))
+                    return status;
             }
         }
     }
 
     std::array<char, 1024> end{};
     out.write(end.data(), static_cast<std::streamsize>(end.size()));
+    out.close();
     status.ok = out.good();
     if (!status.ok)
     {
@@ -2816,6 +2867,7 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
         status.error = utils::err::join_context("fsx", "tar", "failed to canonicalize destination root");
         return status;
     }
+    const auto archive_key = boundary_key(Path(std::string(archive_path)));
 
     // A skipped directory entry that collides with a file also skips its
     // descendants. Their payloads still have to be consumed from the stream.
@@ -2826,6 +2878,11 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
         in.read(header.data(), static_cast<std::streamsize>(header.size()));
         if (in.gcount() == 0)
         {
+            if (in.bad())
+            {
+                status.error = utils::err::join_context("fsx", "tar", "failed to read archive");
+                return status;
+            }
             break;
         }
         if (in.gcount() != static_cast<std::streamsize>(header.size()))
@@ -2857,10 +2914,13 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
             status.error = utils::err::join_context("fsx", "tar", "archive entry escapes destination root");
             return status;
         }
-
         const bool ancestor_skipped =
             std::any_of(skipped_directories.begin(), skipped_directories.end(),
                         [&](const std::string& key) { return path_is_at_or_within(target_key, key); });
+        // A skipped ordinary file ancestor is never traversed. Its descendants
+        // still need their payload consumed without treating ENOTDIR as failure.
+        if (!toolx_detail::SafeChildPath(root, Path(name), &status.error, ancestor_skipped))
+            return status;
         const bool exists = !ancestor_skipped && std::filesystem::exists(target, ec);
         if (ec)
         {
@@ -2880,6 +2940,16 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
         std::ofstream out;
         if (!skip)
         {
+            std::error_code alias_ec;
+            const bool same_file =
+                exists && std::filesystem::equivalent(Path(std::string(archive_path)), target, alias_ec) && !alias_ec;
+            const bool removes_archive_parent =
+                !directory && existing_directory && path_is_at_or_within(archive_key, target_key);
+            if (same_file || target_key == archive_key || removes_archive_parent)
+            {
+                status.error = utils::err::join_context("fsx", "tar", "archive output overlaps input archive");
+                return status;
+            }
             if (exists && !(directory && existing_directory))
             {
                 if (options.conflict_policy == ConflictPolicy::Fail)
@@ -2945,7 +3015,7 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
         }
         if (out.is_open())
         {
-            out.flush();
+            out.close();
             if (!out.good())
             {
                 status.error = utils::err::join_context("fsx", "tar", "failed to write output file");
@@ -2964,6 +3034,20 @@ Status CreateLink(std::string_view target, std::string_view link_path, LinkType 
     const Path target_path{std::string(target)};
     const Path link{std::string(link_path)};
 
+    // Relative symbolic targets are interpreted from the link's parent, while
+    // hard-link sources are interpreted from the current working directory.
+    const Path source_identity =
+        type == LinkType::Symbolic && target_path.is_relative() ? link.parent_path() / target_path : target_path;
+    std::error_code alias_ec;
+    const bool same_file = std::filesystem::equivalent(source_identity, link, alias_ec) && !alias_ec;
+    const auto resolved_target = journal_boundary_path(source_identity);
+    const auto resolved_link = journal_boundary_path(link);
+    if (same_file || boundary_component_equal(resolved_target, resolved_link))
+    {
+        out.error = utils::err::join_context("fsx", "link", "target and link path must be different");
+        return out;
+    }
+
     std::string ensure_error;
     if (!ensure_parent(link, &ensure_error))
     {
@@ -2972,33 +3056,83 @@ Status CreateLink(std::string_view target, std::string_view link_path, LinkType 
     }
 
     std::error_code ec;
-    if (std::filesystem::exists(link, ec))
+    const auto link_status = std::filesystem::symlink_status(link, ec);
+    if (ec && ec != std::errc::no_such_file_or_directory)
     {
-        if (!overwrite)
-        {
-            out.error = utils::err::join_context("fsx", "link", "link path already exists");
-            return out;
-        }
-        std::filesystem::remove(link, ec);
-        if (ec)
-        {
-            out.error = utils::err::join_context("fsx", "link", ec.message());
-            return out;
-        }
+        out.error = utils::err::join_context("fsx", "link", ec.message());
+        return out;
+    }
+    const bool exists = link_status.type() != std::filesystem::file_type::not_found;
+    if (exists && !overwrite)
+    {
+        out.error = utils::err::join_context("fsx", "link", "link path already exists");
+        return out;
     }
 
+    // Construct the candidate first. Missing sources, cross-volume hard links,
+    // unsupported symbolic links and publication failures preserve the old path.
+    const Path candidate = make_temp_path(link, "link");
+    ec.clear();
     if (type == LinkType::Hard)
     {
-        std::filesystem::create_hard_link(target_path, link, ec);
+        std::filesystem::create_hard_link(target_path, candidate, ec);
     }
     else
     {
-        std::filesystem::create_symlink(target_path, link, ec);
+        std::filesystem::create_symlink(target_path, candidate, ec);
     }
 
     if (ec)
     {
         out.error = utils::err::join_context("fsx", "link", ec.message());
+        return out;
+    }
+
+    bool published = false;
+    if (exists && std::filesystem::is_directory(link_status))
+    {
+        // Retain the existing empty-directory overwrite behavior. A nonempty
+        // directory cannot be replaced by a link and is never moved aside.
+        if (std::filesystem::is_empty(link, ec) && !ec)
+        {
+            const Path previous = make_temp_path(link, "link-old");
+            std::filesystem::rename(link, previous, ec);
+            if (!ec)
+            {
+                std::filesystem::rename(candidate, link, ec);
+                if (ec)
+                {
+                    const auto publication_error = ec.message();
+                    std::error_code restore_ec;
+                    std::filesystem::rename(previous, link, restore_ec);
+                    out.error = utils::err::join_context("fsx", "link", publication_error);
+                    if (restore_ec)
+                        out.error += "; prior directory retained at " + previous.string() + ": " + restore_ec.message();
+                }
+                else
+                {
+                    published = true;
+                    std::filesystem::remove(previous, ec);
+                }
+            }
+        }
+        if (!published && out.error.empty())
+            out.error =
+                utils::err::join_context("fsx", "link", ec ? ec.message() : "destination directory is not empty");
+    }
+    else if (exists)
+        published = replace_existing_file(candidate, link, &out.error);
+    else
+    {
+        std::filesystem::rename(candidate, link, ec);
+        published = !ec;
+        if (ec)
+            out.error = utils::err::join_context("fsx", "link", ec.message());
+    }
+    if (!published)
+    {
+        std::error_code cleanup_ec;
+        std::filesystem::remove(candidate, cleanup_ec);
         return out;
     }
 

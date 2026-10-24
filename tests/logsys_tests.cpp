@@ -353,11 +353,48 @@ TEST(LoggerTests, PeriodicFlushLifecycle)
     using namespace logsys;
 
     auto& logger = Logger::Instance();
+    logger.ConfigureSimpleLogger(LogLevel::Info, false, false);
+    auto sink = std::make_shared<FlushCountingSink>();
+    logger.AddDefaultSink(sink);
     logger.StartPeriodicFlush(std::chrono::milliseconds(200));
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (sink->flushes.load() == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
     logger.StopPeriodicFlush();
 
-    SUCCEED();
+    EXPECT_GT(sink->flushes.load(), 0u);
+    logger.ConfigureSimpleLogger();
+}
+
+TEST(LoggerTests, StopPeriodicFlushInterruptsTheConfiguredInterval)
+{
+    auto& logger = logsys::Logger::Instance();
+    logger.ConfigureSimpleLogger(logsys::LogLevel::Info, false, false);
+    logger.StartPeriodicFlush(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto started = std::chrono::steady_clock::now();
+    logger.StopPeriodicFlush();
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+
+    // Stopping immediately after a restart must also work if the new worker
+    // has not yet entered its timed wait.
+    logger.StartPeriodicFlush(std::chrono::seconds(2));
+    logger.StopPeriodicFlush();
+}
+
+TEST(LoggerTests, LoadConfigDirectoryFailsWithoutThrowingOrReconfiguring)
+{
+    const auto path = TestTempPath("logsys-config-directory.json");
+    std::filesystem::create_directories(path);
+    auto& logger = logsys::Logger::Instance();
+    const auto level = logger.Level();
+    EXPECT_NO_THROW(EXPECT_FALSE(logger.LoadConfigV2FromJsonFile(path.string())));
+    EXPECT_EQ(logger.Level(), level);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }
 
 TEST(LoggerTests, LoadConfigV2FromJsonFileAppliesSettings)

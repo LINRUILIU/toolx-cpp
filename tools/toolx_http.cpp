@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cctype>
@@ -16,6 +17,8 @@
 #include "httpx.h"
 #include "logsys.h"
 #include "schemax.h"
+
+#include "audit_log_guard.h"
 
 namespace
 {
@@ -704,7 +707,12 @@ cfgx::Result<std::string> ReadBodyFile(const std::string& path)
     {
         return cfgx::Result<std::string>{false, {}, "failed to open body file: " + path};
     }
-    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::string text;
+    std::array<char, 4096> buffer{};
+    while (in.read(buffer.data(), buffer.size()) || in.gcount() > 0)
+        text.append(buffer.data(), static_cast<std::size_t>(in.gcount()));
+    if (in.bad() || !in.eof())
+        return cfgx::Result<std::string>{false, {}, "failed to read body file: " + path};
     return cfgx::Result<std::string>{true, std::move(text), ""};
 }
 
@@ -885,6 +893,17 @@ RunSummary RunChecks(const HttpConfig& config)
 
 int RunCheck(const HttpConfig& config, bool json_mode)
 {
+    std::vector<std::string> protected_paths{config.manifest};
+    for (const auto& check : config.checks)
+    {
+        protected_paths.push_back(check.body_file);
+    }
+    std::string logging_error;
+    if (!toolx_cli::ValidateAuditLogPaths(config.log_file, protected_paths,
+                                          logsys::Logger::Instance().CurrentConfigV2().rolling, &logging_error))
+    {
+        return ExitError(json_mode, kExitUsageError, logging_error);
+    }
     const RunSummary summary = RunChecks(config);
     const auto data = BuildData(config, summary);
 

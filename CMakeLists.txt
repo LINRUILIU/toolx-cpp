@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/toolx_msvc_env.cmake")
 
-project(ToolX VERSION 0.3.4 LANGUAGES CXX)
+project(ToolX VERSION 0.3.5 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -847,12 +847,14 @@ set(CPACK_SOURCE_IGNORE_FILES
     "[.]gc(ov|da|no)$"
     "[.]py[co]$"
     "[\\\\/]__pycache__([\\\\/]|$)"
+    "[\\\\/](node_modules|[.]runs|[.]venv|[.]pytest_cache|[.]pytest-tmp)([\\\\/]|$)"
+    "[\\\\/]experiments[\\\\/].*[.]log$"
     "[\\\\/](reference|stage|[.]third_party)[\\\\/]"
     "${CMAKE_CURRENT_SOURCE_DIR}/toolx_test_tmp([\\\\/]|$)"
     "${CMAKE_CURRENT_SOURCE_DIR}/release-docs-fixture([\\\\/]|$)"
     "${CMAKE_CURRENT_SOURCE_DIR}/source-archive-fixtures([\\\\/]|$)"
     "${CMAKE_CURRENT_SOURCE_DIR}/[^/]*[.]log$"
-    "[\\\\/][.]git[\\\\/]"
+    "[\\\\/][.]git([\\\\/]|$)"
     "[\\\\/][.]vscode[\\\\/]"
     "[\\\\/]temp[\\\\/]"
     "[\\\\/]build[\\\\/]"

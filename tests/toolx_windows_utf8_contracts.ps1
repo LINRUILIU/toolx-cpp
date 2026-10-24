@@ -144,3 +144,5 @@ foreach ($label in @("$chinese paths", "$chinese $emoji paths")) {
 }
 
 Write-Host "$script:caseCount UTF-8 CLI contracts passed; raw captures: $testRoot"
+
+& (Join-Path $PSScriptRoot "toolx_windows_audit_junction_contracts.ps1") -BinDir $binaryRoot -WorkDir $testRoot

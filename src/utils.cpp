@@ -514,7 +514,7 @@ ParseResult<double> parse_double(std::string_view text)
     errno = 0;
     const double value = std::strtod(copy.c_str(), &parse_end);
 
-    if (parse_end == nullptr || parse_end == copy.c_str() || *parse_end != '\0')
+    if (parse_end == nullptr || parse_end == copy.c_str() || parse_end != copy.c_str() + copy.size())
     {
         out.error = err::join_context("parse", "double", "invalid floating-point token");
         return out;

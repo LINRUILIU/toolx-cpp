@@ -419,6 +419,9 @@ bool IsScalarNode(const Node& node)
            kind == NodeKind::String;
 }
 
+std::string StripIniComment(std::string_view text);
+Node ParseIniScalar(std::string_view text);
+
 bool IsIntegralDouble(double value, std::int64_t& out) noexcept
 {
     if (!std::isfinite(value))
@@ -432,8 +435,11 @@ bool IsIntegralDouble(double value, std::int64_t& out) noexcept
         return false;
     }
 
-    if (integral < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
-        integral > static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+    // INT64_MAX rounds up to 2^63 as a double, so the upper endpoint
+    // must be exclusive before converting back to an integer.
+    constexpr double lower = static_cast<double>(std::numeric_limits<std::int64_t>::min());
+    constexpr double upper = -lower;
+    if (integral < lower || integral >= upper)
     {
         return false;
     }
@@ -469,6 +475,31 @@ std::uint64_t SteadyNowMs()
     return static_cast<std::uint64_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
 }
 
+Result<std::string> ReadFileText(std::string_view path)
+{
+    try
+    {
+        std::ifstream input(std::string(path), std::ios::binary);
+        if (!input.is_open())
+            return Result<std::string>{false, {}, "failed to open file: " + std::string(path)};
+
+        std::string text;
+        std::array<char, 8192> buffer{};
+        while (input)
+        {
+            input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            text.append(buffer.data(), static_cast<std::size_t>(input.gcount()));
+        }
+        if (input.bad() || !input.eof())
+            return Result<std::string>{false, {}, "failed while reading file: " + std::string(path)};
+        return Result<std::string>{true, std::move(text), {}};
+    }
+    catch (const std::ios_base::failure& error)
+    {
+        return Result<std::string>{false, {}, "failed while reading file '" + std::string(path) + "': " + error.what()};
+    }
+}
+
 Result<FileFingerprint> CaptureFileFingerprint(std::string_view path, bool allow_missing)
 {
     FileFingerprint fp;
@@ -495,15 +526,11 @@ Result<FileFingerprint> CaptureFileFingerprint(std::string_view path, bool allow
         return Result<FileFingerprint>{true, fp, ""};
     }
 
-    std::ifstream input(std::string(path), std::ios::binary);
-    if (!input.is_open())
-    {
-        return Result<FileFingerprint>{false, {}, "failed to open file for fingerprint: " + std::string(path)};
-    }
-
-    std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const auto text = ReadFileText(path);
+    if (!text.ok)
+        return Result<FileFingerprint>{false, {}, "failed to read file for fingerprint: " + text.error};
     fp.exists = true;
-    fp.content_hash = Fnv1a64(text);
+    fp.content_hash = Fnv1a64(text.value);
 
     const auto file_time = std::filesystem::last_write_time(fs_path, ec);
     if (ec)
@@ -695,13 +722,23 @@ std::string ScalarToIniText(const Node& node)
     case NodeKind::Integer:
         return std::to_string(node.AsInt());
     case NodeKind::Double:
-    {
-        std::ostringstream oss;
-        oss << node.AsDouble();
-        return oss.str();
-    }
+        return ToJson(node, 0);
     case NodeKind::String:
-        return node.AsString();
+    {
+        // INI's existing quoted scalar syntax preserves whitespace and keeps
+        // strings such as "false" or "123" from being inferred as another kind.
+        const auto value = node.AsString();
+        const char quote = value.find('"') != std::string::npos && value.find('\'') == std::string::npos ? '\'' : '"';
+        std::string rendered(1, quote);
+        for (const char ch : value)
+        {
+            if (ch == quote)
+                rendered.push_back(quote);
+            rendered.push_back(ch);
+        }
+        rendered.push_back(quote);
+        return rendered;
+    }
     default:
         return ToJson(node, 0);
     }
@@ -1759,6 +1796,10 @@ Status Node::SetAt(std::size_t index, Node value, bool auto_expand)
         {
             return FailStatus("array index out of range");
         }
+        if (index >= arr->max_size())
+        {
+            return FailStatus("array index exceeds maximum supported array size");
+        }
         arr->resize(index + 1);
     }
 
@@ -2417,6 +2458,10 @@ Result<Node> PollReloader::ImportSnapshotFromFile(std::string_view file_path, Co
 
 Status PollReloader::RestoreSnapshot(const Node& snapshot, const std::vector<SourceAttribution>* source_trace)
 {
+    const auto validation = Validate(snapshot, rules_);
+    if (!validation.ok)
+        return FailStatus("snapshot validation failed with " + std::to_string(validation.value.size()) + " issue(s)");
+
     current_ = snapshot;
     has_current_ = true;
     pending_change_ = false;
@@ -3474,7 +3519,7 @@ Result<Node> ParseIniText(std::string_view text)
         }
 
         const std::string key = TrimCopy(std::string_view(trimmed).substr(0, split));
-        const std::string value_text = TrimCopy(std::string_view(trimmed).substr(split + 1));
+        const std::string value_text = StripIniComment(std::string_view(trimmed).substr(split + 1));
         if (key.empty())
         {
             std::ostringstream err;
@@ -3483,7 +3528,7 @@ Result<Node> ParseIniText(std::string_view text)
         }
 
         const std::string path = section.empty() ? key : (section + ".").append(key);
-        const auto st = SetNode(root, path, ParseScalar(value_text));
+        const auto st = SetNode(root, path, ParseIniScalar(value_text));
         if (!st.ok)
         {
             std::ostringstream err;
@@ -3510,6 +3555,36 @@ std::string EscapePathSegment(std::string_view segment)
         out.push_back(ch);
     }
     return out;
+}
+
+std::string FormatPathTokens(const std::vector<PathToken>& tokens, std::size_t first = 0)
+{
+    std::string path;
+    for (std::size_t i = first; i < tokens.size(); ++i)
+    {
+        const auto& token = tokens[i];
+        if (token.kind == PathTokenKind::Index)
+            path += "[" + std::to_string(token.index) + "]";
+        else
+            path = JoinObjectPath(path, EscapePathSegment(token.key));
+    }
+    return path;
+}
+
+std::optional<std::string> CanonicalIniPath(std::string_view path)
+{
+    const auto parsed = ParsePath(path);
+    if (!parsed.ok)
+        return std::nullopt;
+    return FormatPathTokens(parsed.value);
+}
+
+std::pair<std::string, std::string> SplitIniPath(std::string_view path)
+{
+    const auto parsed = ParsePath(path);
+    if (parsed.ok && parsed.value.size() > 1 && parsed.value.front().kind == PathTokenKind::Key)
+        return {EscapePathSegment(parsed.value.front().key), FormatPathTokens(parsed.value, 1)};
+    return {{}, std::string(path)};
 }
 
 std::string EscapeTomlString(std::string_view input)
@@ -3985,9 +4060,17 @@ std::string DumpIniText(const Node& root)
             const auto* obj = node.TryObject();
             for (const auto& kv : *obj)
             {
-                const std::string next = path.empty() ? kv.first : (path + "." + kv.first);
+                const std::string next = JoinObjectPath(path, EscapePathSegment(kv.first));
                 collect(kv.second, next);
             }
+            return;
+        }
+
+        if (node.IsArray())
+        {
+            const auto* array = node.TryArray();
+            for (std::size_t i = 0; i < array->size(); ++i)
+                collect((*array)[i], path + "[" + std::to_string(i) + "]");
             return;
         }
 
@@ -4022,16 +4105,14 @@ std::string DumpIniText(const Node& root)
 
     for (const auto& entry : leaves)
     {
-        std::string full = entry.path.empty() ? "value" : entry.path;
-        const std::size_t dot = full.find('.');
-        if (dot == std::string::npos)
+        const std::string full = entry.path.empty() ? "value" : entry.path;
+        const auto [section, key] = SplitIniPath(full);
+        if (section.empty())
         {
-            top_level.push_back({full, ScalarToIniText(*entry.value)});
+            top_level.push_back({key, ScalarToIniText(*entry.value)});
             continue;
         }
 
-        const std::string section = full.substr(0, dot);
-        const std::string key = full.substr(dot + 1);
         add_section_value(section, key, ScalarToIniText(*entry.value));
     }
 
@@ -4128,7 +4209,7 @@ struct FlatLeafEntry
     const Node* value{nullptr};
 };
 
-void CollectLeafEntries(const Node& node, const std::string& path, std::vector<FlatLeafEntry>& out)
+void CollectLeafEntries(const Node& node, const std::string& path, std::vector<FlatLeafEntry>& out, bool escape_keys)
 {
     if (node.Kind() == NodeKind::Object)
     {
@@ -4140,8 +4221,9 @@ void CollectLeafEntries(const Node& node, const std::string& path, std::vector<F
 
         for (const auto& kv : *obj)
         {
-            const std::string next = path.empty() ? kv.first : (path + "." + kv.first);
-            CollectLeafEntries(kv.second, next, out);
+            const std::string key = escape_keys ? EscapePathSegment(kv.first) : kv.first;
+            const std::string next = JoinObjectPath(path, key);
+            CollectLeafEntries(kv.second, next, out, escape_keys);
         }
         return;
     }
@@ -4157,7 +4239,7 @@ void CollectLeafEntries(const Node& node, const std::string& path, std::vector<F
         for (std::size_t i = 0; i < arr->size(); ++i)
         {
             const std::string next = path + "[" + std::to_string(i) + "]";
-            CollectLeafEntries((*arr)[i], next, out);
+            CollectLeafEntries((*arr)[i], next, out, escape_keys);
         }
         return;
     }
@@ -4165,12 +4247,12 @@ void CollectLeafEntries(const Node& node, const std::string& path, std::vector<F
     out.push_back(FlatLeafEntry{path, &node});
 }
 
-std::vector<FlatLeafEntry> BuildLeafEntries(const Node& root)
+std::vector<FlatLeafEntry> BuildLeafEntries(const Node& root, bool escape_keys = false)
 {
     std::vector<FlatLeafEntry> out;
     if (root.Kind() == NodeKind::Object || root.Kind() == NodeKind::Array)
     {
-        CollectLeafEntries(root, "", out);
+        CollectLeafEntries(root, "", out, escape_keys);
     }
     else
     {
@@ -4220,7 +4302,7 @@ struct ValueAndComment
     std::string suffix;
 };
 
-ValueAndComment SplitValueAndComment(std::string_view text)
+ValueAndComment SplitValueAndComment(std::string_view text, bool ini_quoted_strings = false)
 {
     bool in_single_quote = false;
     bool in_double_quote = false;
@@ -4231,11 +4313,21 @@ ValueAndComment SplitValueAndComment(std::string_view text)
         const char ch = text[i];
         if (ch == '\'' && !in_double_quote)
         {
+            if (ini_quoted_strings && in_single_quote && i + 1 < text.size() && text[i + 1] == '\'')
+            {
+                ++i;
+                continue;
+            }
             in_single_quote = !in_single_quote;
             continue;
         }
         if (ch == '"' && !in_single_quote)
         {
+            if (ini_quoted_strings && in_double_quote && i + 1 < text.size() && text[i + 1] == '"')
+            {
+                ++i;
+                continue;
+            }
             in_double_quote = !in_double_quote;
             continue;
         }
@@ -4264,6 +4356,30 @@ ValueAndComment SplitValueAndComment(std::string_view text)
     out.value = TrimCopy(text.substr(0, marker));
     out.suffix = std::string(text.substr(marker));
     return out;
+}
+
+std::string StripIniComment(std::string_view text)
+{
+    return SplitValueAndComment(text, true).value;
+}
+
+Node ParseIniScalar(std::string_view raw)
+{
+    const std::string text = TrimCopy(raw);
+    if (text.size() < 2 || (text.front() != '\'' && text.front() != '"') || text.back() != text.front())
+        return ParseScalar(text);
+
+    // An embedded delimiter is doubled, leaving backslashes literal so
+    // existing quoted Windows paths retain their meaning.
+    const char quote = text.front();
+    std::string value;
+    for (std::size_t i = 1; i + 1 < text.size(); ++i)
+    {
+        value.push_back(text[i]);
+        if (text[i] == quote && i + 2 < text.size() && text[i + 1] == quote)
+            ++i;
+    }
+    return Node(std::move(value));
 }
 
 bool TryParseIniSection(std::string_view line, std::string& section)
@@ -4332,7 +4448,7 @@ std::optional<IniKeyValueLine> TryParseIniKeyValueLine(std::string_view line)
     }
 
     out.prefix = std::string(line.substr(0, value_start));
-    const ValueAndComment split_value = SplitValueAndComment(line.substr(value_start));
+    const ValueAndComment split_value = SplitValueAndComment(line.substr(value_start), true);
     out.suffix = split_value.suffix;
     return out;
 }
@@ -4347,7 +4463,7 @@ std::optional<std::string> TryRenderIniWithCommentPreserve(const Node& root, std
     auto lines = SplitLines(original_text);
     const bool trailing_newline = !original_text.empty() && original_text.back() == '\n';
 
-    const std::vector<FlatLeafEntry> leaves = BuildLeafEntries(root);
+    const std::vector<FlatLeafEntry> leaves = BuildLeafEntries(root, true);
     std::unordered_map<std::string, const Node*> leaf_map;
     leaf_map.reserve(leaves.size() * 2 + 1);
     for (const auto& entry : leaves)
@@ -4375,15 +4491,19 @@ std::optional<std::string> TryRenderIniWithCommentPreserve(const Node& root, std
             continue;
         }
 
-        const std::string path = section.empty() ? key_line->key : (section + "." + key_line->key);
-        const auto it = leaf_map.find(path);
+        const auto path = CanonicalIniPath(section.empty() ? key_line->key : (section + "." + key_line->key));
+        if (!path.has_value())
+            return std::nullopt;
+        const auto it = leaf_map.find(*path);
         if (it == leaf_map.end() || it->second == nullptr)
         {
+            // Retain any inline comment while removing the obsolete assignment.
+            line = key_line->suffix;
             continue;
         }
 
         line = key_line->prefix + ScalarToIniText(*it->second) + key_line->suffix;
-        emitted.insert(path);
+        emitted.insert(*path);
     }
 
     std::vector<std::pair<std::string, std::string>> missing_top;
@@ -4410,15 +4530,13 @@ std::optional<std::string> TryRenderIniWithCommentPreserve(const Node& root, std
             continue;
         }
 
-        const std::size_t dot = path.find('.');
-        if (dot == std::string::npos)
+        const auto [sec, key] = SplitIniPath(path);
+        if (sec.empty())
         {
-            missing_top.push_back({path, ScalarToIniText(*entry.value)});
+            missing_top.push_back({key, ScalarToIniText(*entry.value)});
             continue;
         }
 
-        const std::string sec = path.substr(0, dot);
-        const std::string key = path.substr(dot + 1);
         add_missing_section(sec, key, ScalarToIniText(*entry.value));
     }
 
@@ -4429,10 +4547,18 @@ std::optional<std::string> TryRenderIniWithCommentPreserve(const Node& root, std
             lines.push_back("");
         }
 
+        // A root assignment appended after a section would become a child of
+        // that section when parsed again. Insert it before the first header.
+        const auto first_section = std::find_if(lines.begin(), lines.end(),
+                                                [](const std::string& line)
+                                                {
+                                                    std::string ignored;
+                                                    return TryParseIniSection(line, ignored);
+                                                });
+        std::vector<std::string> top_lines;
         for (const auto& kv : missing_top)
-        {
-            lines.push_back(kv.first + "=" + kv.second);
-        }
+            top_lines.push_back(kv.first + "=" + kv.second);
+        lines.insert(first_section, top_lines.begin(), top_lines.end());
 
         if (!missing_top.empty() && !missing_sections.empty())
         {
@@ -4777,13 +4903,10 @@ Result<Node> LoadFromFile(std::string_view file_path, ConfigFormat preferred)
         return Result<Node>{false, Node{}, "cannot detect config format from file path"};
     }
 
-    std::ifstream input(std::string(file_path), std::ios::binary);
-    if (!input.is_open())
-    {
-        return Result<Node>{false, Node{}, "failed to open file: " + std::string(file_path)};
-    }
-
-    std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const auto contents = ReadFileText(file_path);
+    if (!contents.ok)
+        return Result<Node>{false, Node{}, contents.error};
+    const std::string& text = contents.value;
 
     std::function<Result<Node>(std::string_view, ConfigFormat)> adapter_parse;
     std::string adapter_name;
@@ -4827,10 +4950,16 @@ Status SaveToFile(const Node& root, std::string_view file_path, ConfigFormat pre
     std::string existing_text;
     if (format == ConfigFormat::Ini || format == ConfigFormat::Yaml)
     {
-        std::ifstream existing_input(std::string(file_path), std::ios::binary);
-        if (existing_input.is_open())
+        std::error_code ec;
+        const bool exists = std::filesystem::exists(std::filesystem::path(std::string(file_path)), ec);
+        if (ec)
+            return FailStatus("cannot inspect existing config: " + ec.message());
+        if (exists)
         {
-            existing_text.assign((std::istreambuf_iterator<char>(existing_input)), std::istreambuf_iterator<char>());
+            const auto contents = ReadFileText(file_path);
+            if (!contents.ok)
+                return FailStatus(contents.error);
+            existing_text = contents.value;
         }
     }
 
@@ -4878,6 +5007,7 @@ Status SaveToFile(const Node& root, std::string_view file_path, ConfigFormat pre
     }
 
     output << rendered_text;
+    output.close();
 
     if (!output.good())
     {
@@ -4923,6 +5053,7 @@ Status SaveEncryptedToFile(const Node& root, std::string_view file_path, std::st
     output << "format=" << static_cast<int>(format) << "\n";
     output << "nonce=" << std::hex << nonce << std::dec << "\n";
     output << "data=" << HexEncode(bytes) << "\n";
+    output.close();
 
     if (!output.good())
     {
@@ -4939,13 +5070,10 @@ Result<Node> LoadEncryptedFromFile(std::string_view file_path, std::string_view 
         return Result<Node>{false, Node{}, "encryption key must not be empty"};
     }
 
-    std::ifstream input(std::string(file_path), std::ios::binary);
-    if (!input.is_open())
-    {
-        return Result<Node>{false, Node{}, "failed to open file: " + std::string(file_path)};
-    }
-
-    std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const auto contents = ReadFileText(file_path);
+    if (!contents.ok)
+        return Result<Node>{false, Node{}, contents.error};
+    const std::string& text = contents.value;
     std::istringstream lines(text);
     std::string line;
 

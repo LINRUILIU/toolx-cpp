@@ -56,6 +56,12 @@ capabilities and warnings.
 Plain output remains stable key/value lines for files, lines, matched,
 parse-failure and severity counts.
 
+Audit destinations and their size-rotation paths must be separate from every
+input log and the manifest, including native aliases. Conflicts produce usage
+exit `2` before logger initialization, including when the protected input does
+not exist. Read failures are runtime exit `1`, not successful empty summaries.
+See the [v0.3.5 candidate migration](../releases/v0.3.5.md#migration).
+
 ## Examples
 
 ```bash

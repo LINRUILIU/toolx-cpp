@@ -84,4 +84,16 @@ foreach(output_root IN ITEMS toolx_test_tmp release-docs-fixture source-archive-
     file(REMOVE "${root}/ToolX-source/${output_root}")
     check(TRUE)
 endforeach()
+# Generated dependency/runtime directories must be excluded at any depth, while
+# similarly named source directories remain valid.
+foreach(runtime_dir IN ITEMS node_modules .runs .venv .pytest_cache .pytest-tmp)
+    file(MAKE_DIRECTORY "${root}/ToolX-source/experiments/recipe/${runtime_dir}-notes")
+    file(WRITE "${root}/ToolX-source/experiments/recipe/${runtime_dir}-notes/README.md" "source notes")
+    check(TRUE)
+    file(MAKE_DIRECTORY "${root}/ToolX-source/experiments/recipe/${runtime_dir}")
+    file(WRITE "${root}/ToolX-source/experiments/recipe/${runtime_dir}/generated.txt" "must not ship")
+    check(FALSE)
+    file(REMOVE_RECURSE "${root}/ToolX-source/experiments/recipe/${runtime_dir}")
+    check(TRUE)
+endforeach()
 message(STATUS "Source archive checker directory/file negatives and source-preservation controls passed")

@@ -70,7 +70,14 @@ else()
 endif()
 
 foreach(item IN ITEMS docs examples experiments include src tools tests cmake .github README.md README.dev.md CHANGELOG.md CMakeLists.txt CMakePresets.json LICENSE)
-    file(COPY "${source}/${item}" DESTINATION "${root}" PATTERN "__pycache__" EXCLUDE)
+    # The fixture needs source and documentation, not local experiment runs or
+    # installed dependencies (which can add gigabytes and thousands of files).
+    file(COPY "${source}/${item}" DESTINATION "${root}"
+        PATTERN "__pycache__" EXCLUDE
+        PATTERN ".runs" EXCLUDE
+        PATTERN ".venv" EXCLUDE
+        PATTERN "node_modules" EXCLUDE
+        PATTERN ".git" EXCLUDE)
 endforeach()
 # Derive fixture versions from the copied project and construct complete current
 # documents without depending on wording in the real README or changelog.

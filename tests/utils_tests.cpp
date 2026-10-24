@@ -115,6 +115,23 @@ TEST(UtilsParseTests, ParseDouble)
     EXPECT_NE(overflow.error.find("out of range"), std::string::npos);
 }
 
+TEST(UtilsParseTests, ParseDoubleRejectsEmbeddedNulls)
+{
+    for (const auto& token : {std::string("1.25\0junk", 9), std::string("1.25\0", 5),
+                              std::string("\0"
+                                          "1.25",
+                                          5)})
+    {
+        const auto result = utils::parse::parse_double(token);
+        EXPECT_FALSE(result.ok);
+        EXPECT_NE(result.error.find("invalid floating-point token"), std::string::npos);
+    }
+
+    const auto valid = utils::parse::parse_double(" \t1.25 \n");
+    ASSERT_TRUE(valid.ok) << valid.error;
+    EXPECT_DOUBLE_EQ(valid.value, 1.25);
+}
+
 TEST(UtilsParseTests, ParseBool)
 {
     const auto t = utils::parse::parse_bool(" YES ");

@@ -61,6 +61,71 @@ struct RemoteFetcherScope
 
 } // namespace
 
+TEST(ToolxIntegrationTests, JsonLogFormatterRoundTripsControlCharacters)
+{
+    std::string controls;
+    for (int c = 0; c < 32; ++c)
+        controls.push_back(static_cast<char>(c));
+    const std::string text = controls + "quote\" slash\\ UTF-8: \xe4\xb8\xad";
+    logsys::LogEvent event;
+    event.message = text;
+    event.file = text;
+    event.function = text;
+    event.vendor_name = text;
+    event.vendor_code = text;
+    ASSERT_TRUE(event.SetField(controls, text));
+    const auto line = logsys::JsonFormatter().Format(event);
+    const auto parsed = cfgx::ParseJson(line);
+    ASSERT_TRUE(parsed.ok) << parsed.error;
+    for (const auto* field : {"msg", "file", "func", "vendor_name", "vendor_code"})
+    {
+        const auto* value = parsed.value.Get(field);
+        ASSERT_NE(value, nullptr) << field;
+        EXPECT_EQ(value->AsString(), text);
+    }
+    const auto* ext = parsed.value.Get("ext");
+    ASSERT_NE(ext, nullptr);
+    const auto* value = ext->Get(controls);
+    ASSERT_NE(value, nullptr);
+    EXPECT_EQ(value->AsString(), text);
+}
+
+TEST(ToolxIntegrationTests, ArgtoolJsonRoundTripsAllControlCharacters)
+{
+    std::string controls;
+    for (int c = 0; c < 32; ++c)
+        controls.push_back(static_cast<char>(c));
+    argtool::Parser parser;
+    parser.Option("value").String().Default(controls).Done();
+    const char* argv[] = {"app"};
+    auto result = parser.Parse(1, argv);
+    ASSERT_TRUE(result.ok);
+    result.values[controls] = {controls};
+    result.error.emplace();
+    result.error->field = controls;
+    result.error->token = controls;
+    result.error->message = controls;
+    const auto parsed = cfgx::ParseJson(parser.ResultToJson(result, true));
+    ASSERT_TRUE(parsed.ok) << parsed.error;
+    const auto* values = parsed.value.Get("values");
+    ASSERT_NE(values, nullptr);
+    for (const auto& key : {std::string("value"), controls})
+    {
+        const auto* value = values->Get(key);
+        ASSERT_NE(value, nullptr);
+        ASSERT_NE(value->At(0), nullptr);
+        EXPECT_EQ(value->At(0)->AsString(), controls);
+    }
+    const auto* error = parsed.value.Get("error");
+    ASSERT_NE(error, nullptr);
+    for (const auto* field : {"field", "token", "message"})
+    {
+        const auto* value = error->Get(field);
+        ASSERT_NE(value, nullptr);
+        EXPECT_EQ(value->AsString(), controls);
+    }
+}
+
 TEST(ToolxIntegrationTests, CfgxSaveTriggersFsxWatcherOnConfigChange)
 {
     const auto root = IntegrationRoot() / "cfgx_fsx_watch";

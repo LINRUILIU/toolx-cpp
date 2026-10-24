@@ -16,6 +16,8 @@
 #include "logsys.h"
 #include "schemax.h"
 
+#include "audit_log_guard.h"
+
 namespace
 {
 namespace fs = std::filesystem;
@@ -772,6 +774,10 @@ cfgx::Result<Summary> SummarizeLogs(const LogConfig& config)
                 AddMatchedRecord(config, parsed.value, &summary);
             }
         }
+        if (in.bad())
+        {
+            return cfgx::Result<Summary>{false, {}, "failed to read log file: " + file};
+        }
     }
 
     return cfgx::Result<Summary>{true, std::move(summary), ""};
@@ -922,6 +928,14 @@ void ConfigureLogging(const std::string& log_file)
 
 int RunSummarize(const LogConfig& config, bool json_mode)
 {
+    auto protected_paths = config.files;
+    protected_paths.push_back(config.manifest);
+    std::string logging_error;
+    if (!toolx_cli::ValidateAuditLogPaths(config.log_file, protected_paths,
+                                          logsys::Logger::Instance().CurrentConfigV2().rolling, &logging_error))
+    {
+        return ExitError(json_mode, kExitUsageError, logging_error);
+    }
     ConfigureLogging(config.log_file);
     auto summary = SummarizeLogs(config);
     if (!summary.ok)

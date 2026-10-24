@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <stdexcept>
 #include <tuple>
@@ -102,7 +103,7 @@ bool TryParseDouble(std::string_view value, double* out_value)
     std::string copy(value);
     char* parse_end = nullptr;
     const double parsed = std::strtod(copy.c_str(), &parse_end);
-    if (parse_end == nullptr || *parse_end != '\0')
+    if (parse_end == copy.c_str() || parse_end != copy.c_str() + copy.size() || !std::isfinite(parsed))
     {
         return false;
     }
@@ -214,7 +215,12 @@ bool TryParseScaledDouble(std::string_view value, double* out_value)
         return false;
     }
 
-    *out_value = base * multiplier;
+    const double scaled = base * multiplier;
+    if (!std::isfinite(scaled))
+    {
+        return false;
+    }
+    *out_value = scaled;
     return true;
 }
 
@@ -270,7 +276,8 @@ ConvertResult BuiltinDoubleConverter(std::string_view raw)
     }
 
     std::ostringstream oss;
-    oss << scaled;
+    oss.imbue(std::locale::classic());
+    oss << std::setprecision(std::numeric_limits<double>::max_digits10) << scaled;
     out.ok = true;
     out.value = oss.str();
     return out;
@@ -359,7 +366,15 @@ std::string JsonEscape(std::string_view input)
             out += "\\t";
             break;
         default:
-            out.push_back(ch);
+            if (static_cast<unsigned char>(ch) < 0x20)
+            {
+                constexpr char hex[] = "0123456789abcdef";
+                out += "\\u00";
+                out += hex[(static_cast<unsigned char>(ch) >> 4) & 0xf];
+                out += hex[static_cast<unsigned char>(ch) & 0xf];
+            }
+            else
+                out.push_back(ch);
             break;
         }
     }

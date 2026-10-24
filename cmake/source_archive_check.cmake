@@ -13,6 +13,7 @@ foreach(entry IN LISTS entries)
     if(entry MATCHES "[.]gc(ov|da|no)$" OR
        entry MATCHES "[.]py[co]$" OR
        entry MATCHES "(^|/)__pycache__(/|$)" OR
+       entry MATCHES "(^|/)(node_modules|[.]runs|[.]venv|[.]pytest_cache|[.]pytest-tmp)(/|$)" OR
        entry MATCHES "^[^/]+/(reference|temp|toolx_test_tmp|release-docs-fixture|source-archive-fixtures|build[^/]*|stage|[.]git|[.]vscode|[.]third_party)(/|$)" OR
        (entry MATCHES "[.]log$" AND NOT entry MATCHES "/examples/product_chain_showcase/fixtures/[^/]+[.]log$"))
         message(FATAL_ERROR "Unwanted source archive entry: ${entry}")

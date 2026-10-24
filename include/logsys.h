@@ -737,8 +737,10 @@ class Logger
         static_cast<std::uint8_t>(ErrorCategory::Business)}; // 默认错误类别，使用 uint8_t 存储以节省空间。
     std::atomic<bool> periodic_flush_running_{false};        // 定期刷新线程是否正在运行的标志。
     std::thread periodic_flush_thread_{};                    // 定期刷新线程。
-    std::atomic<std::uint64_t> pending_event_count_{0};      // 当前待处理日志事件的数量，用于回压策略。
-    std::atomic<std::uint64_t> dropped_by_backpressure_{0};  // 因回压策略而被丢弃的日志事件数量。
+    std::mutex periodic_flush_mu_;
+    std::condition_variable periodic_flush_cv_;
+    std::atomic<std::uint64_t> pending_event_count_{0};     // 当前待处理日志事件的数量，用于回压策略。
+    std::atomic<std::uint64_t> dropped_by_backpressure_{0}; // 因回压策略而被丢弃的日志事件数量。
     std::atomic<std::uint64_t> metrics_accepted_{0};
     std::atomic<std::uint64_t> metrics_emitted_{0};
     std::atomic<std::uint64_t> metrics_queued_{0};

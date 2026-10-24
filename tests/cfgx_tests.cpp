@@ -506,6 +506,46 @@ TEST(CfgxValueTests, AsIntSupportsIntegralDouble)
     EXPECT_EQ(non_whole_double.AsInt(-1), -1);
 }
 
+TEST(CfgxValueTests, AsIntRejectsDoubleOutsideInt64Range)
+{
+    constexpr auto minimum = std::numeric_limits<std::int64_t>::min();
+    constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
+    constexpr double lower = static_cast<double>(minimum);
+    constexpr double upper = -lower;
+
+    EXPECT_EQ(cfgx::Node(minimum).AsInt(123), minimum);
+    EXPECT_EQ(cfgx::Node(maximum).AsInt(123), maximum);
+    EXPECT_EQ(cfgx::Node(lower).AsInt(123), minimum);
+    EXPECT_EQ(cfgx::Node(std::nextafter(upper, 0.0)).AsInt(123), maximum - 1023);
+    EXPECT_EQ(cfgx::Node(upper).AsInt(123), 123);
+    EXPECT_EQ(cfgx::Node(std::nextafter(lower, -std::numeric_limits<double>::infinity())).AsInt(123), 123);
+    EXPECT_EQ(cfgx::Node(std::numeric_limits<double>::infinity()).AsInt(123), 123);
+    EXPECT_EQ(cfgx::Node(std::numeric_limits<double>::quiet_NaN()).AsInt(123), 123);
+
+    const auto parsed = cfgx::ParseJson("9.223372036854776e18");
+    ASSERT_TRUE(parsed.ok) << parsed.error;
+    EXPECT_EQ(parsed.value.AsInt(123), 123);
+}
+
+TEST(CfgxNodeApiTests, SetAtRejectsImpossibleExpansionWithoutChangingArray)
+{
+    cfgx::Node array = cfgx::Node::MakeArray();
+    ASSERT_TRUE(array.Push(cfgx::Node("retained")).ok);
+    const auto original = cfgx::ToJson(array);
+    const std::size_t maximum_size = array.TryArray()->max_size();
+
+    for (const auto index : {std::numeric_limits<std::size_t>::max(), maximum_size})
+    {
+        const auto status = array.SetAt(index, cfgx::Node("replacement"), true);
+        EXPECT_FALSE(status.ok);
+        EXPECT_FALSE(status.error.empty());
+        EXPECT_EQ(cfgx::ToJson(array), original);
+    }
+    EXPECT_TRUE(array.SetAt(2, cfgx::Node("valid"), true).ok);
+    ASSERT_NE(array.At(2), nullptr);
+    EXPECT_EQ(array.At(2)->AsString(), "valid");
+}
+
 TEST(CfgxNodeApiTests, ConvenienceObjectAndArrayApisWork)
 {
     cfgx::Node obj = cfgx::Node::MakeObject();
@@ -1247,6 +1287,61 @@ TEST(CfgxIoTests, LoadAndSaveJsonFileWork)
     std::filesystem::remove(file, ec);
 }
 
+TEST(CfgxIoTests, DirectoryInputsAndPreservationReadsReturnErrors)
+{
+    const auto directory = TestTempPath("cfgx_read_directory.json");
+    std::filesystem::create_directories(directory);
+    EXPECT_NO_THROW({
+        const auto loaded = cfgx::LoadFromFile(directory.string());
+        EXPECT_FALSE(loaded.ok);
+        EXPECT_FALSE(loaded.error.empty());
+    });
+    EXPECT_NO_THROW({
+        const auto loaded = cfgx::LoadEncryptedFromFile(directory.string(), "key", cfgx::ConfigFormat::Json);
+        EXPECT_FALSE(loaded.ok);
+        EXPECT_FALSE(loaded.error.empty());
+    });
+    cfgx::PollReloader reloader(directory.string());
+    EXPECT_NO_THROW({
+        const auto tick = reloader.Tick(1);
+        EXPECT_FALSE(tick.ok);
+        EXPECT_FALSE(tick.error.empty());
+    });
+    EXPECT_NO_THROW({
+        const auto reload = reloader.ReloadNow();
+        EXPECT_FALSE(reload.ok);
+        EXPECT_FALSE(reload.error.empty());
+    });
+    for (const auto format : {cfgx::ConfigFormat::Ini, cfgx::ConfigFormat::Yaml})
+    {
+        EXPECT_NO_THROW({
+            const auto saved = cfgx::SaveToFile(cfgx::Node::MakeObject(), directory.string(), format);
+            EXPECT_FALSE(saved.ok);
+            EXPECT_FALSE(saved.error.empty());
+        });
+    }
+    EXPECT_TRUE(std::filesystem::is_directory(directory));
+    std::error_code ec;
+    std::filesystem::remove(directory, ec);
+}
+
+#if !defined(_WIN32)
+TEST(CfgxIoTests, SavesReportBufferedWriteFailures)
+{
+    if (!std::filesystem::exists("/dev/full"))
+    {
+        GTEST_SKIP() << "/dev/full is unavailable on this platform";
+    }
+    const cfgx::Node root("small buffered write");
+    const auto plain = cfgx::SaveToFile(root, "/dev/full", cfgx::ConfigFormat::Json);
+    EXPECT_FALSE(plain.ok);
+    EXPECT_FALSE(plain.error.empty());
+    const auto encrypted = cfgx::SaveEncryptedToFile(root, "/dev/full", "key", cfgx::ConfigFormat::Json);
+    EXPECT_FALSE(encrypted.ok);
+    EXPECT_FALSE(encrypted.error.empty());
+}
+#endif
+
 TEST(CfgxIniTests, LoadIniWithSectionsAndScalars)
 {
     const auto file = TestTempPath("cfgx_ini_load_test.ini");
@@ -1305,6 +1400,162 @@ TEST(CfgxIniTests, SaveIniAndReloadWork)
     ASSERT_TRUE(port.ok) << port.error;
     EXPECT_EQ(port.value->AsInt(), 9000);
 
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
+TEST(CfgxIniTests, SaveIniRetainsStringKindsAndPreciseDoubles)
+{
+    const auto file = TestTempPath("cfgx_ini_scalar_roundtrip.ini");
+    cfgx::Node root = cfgx::Node::MakeObject();
+    const std::vector<std::string> values = {
+        "false", "null", "123", "1.5", "", "  padded  ", "\"quoted\"", "C:\\temp\\settings", "hello # literal; text"};
+    for (std::size_t i = 0; i < values.size(); ++i)
+    {
+        ASSERT_TRUE(root.Set("key" + std::to_string(i), cfgx::Node(values[i])).ok);
+    }
+    ASSERT_TRUE(root.Set("precise", cfgx::Node(1.2345678901234567)).ok);
+    ASSERT_TRUE(root.Set("integral", cfgx::Node(42.0)).ok);
+
+    for (int write = 0; write < 2; ++write)
+    {
+        ASSERT_TRUE(cfgx::SaveToFile(root, file.string()).ok);
+        const auto loaded = cfgx::LoadFromFile(file.string());
+        ASSERT_TRUE(loaded.ok) << loaded.error;
+        for (std::size_t i = 0; i < values.size(); ++i)
+        {
+            const auto* value = loaded.value.Get("key" + std::to_string(i));
+            ASSERT_NE(value, nullptr);
+            EXPECT_EQ(value->Kind(), cfgx::NodeKind::String);
+            EXPECT_EQ(value->AsString(), values[i]);
+        }
+        ASSERT_NE(loaded.value.Get("precise"), nullptr);
+        EXPECT_DOUBLE_EQ(loaded.value.Get("precise")->AsDouble(), 1.2345678901234567);
+        ASSERT_NE(loaded.value.Get("integral"), nullptr);
+        EXPECT_EQ(loaded.value.Get("integral")->Kind(), cfgx::NodeKind::Double);
+    }
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
+TEST(CfgxIniTests, QuotedValuesRetainBothQuoteKindsAndCommentMarkers)
+{
+    const auto file = TestTempPath("cfgx_ini_embedded_quotes.ini");
+    const std::vector<std::string> values = {
+        "x\" # y'",   "x' ; y\"",           "both 'single' and \"double\" # literal", "\"\"'' ; #",
+        "C:\\temp\\", "C:\\temp\\settings", "line with 'apostrophe' and trailing \"", "plain"};
+    cfgx::Node root = cfgx::Node::MakeObject();
+    for (std::size_t i = 0; i < values.size(); ++i)
+        ASSERT_TRUE(root.Set("key" + std::to_string(i), cfgx::Node(values[i])).ok);
+
+    for (int write = 0; write < 2; ++write)
+    {
+        ASSERT_TRUE(cfgx::SaveToFile(root, file.string()).ok);
+        const auto loaded = cfgx::LoadFromFile(file.string());
+        ASSERT_TRUE(loaded.ok) << loaded.error;
+        for (std::size_t i = 0; i < values.size(); ++i)
+        {
+            const auto* node = loaded.value.Get("key" + std::to_string(i));
+            ASSERT_NE(node, nullptr);
+            EXPECT_EQ(node->Kind(), cfgx::NodeKind::String);
+            EXPECT_EQ(node->AsString(), values[i]);
+        }
+    }
+    {
+        std::ofstream output(file);
+        output << "path=\"C:\\temp\\settings\" ; retained comment\nother='still literal'\n";
+    }
+    const auto legacy = cfgx::LoadFromFile(file.string());
+    ASSERT_TRUE(legacy.ok) << legacy.error;
+    ASSERT_NE(legacy.value.Get("path"), nullptr);
+    EXPECT_EQ(legacy.value.Get("path")->AsString(), "C:\\temp\\settings");
+    ASSERT_NE(legacy.value.Get("other"), nullptr);
+    EXPECT_EQ(legacy.value.Get("other")->AsString(), "still literal");
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
+TEST(CfgxIniTests, EscapedLeafPathsKeepLiteralKeysAcrossDumpAndWriteback)
+{
+    const auto file = TestTempPath("cfgx_ini_escaped_leaf_paths.ini");
+    {
+        std::ofstream output(file);
+        output << "; retained comment\na\\.b=1\n";
+    }
+    auto loaded = cfgx::LoadFromFile(file.string());
+    ASSERT_TRUE(loaded.ok) << loaded.error;
+    ASSERT_TRUE(cfgx::SaveToFile(loaded.value, file.string()).ok);
+    const auto unchanged = cfgx::LoadFromFile(file.string());
+    ASSERT_TRUE(unchanged.ok) << unchanged.error;
+    ASSERT_NE(unchanged.value.Get("a.b"), nullptr);
+    EXPECT_EQ(unchanged.value.Get("a.b")->AsInt(), 1);
+    EXPECT_EQ(unchanged.value.Get("a"), nullptr);
+
+    const std::vector<std::string> paths = {R"(a\.b)",
+                                            R"(a.b)",
+                                            R"(a\.b.c\[d\].[])",
+                                            R"([].child\.name)",
+                                            R"(\[\].back\\key.[])",
+                                            R"(top.\[\].deep\.key)",
+                                            R"(top.[].\[\])",
+                                            R"(top.list[0].literal\.key)"};
+    cfgx::Node root = cfgx::Node::MakeObject();
+    for (std::size_t i = 0; i < paths.size(); ++i)
+    {
+        // The literal a.b entry must be an object for the deeper path.
+        if (i == 0)
+            continue;
+        ASSERT_TRUE(cfgx::SetNode(root, paths[i], cfgx::Node("value" + std::to_string(i))).ok) << paths[i];
+    }
+    for (int write = 0; write < 2; ++write)
+    {
+        if (write == 0)
+        {
+            std::error_code ec;
+            std::filesystem::remove(file, ec); // Exercise full dump before comment-preserving writeback.
+        }
+        ASSERT_TRUE(cfgx::SaveToFile(root, file.string()).ok);
+        const auto roundtrip = cfgx::LoadFromFile(file.string());
+        ASSERT_TRUE(roundtrip.ok) << roundtrip.error;
+        for (std::size_t i = 1; i < paths.size(); ++i)
+        {
+            const auto node = cfgx::GetNode(roundtrip.value, paths[i]);
+            ASSERT_TRUE(node.ok) << paths[i] << ": " << node.error;
+            EXPECT_EQ(node.value->AsString(), "value" + std::to_string(i));
+        }
+        EXPECT_EQ(cfgx::ToJson(roundtrip.value), cfgx::ToJson(root));
+    }
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
+TEST(CfgxIniTests, WritebackRemovesDeletedKeysAndPlacesNewRootKeysBeforeSections)
+{
+    const auto file = TestTempPath("cfgx_ini_structural_writeback.ini");
+    {
+        std::ofstream out(file);
+        out << "; retained global comment\n[server]\nport=8080 ; retained inline comment\nold=remove me\n";
+    }
+    auto loaded = cfgx::LoadFromFile(file.string());
+    ASSERT_TRUE(loaded.ok) << loaded.error;
+    ASSERT_TRUE(cfgx::RemoveNode(loaded.value, "server.old").ok);
+    ASSERT_TRUE(cfgx::SetNode(loaded.value, "new_root", cfgx::Node("false")).ok);
+    ASSERT_TRUE(cfgx::SaveToFile(loaded.value, file.string()).ok);
+    const auto reloaded = cfgx::LoadFromFile(file.string());
+    ASSERT_TRUE(reloaded.ok) << reloaded.error;
+    EXPECT_FALSE(cfgx::Exists(reloaded.value, "server.old"));
+    EXPECT_FALSE(cfgx::Exists(reloaded.value, "server.new_root"));
+    const auto root_value = cfgx::GetNode(reloaded.value, "new_root");
+    ASSERT_TRUE(root_value.ok) << root_value.error;
+    EXPECT_EQ(root_value.value->Kind(), cfgx::NodeKind::String);
+    EXPECT_EQ(root_value.value->AsString(), "false");
+    const auto port = cfgx::GetNode(reloaded.value, "server.port");
+    ASSERT_TRUE(port.ok) << port.error;
+    EXPECT_EQ(port.value->AsInt(-1), 8080);
+    std::ifstream input(file);
+    const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("; retained global comment"), std::string::npos);
+    EXPECT_NE(text.find("; retained inline comment"), std::string::npos);
     std::error_code ec;
     std::filesystem::remove(file, ec);
 }
@@ -1572,6 +1823,56 @@ TEST(CfgxV2SnapshotTests, PollReloaderSnapshotRestoreWorks)
     ASSERT_NE(trace, nullptr);
     EXPECT_FALSE(trace->empty());
 
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
+TEST(CfgxV2SnapshotTests, RestoreValidatesBeforePublishingAndPreservesSnapshotRoot)
+{
+    cfgx::PollReloader reloader("");
+    auto valid = cfgx::Node::MakeObject();
+    ASSERT_TRUE(valid.Set("required", cfgx::Node("original")).ok);
+    const std::vector<cfgx::SourceAttribution> trace = {{"required", cfgx::SourceLayer::Runtime}};
+    ASSERT_TRUE(reloader.RestoreSnapshot(valid, &trace).ok);
+    reloader.SetValidationRules({cfgx::RequirePathRule("required")});
+    const auto original = cfgx::ToJson(*reloader.Current());
+    const auto audit_size = reloader.AuditTrail().size();
+
+    const auto rejected = reloader.RestoreSnapshot(cfgx::Node::MakeObject());
+    EXPECT_FALSE(rejected.ok);
+    EXPECT_FALSE(rejected.error.empty());
+    ASSERT_NE(reloader.Current(), nullptr);
+    EXPECT_EQ(cfgx::ToJson(*reloader.Current()), original);
+    EXPECT_EQ(reloader.AuditTrail().size(), audit_size);
+    ASSERT_NE(reloader.CurrentSourceTrace(), nullptr);
+    ASSERT_EQ(reloader.CurrentSourceTrace()->size(), 1u);
+    EXPECT_EQ(reloader.CurrentSourceTrace()->front().layer, cfgx::SourceLayer::Runtime);
+
+    const auto file = TestTempPath("cfgx_invalid_restore_snapshot.json");
+    ASSERT_TRUE(cfgx::SaveToFile(cfgx::Node::MakeObject(), file.string()).ok);
+    EXPECT_FALSE(reloader.RestoreSnapshotFromFile(file.string()).ok);
+    EXPECT_EQ(cfgx::ToJson(*reloader.Current()), original);
+    EXPECT_EQ(reloader.AuditTrail().size(), audit_size);
+
+    cfgx::PollReloader empty("");
+    empty.SetValidationRules({cfgx::RequirePathRule("required")});
+    EXPECT_FALSE(empty.RestoreSnapshot(cfgx::Node::MakeObject()).ok);
+    EXPECT_EQ(empty.Current(), nullptr);
+
+    cfgx::ValidationRule array_rule;
+    array_rule.evaluator = [](const cfgx::Node& root) -> std::optional<cfgx::ValidationIssue>
+    {
+        if (!root.IsArray())
+            return cfgx::ValidationIssue{"$", "expected snapshot array root"};
+        return std::nullopt;
+    };
+    reloader.SetValidationRules({array_rule});
+    auto array = cfgx::Node::MakeArray();
+    ASSERT_TRUE(array.Push(cfgx::Node("whole snapshot")).ok);
+    ASSERT_TRUE(reloader.RestoreSnapshot(array).ok);
+    ASSERT_NE(reloader.Current(), nullptr);
+    EXPECT_EQ(reloader.Current()->Kind(), cfgx::NodeKind::Array);
+    EXPECT_EQ(cfgx::ToJson(*reloader.Current()), cfgx::ToJson(array));
     std::error_code ec;
     std::filesystem::remove(file, ec);
 }

@@ -1,6 +1,7 @@
 #include "logsys.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cctype>
 #include <cstdlib>
@@ -117,7 +118,7 @@ std::string FormatTime(const std::chrono::system_clock::time_point tp)
     return os.str();
 }
 
-// 对 JSON 字符串进行最小逃逸：处理引号、反斜线、换行等。
+// 转义 JSON 引号、反斜线及全部 U+0000 至 U+001F 控制字符。
 std::string EscapeJson(const std::string& s)
 {
     std::string out;
@@ -142,7 +143,15 @@ std::string EscapeJson(const std::string& s)
             out += "\\t";
             break;
         default:
-            out += c;
+            if (static_cast<unsigned char>(c) < 0x20)
+            {
+                constexpr char hex[] = "0123456789abcdef";
+                out += "\\u00";
+                out += hex[(static_cast<unsigned char>(c) >> 4) & 0xf];
+                out += hex[static_cast<unsigned char>(c) & 0xf];
+            }
+            else
+                out += c;
             break;
         }
     }
@@ -1573,8 +1582,11 @@ bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
         return false;
     }
 
-    std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    if (text.empty())
+    std::string text;
+    std::array<char, 4096> buffer{};
+    while (input.read(buffer.data(), buffer.size()) || input.gcount() > 0)
+        text.append(buffer.data(), static_cast<std::size_t>(input.gcount()));
+    if (input.bad() || !input.eof() || text.empty())
     {
         return false;
     }
@@ -2105,25 +2117,31 @@ void Logger::StartPeriodicFlush(std::chrono::milliseconds interval)
     const auto effective_interval = interval < min_interval ? min_interval : interval;
 
     StopPeriodicFlush();
-    periodic_flush_running_.store(true, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lk(periodic_flush_mu_);
+        periodic_flush_running_.store(true, std::memory_order_relaxed);
+    }
     periodic_flush_thread_ = std::thread(
         [this, effective_interval]()
         {
-            while (periodic_flush_running_.load(std::memory_order_relaxed))
+            std::unique_lock<std::mutex> lk(periodic_flush_mu_);
+            while (!periodic_flush_cv_.wait_for(lk, effective_interval, [this]
+                                                { return !periodic_flush_running_.load(std::memory_order_relaxed); }))
             {
-                std::this_thread::sleep_for(effective_interval);
-                if (!periodic_flush_running_.load(std::memory_order_relaxed))
-                {
-                    break;
-                }
+                lk.unlock();
                 this->Flush();
+                lk.lock();
             }
         });
 }
 
 void Logger::StopPeriodicFlush()
 {
-    periodic_flush_running_.store(false, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lk(periodic_flush_mu_);
+        periodic_flush_running_.store(false, std::memory_order_relaxed);
+    }
+    periodic_flush_cv_.notify_all();
     if (periodic_flush_thread_.joinable())
     {
         periodic_flush_thread_.join();

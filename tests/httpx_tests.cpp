@@ -3,13 +3,16 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -151,9 +154,10 @@ struct LocalHttpServer
     }
 };
 
-std::optional<LocalHttpServer> StartSingleResponseServer(std::string response, std::uint64_t response_delay_ms = 0,
-                                                         std::shared_ptr<std::string> captured_request = nullptr,
-                                                         std::uint64_t close_delay_ms = 0)
+std::optional<LocalHttpServer>
+StartSingleResponseServer(std::string response, std::uint64_t response_delay_ms = 0,
+                          std::shared_ptr<std::string> captured_request = nullptr, std::uint64_t close_delay_ms = 0,
+                          std::shared_ptr<std::atomic_bool> close_before_request = nullptr)
 {
     if (!EnsureTestNetworkReady())
     {
@@ -195,11 +199,19 @@ std::optional<LocalHttpServer> StartSingleResponseServer(std::string response, s
     server.port = ntohs(bound.sin_port);
     server.captured_request = captured_request;
     server.worker = std::thread(
-        [listen_socket, response = std::move(response), response_delay_ms, captured_request, close_delay_ms]()
+        [listen_socket, response = std::move(response), response_delay_ms, captured_request, close_delay_ms,
+         close_before_request]()
         {
             sockaddr_in client_addr{};
             socklen_t client_len = static_cast<socklen_t>(sizeof(client_addr));
             TestSocket client = ::accept(listen_socket, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+            if (client != kInvalidTestSocket && close_before_request)
+            {
+                CloseTestSocket(client);
+                CloseTestSocket(listen_socket);
+                close_before_request->store(true);
+                return;
+            }
             if (client != kInvalidTestSocket)
             {
                 std::string req;
@@ -949,8 +961,10 @@ struct LocalTlsServer
     }
 };
 
-std::optional<LocalTlsServer> StartSingleResponseTlsServer(std::shared_ptr<TlsTestIdentity> identity,
-                                                           std::string response)
+std::optional<LocalTlsServer>
+StartSingleResponseTlsServer(std::shared_ptr<TlsTestIdentity> identity, std::string response,
+                             std::shared_ptr<std::atomic_bool> close_before_request = nullptr,
+                             std::uint64_t close_after_handshake_delay_ms = 0)
 {
     if (!EnsureTestNetworkReady() || identity == nullptr)
     {
@@ -984,7 +998,8 @@ std::optional<LocalTlsServer> StartSingleResponseTlsServer(std::shared_ptr<TlsTe
     LocalTlsServer server;
     server.port = ntohs(bound.sin_port);
     server.worker = std::thread(
-        [listen_socket, identity = std::move(identity), response = std::move(response)]()
+        [listen_socket, identity = std::move(identity), response = std::move(response), close_before_request,
+         close_after_handshake_delay_ms]()
         {
             SSL_CTX* context = SSL_CTX_new(TLS_server_method());
             if (context == nullptr || SSL_CTX_use_certificate(context, identity->certificate) != 1 ||
@@ -1008,6 +1023,17 @@ std::optional<LocalTlsServer> StartSingleResponseTlsServer(std::shared_ptr<TlsTe
                 {
                     if (SSL_set_fd(ssl, static_cast<int>(client)) == 1 && SSL_accept(ssl) == 1)
                     {
+                        if (close_before_request)
+                        {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(close_after_handshake_delay_ms));
+                            CloseTestSocket(client);
+                            client = kInvalidTestSocket;
+                            close_before_request->store(true);
+                            SSL_free(ssl);
+                            SSL_CTX_free(context);
+                            CloseTestSocket(listen_socket);
+                            return;
+                        }
                         SetRecvTimeoutMs(client, 1000);
                         char request_buffer[1024] = {0};
                         const int received = SSL_read(ssl, request_buffer, static_cast<int>(sizeof(request_buffer)));
@@ -1241,6 +1267,185 @@ TEST(HttpxClientTests, RetryPolicyMaxAttemptsCountsInitialAttempt)
     EXPECT_EQ(calls.load(), 1);
 }
 
+TEST(HttpxClientTests, RetryDelayCannotExceedTotalTimeoutBudget)
+{
+    int calls = 0;
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.timeout.total_ms = 30;
+    options.retry_policy.max_attempts = 2;
+    options.retry_policy.delay_ms = 1500;
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&)
+    {
+        ++calls;
+        httpx::Result<httpx::Response> result;
+        result.error.kind = httpx::ErrorKind::Network;
+        result.error.retryable = true;
+        return result;
+    };
+    httpx::Client client(options);
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = client.Get("http://example.test/retry-deadline");
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error.kind, httpx::ErrorKind::Timeout);
+    EXPECT_EQ(calls, 1);
+    EXPECT_LT(elapsed, std::chrono::milliseconds(1000));
+}
+
+TEST(HttpxClientTests, RetryDelayWithinBudgetCanStillRecover)
+{
+    int calls = 0;
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.timeout.total_ms = 2000;
+    options.retry_policy.max_attempts = 2;
+    options.retry_policy.delay_ms = 10;
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&)
+    {
+        httpx::Result<httpx::Response> result;
+        if (++calls == 1)
+        {
+            result.error.kind = httpx::ErrorKind::Network;
+            result.error.retryable = true;
+        }
+        else
+        {
+            result.ok = true;
+            result.value.status_code = 200;
+            result.value.body = "recovered";
+        }
+        return result;
+    };
+    httpx::Client client(options);
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = client.Get("http://example.test/retry-delay");
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.value.body, "recovered");
+    EXPECT_EQ(calls, 2);
+    EXPECT_GE(std::chrono::steady_clock::now() - started, std::chrono::milliseconds(10));
+}
+
+TEST(HttpxClientTests, HugeTimeoutDoesNotOverflowSteadyClockDuration)
+{
+    for (const auto timeout_ms : {10000000000000ULL, std::numeric_limits<unsigned long long>::max()})
+    {
+        httpx::ClientOptions options;
+        options.use_proxy_from_environment = false;
+        options.timeout.total_ms = timeout_ms;
+        options.transport = [](const httpx::Request&, const httpx::ClientOptions&)
+        {
+            httpx::Result<httpx::Response> out;
+            out.ok = true;
+            out.value.status_code = 200;
+            return out;
+        };
+        httpx::Client client(options);
+        const auto result = client.Get("http://example.test/huge-timeout");
+        ASSERT_TRUE(result.ok) << result.error.message;
+    }
+}
+
+TEST(HttpxClientTests, HugeRetryDelayStillRespectsTotalTimeoutBudget)
+{
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.timeout.total_ms = 20;
+    options.retry_policy.max_attempts = 2;
+    options.retry_policy.delay_ms = std::numeric_limits<std::uint64_t>::max();
+    options.transport = [](const httpx::Request&, const httpx::ClientOptions&)
+    {
+        httpx::Result<httpx::Response> out;
+        out.error.kind = httpx::ErrorKind::Network;
+        out.error.retryable = true;
+        return out;
+    };
+    httpx::Client client(options);
+    const auto started_at = std::chrono::steady_clock::now();
+    const auto result = client.Get("http://example.test/huge-delay");
+    const auto elapsed = std::chrono::steady_clock::now() - started_at;
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error.kind, httpx::ErrorKind::Timeout);
+    EXPECT_LT(elapsed, std::chrono::seconds(1));
+}
+
+TEST(HttpxClientTests, StalledUploadRespectsTotalTimeoutBudget)
+{
+    ASSERT_TRUE(EnsureTestNetworkReady());
+    TestSocket listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    ASSERT_NE(listener, kInvalidTestSocket);
+    const int receive_buffer = 4096;
+    (void)setsockopt(listener, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&receive_buffer),
+                     sizeof(receive_buffer));
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    const int bind_result = ::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+    const int listen_result = bind_result == 0 ? ::listen(listener, 1) : -1;
+    socklen_t address_size = static_cast<socklen_t>(sizeof(address));
+    const int name_result =
+        listen_result == 0 ? ::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &address_size) : -1;
+    if (bind_result != 0 || listen_result != 0 || name_result != 0)
+    {
+        CloseTestSocket(listener);
+        FAIL() << "failed to prepare stalled-upload listener";
+    }
+
+    std::mutex server_mu;
+    std::condition_variable server_cv;
+    bool request_finished = false;
+    LocalHttpServer server;
+    server.worker = std::thread(
+        [&server_mu, &server_cv, &request_finished, listener]
+        {
+            // The watchdog bounds this test even if blocking sends regress.
+            fd_set readable;
+            FD_ZERO(&readable);
+            FD_SET(listener, &readable);
+            timeval timeout{2, 0};
+#if defined(_WIN32)
+            const int ready = select(0, &readable, nullptr, nullptr, &timeout);
+#else
+            const int ready = select(listener + 1, &readable, nullptr, nullptr, &timeout);
+#endif
+            if (ready > 0)
+            {
+                TestSocket peer = ::accept(listener, nullptr, nullptr);
+                if (peer != kInvalidTestSocket)
+                {
+                    std::unique_lock<std::mutex> lock(server_mu);
+                    server_cv.wait_for(lock, std::chrono::milliseconds(1500), [&] { return request_finished; });
+#if defined(_WIN32)
+                    ::shutdown(peer, SD_BOTH);
+#else
+                    ::shutdown(peer, SHUT_RDWR);
+#endif
+                    CloseTestSocket(peer);
+                }
+            }
+            CloseTestSocket(listener);
+        });
+
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.timeout.total_ms = 100;
+    options.timeout.read_write_ms = 100;
+    httpx::Client client(options);
+    const auto started_at = std::chrono::steady_clock::now();
+    const auto result = client.Post("http://127.0.0.1:" + std::to_string(ntohs(address.sin_port)) + "/upload",
+                                    std::string(8u * 1024u * 1024u, 'x'));
+    const auto elapsed = std::chrono::steady_clock::now() - started_at;
+    {
+        std::lock_guard<std::mutex> lock(server_mu);
+        request_finished = true;
+    }
+    server_cv.notify_all();
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error.kind, httpx::ErrorKind::Timeout);
+    EXPECT_LT(elapsed, std::chrono::seconds(1));
+}
+
 TEST(HttpxClientTests, LegacyMaxRetryAttemptsStillCountsRetries)
 {
     std::atomic<int> calls{0};
@@ -1377,6 +1582,9 @@ TEST(HttpxClientTests, OpenSslLoopbackTlsVerifiesLocalhostAndRejectsHostnameMism
     options.timeout.total_ms = 3000;
     options.tls.ca_file = ca_file.string();
 
+    const int type_index_before = BIO_get_new_index();
+    ASSERT_GE(type_index_before, 0);
+    for (int session = 0; session < 2; ++session)
     {
         const auto server = StartSingleResponseTlsServer(
             identity, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
@@ -1388,6 +1596,11 @@ TEST(HttpxClientTests, OpenSslLoopbackTlsVerifiesLocalhostAndRejectsHostnameMism
         EXPECT_EQ(trusted.value.status_code, 200);
         EXPECT_EQ(trusted.value.body, "ok");
     }
+    const int type_index_after = BIO_get_new_index();
+    ASSERT_GE(type_index_after, 0);
+    // The probing allocation accounts for one index; first use may also
+    // register one library-wide type. Successful sessions must reuse it.
+    EXPECT_LE(type_index_after - type_index_before, 2);
 
     {
         const auto server = StartSingleResponseTlsServer(
@@ -1426,6 +1639,104 @@ TEST(HttpxClientTests, DefaultTransportCanRoundTripLocalHttp)
     EXPECT_EQ(result.value.status_code, 200);
     EXPECT_EQ(result.value.body, "hello");
 }
+
+TEST(HttpxClientTests, PeerDisconnectDuringUploadReturnsAnError)
+{
+    for (const bool use_proxy : {false, true})
+    {
+        auto peer_closed = std::make_shared<std::atomic_bool>(false);
+        const auto server = StartSingleResponseServer("", 0, nullptr, 0, peer_closed);
+        ASSERT_TRUE(server.has_value());
+        httpx::ClientOptions options;
+        options.use_proxy_from_environment = false;
+        options.timeout.total_ms = 1000;
+        if (use_proxy)
+        {
+            options.proxy.enabled = true;
+            options.proxy.host = "127.0.0.1";
+            options.proxy.port = server->port;
+        }
+        httpx::Request request;
+        request.method = httpx::HttpMethod::Post;
+        request.url = use_proxy ? "http://example.test/disconnected-upload"
+                                : "http://127.0.0.1:" + std::to_string(server->port) + "/disconnected-upload";
+        request.body.assign(8u * 1024u * 1024u, 'x');
+        request.on_upload_progress = [peer_closed](std::uint64_t sent, std::uint64_t)
+        {
+            if (sent != 0)
+                return;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+            while (!peer_closed->load() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        };
+        const auto result = httpx::Client(options).Send(request);
+        EXPECT_TRUE(peer_closed->load());
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.kind, use_proxy ? httpx::ErrorKind::Proxy : httpx::ErrorKind::Network);
+    }
+}
+
+#if defined(HTTPX_ENABLE_OPENSSL)
+TEST(HttpxClientTests, OpenSslPeerDisconnectDuringUploadReturnsAnError)
+{
+    const auto identity = MakeTlsTestIdentity();
+    ASSERT_NE(identity, nullptr);
+    auto peer_closed = std::make_shared<std::atomic_bool>(false);
+    const auto server = StartSingleResponseTlsServer(identity, "", peer_closed);
+    ASSERT_TRUE(server.has_value());
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.tls.verify_peer = false;
+    options.tls.verify_host = false;
+    options.timeout.total_ms = 1000;
+    httpx::Request request;
+    request.method = httpx::HttpMethod::Post;
+    request.url = "https://localhost:" + std::to_string(server->port) + "/disconnected-upload";
+    request.body.assign(8u * 1024u * 1024u, 'x');
+    request.on_upload_progress = [peer_closed](std::uint64_t sent, std::uint64_t)
+    {
+        if (sent != 0)
+            return;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!peer_closed->load() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    };
+    const auto result = httpx::Client(options).Send(request);
+    EXPECT_TRUE(peer_closed->load());
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.error.kind == httpx::ErrorKind::Tls || result.error.kind == httpx::ErrorKind::Network);
+}
+
+TEST(HttpxClientTests, OpenSslSocketBioReadAndWriteWaitsRespectTimeout)
+{
+    const auto identity = MakeTlsTestIdentity();
+    ASSERT_NE(identity, nullptr);
+    for (const bool upload : {false, true})
+    {
+        auto peer_closed = std::make_shared<std::atomic_bool>(false);
+        const auto server = StartSingleResponseTlsServer(identity, "", peer_closed, 400);
+        ASSERT_TRUE(server.has_value());
+        httpx::ClientOptions options;
+        options.use_proxy_from_environment = false;
+        options.tls.verify_peer = false;
+        options.tls.verify_host = false;
+        options.timeout.total_ms = 100;
+        options.timeout.read_write_ms = 100;
+        httpx::Request request;
+        request.url = "https://localhost:" + std::to_string(server->port) + "/stall";
+        if (upload)
+        {
+            request.method = httpx::HttpMethod::Post;
+            request.body.assign(8u * 1024u * 1024u, 'x');
+        }
+        const auto started_at = std::chrono::steady_clock::now();
+        const auto result = httpx::Client(options).Send(request);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.kind, httpx::ErrorKind::Timeout);
+        EXPECT_LT(std::chrono::steady_clock::now() - started_at, std::chrono::seconds(1));
+    }
+}
+#endif
 
 TEST(HttpxClientTests, DefaultTransportReadTimeoutWorks)
 {
@@ -1486,6 +1797,98 @@ TEST(HttpxClientTests, DefaultTransportDecodesChunkedResponse)
     ASSERT_EQ(streamed.size(), 2u);
     EXPECT_EQ(streamed[0], "hello");
     EXPECT_EQ(streamed[1], " world");
+}
+
+TEST(HttpxClientTests, ChunkedResponseRejectsOverflowingSizeBeforeStreaming)
+{
+    std::ostringstream largest;
+    largest << std::hex << std::numeric_limits<std::size_t>::max();
+    std::ostringstream almost_largest;
+    almost_largest << std::hex << (std::numeric_limits<std::size_t>::max() - 1);
+    for (const auto& size : {largest.str(), almost_largest.str(), largest.str() + "0"})
+    {
+        SCOPED_TRACE(size);
+        const auto server = StartSingleResponseServer(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" + size + "\r\n0\r\n\r\n");
+        ASSERT_TRUE(server.has_value()) << "failed to start local loopback server";
+
+        httpx::ClientOptions options;
+        options.use_proxy_from_environment = false;
+        options.limits.max_body_bytes = std::numeric_limits<std::size_t>::max();
+        options.timeout.total_ms = 1000;
+        httpx::Client client(options);
+        httpx::Request request;
+        request.url = "http://127.0.0.1:" + std::to_string(server->port) + "/chunk-overflow";
+        std::size_t streamed_bytes = 0;
+        request.on_response_chunk = [&streamed_bytes](std::string_view chunk)
+        {
+            streamed_bytes += chunk.size();
+            return true;
+        };
+
+        const auto result = client.Send(request);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.kind, httpx::ErrorKind::Protocol);
+        EXPECT_EQ(streamed_bytes, 0u);
+        EXPECT_TRUE(result.value.body.empty());
+    }
+}
+
+TEST(HttpxClientTests, ChunkedResponseRejectsChunkBeyondRemainingBodyBudget)
+{
+    const auto server =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                                  "3\r\nabc\r\n3\r\n");
+    ASSERT_TRUE(server.has_value()) << "failed to start local loopback server";
+
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.limits.max_body_bytes = 5;
+    options.timeout.total_ms = 1000;
+    httpx::Client client(options);
+    const auto result = client.Get("http://127.0.0.1:" + std::to_string(server->port) + "/chunk-limit");
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error.kind, httpx::ErrorKind::Protocol);
+    EXPECT_EQ(result.error.message, "response body exceeds configured limit");
+    EXPECT_EQ(result.value.body, "abc");
+}
+
+TEST(HttpxClientTests, ChunkedResponseAtBodyBudgetAcceptsExtensionsAndTrailers)
+{
+    const auto server =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                                  "2;part=first\r\nab\r\n3\r\ncde\r\n0\r\nX-Debug: ok\r\n\r\n");
+    ASSERT_TRUE(server.has_value()) << "failed to start local loopback server";
+
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.limits.max_body_bytes = 5;
+    options.timeout.total_ms = 1000;
+    httpx::Client client(options);
+    const auto result = client.Get("http://127.0.0.1:" + std::to_string(server->port) + "/chunk-exact-limit");
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.body, "abcde");
+}
+
+TEST(HttpxClientTests, ChunkedResponseAcceptsLargeChunkWithMaximumBodyLimit)
+{
+    const std::string body(96 * 1024, 'X');
+    std::ostringstream size;
+    size << std::hex << body.size();
+    const auto server =
+        StartSingleResponseServer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" +
+                                  size.str() + "\r\n" + body + "\r\n0\r\n\r\n");
+    ASSERT_TRUE(server.has_value()) << "failed to start local loopback server";
+
+    httpx::ClientOptions options;
+    options.use_proxy_from_environment = false;
+    options.io_buffer_bytes = 4096;
+    options.limits.max_body_bytes = std::numeric_limits<std::size_t>::max();
+    options.timeout.total_ms = 3000;
+    httpx::Client client(options);
+    const auto result = client.Get("http://127.0.0.1:" + std::to_string(server->port) + "/chunk-large-limit");
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.body, body);
 }
 
 TEST(HttpxClientTests, ChunkedCallbackAbortReturnsInternalError)
@@ -2765,17 +3168,18 @@ TEST(HttpxClientTests, UploadFileBuildsMultipartRequest)
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
     std::filesystem::create_directories(root, ec);
+    const std::string payload = std::string(20000, 'x') + std::string("\0binary\n", 8);
     {
         std::ofstream out(root / "blob.bin", std::ios::binary);
-        out << "payload";
+        out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
     }
 
     bool saw_file = false;
     httpx::ClientOptions options;
-    options.transport = [&saw_file](const httpx::Request& request, const httpx::ClientOptions&)
+    options.transport = [&saw_file, &payload](const httpx::Request& request, const httpx::ClientOptions&)
     {
         saw_file = request.multipart.size() == 1 && request.multipart[0].name == "file" &&
-                   request.multipart[0].filename == "blob.bin" && request.multipart[0].data == "payload";
+                   request.multipart[0].filename == "blob.bin" && request.multipart[0].data == payload;
         httpx::Result<httpx::Response> out;
         out.ok = true;
         out.value.status_code = 200;
@@ -2786,6 +3190,27 @@ TEST(HttpxClientTests, UploadFileBuildsMultipartRequest)
     const auto response = client.UploadFile("http://example.test/upload", "file", (root / "blob.bin").string());
     ASSERT_TRUE(response.ok) << response.error.message;
     EXPECT_TRUE(saw_file);
+}
+
+TEST(HttpxClientTests, UploadFileDirectoryReturnsAnErrorBeforeTransport)
+{
+    const auto root = fs::current_path() / "toolx_test_tmp" / "httpx_upload_directory";
+    fs::create_directories(root);
+    int calls = 0;
+    httpx::ClientOptions options;
+    options.transport = [&calls](const httpx::Request&, const httpx::ClientOptions&)
+    {
+        ++calls;
+        httpx::Result<httpx::Response> out;
+        out.ok = true;
+        return out;
+    };
+    httpx::Client client(options);
+    httpx::Result<httpx::Response> result;
+    ASSERT_NO_THROW(result = client.UploadFile("http://example.test/upload", "file", root.string()));
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error.kind, httpx::ErrorKind::InvalidArgument);
+    EXPECT_EQ(calls, 0);
 }
 
 TEST(HttpxClientTests, UploadFileMissingInputFailsBeforeTransport)

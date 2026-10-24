@@ -1,8 +1,8 @@
 # ToolX 开发日志
 
 > Audience: ToolX 维护者与贡献者
-> Status: Current development and retained release-cycle summary
-> Applies to: v0.3.4 维护发布与保留的 `v0.3.2` 周期
+> Status: Final maintenance closeout and retained release-cycle summary
+> Applies to: v0.3.5 最后手动维护发行与保留的历史周期
 > Source of truth for: 维护发行入口、v0.3.2 周期总结与阶段性工程记录
 
 本文件只记录开发主线、阶段性结论和进一步阅读入口。稳定的用户说明位于
@@ -10,10 +10,13 @@
 质量门禁等维护流程已经迁入
 [`docs/development/maintaining.md`](docs/development/maintaining.md)。
 
-## 当前开发
+## 最后维护收口
 
-当前按 [v0.3.4 维护版本](docs/releases/v0.3.4.md)收口：修复 JSON 数据保留、
-归档与下载副作用、HTTP 正文与每跳重定向策略、schema、TaskGroup 和日志刷新契约。
+按 [v0.3.5 最后维护发行](docs/releases/v0.3.5.md)收口：修复配置保存、数值精度、
+文件操作与归档、HTTP 超时、零期限等待、日志及 CLI 输入隔离。
+独立审核和验证见[最后一轮维护记录](docs/development/audits/maintenance-20261025.md)。
+2026-10-25 起停止手动修 bug、安全修复、功能开发和 issue 跟进；不继续 v0.4 立项。
+现有源码、文档、测试与发行归档保留供查阅及自行接续维护。
 本轮不扩张公共源码 API、十三库六 CLI 或默认依赖/TLS 边界；C++ 消费者需要重编。
 历史 v0.3.3 归档与 v0.4 研究标签、审计正文和冻结证据保留原样。
 本次发行结果以最终提交的 CI、安装与归档记录为准；仍在运行的检查不能记作通过。

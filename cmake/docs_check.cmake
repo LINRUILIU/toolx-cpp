@@ -90,7 +90,8 @@ set(TOOLX_PUBLIC_DOCUMENTS
     docs/releases/v0.3.1.md
     docs/releases/v0.3.2.md
     docs/releases/v0.3.3.md
-    docs/releases/v0.3.4.md)
+    docs/releases/v0.3.4.md
+    docs/releases/v0.3.5.md)
 foreach(module IN LISTS TOOLX_MODULES)
     list(APPEND TOOLX_PUBLIC_DOCUMENTS "docs/modules/${module}.md")
 endforeach()
@@ -110,6 +111,7 @@ set(TOOLX_INTERNAL_DOCUMENTS
     docs/development/audits/v0.4-ai-observation.md
     docs/development/audits/v0.4-caddy-ai-observation.md
     docs/development/audits/v0.4-contract-update.md
+    docs/development/audits/maintenance-20261025.md
     docs/development/design/toolx-http-design.md
     docs/development/design/toolx-pack-design.md
     docs/development/design/toolx-log-design.md
@@ -256,7 +258,8 @@ foreach(release_note IN ITEMS
         docs/releases/v0.3.1.md
         docs/releases/v0.3.2.md
         docs/releases/v0.3.3.md
-        docs/releases/v0.3.4.md)
+        docs/releases/v0.3.4.md
+        docs/releases/v0.3.5.md)
     foreach(section IN ITEMS
             "## Highlights"
             "## Compatibility"

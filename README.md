@@ -7,12 +7,17 @@ rendering, schemas, codecs, hashes, and platform utilities. Six installable CLIs
 compose those libraries into a practical release workflow.
 
 > Status: Released
-> Applies to: v0.3.4
-> Latest release: v0.3.4
+> Applies to: v0.3.5
+> Latest release: v0.3.5
 
-`v0.3.4` repairs data preservation, HTTP response handling, schema validation,
-cancellation and logging within the `0.3.x` maintenance line. Rebuild C++ consumers
-and review the compatibility and migration notes before upgrading.
+**v0.3.5 is the final manually maintained release. Manual maintenance ended on
+2026-10-25.** No further manual bug fixes, security fixes, feature work or issue
+triage are planned. The source, documentation and release artifacts remain
+available; continued users should take responsibility for future fixes in a fork.
+
+This release fixes configuration persistence, numeric precision, filesystem data
+loss, archive boundaries, HTTP deadlines, logging and CLI input isolation.
+Rebuild C++ consumers and review the [compatibility and migration notes](docs/releases/v0.3.5.md).
 
 ## Understand ToolX in one minute
 
@@ -130,22 +135,30 @@ compared in the [cross-CLI matrix](docs/cli/matrix.md).
 See [Build and compatibility](docs/build-and-compatibility.md) and
 [Dependencies](docs/dependencies.md) before choosing a TLS or test configuration.
 
-## What changed in `v0.3.4`
+## What changed in v0.3.5
 
-- JSON Unicode escapes preserve values and distinct keys; serialized controls
-  are escaped, while malformed surrogates and literal controls fail parsing.
-- Archives and pack/inspect audit outputs cannot overlap protected data.
-  Downloads exclusively own their temporary siblings and preserve existing files.
-- Followed HTTP redirects deliver only the final body and callbacks, including
-  per-request policy overrides across multiple hops. Bodyless and informational
-  responses follow the bounded HTTP contract.
-- Supported schema restrictions are enforced, TaskGroup cancellation and outcome
-  accounting are corrected, and explicit log flush reaches every route once.
-- Build and test presets agree on multi-config builds. Public source signatures,
-  thirteen targets, six CLIs and default dependency/TLS choices remain unchanged.
+- Preserve double precision before CLI range validation and compare integer
+  schema bounds and enum values without rounding through double.
+- Reject non-finite/partially consumed numeric input; archive empty files and
+  single-file roots correctly.
+- Reject overflowing or over-budget chunk declarations before streaming, while
+  accepting valid large chunks under large configured limits.
+- Preserve configuration writes and INI value types, remove obsolete INI keys,
+  and keep newly added root keys outside existing sections.
+- Preserve source data on conflicting backup/link operations and reject dangling
+  archive links. Enforce HTTP retry/upload deadlines and handle huge timeouts safely.
+- Emit valid JSON logs for every control character and distinguish escaped config
+  keys in schema diagnostics and inspector selection.
+- Observe already-ready futures even at expired deadlines; interrupt periodic
+  log flush waits during shutdown.
+- Isolate HTTP/log audit outputs and rotation files from protected inputs before
+  writes, including aliases. Report log read failures instead of empty success.
+- Public source signatures, thirteen targets, six CLIs and default dependency/TLS
+  choices remain unchanged.
 
 User-visible history is maintained in [CHANGELOG.md](CHANGELOG.md); detailed
-compatibility and migration guidance is in [the v0.3.4 release notes](docs/releases/v0.3.4.md).
+compatibility and migration guidance is in [the v0.3.5 release notes](docs/releases/v0.3.5.md).
+The [v0.3.4 release notes](docs/releases/v0.3.4.md) retain the published baseline.
 
 ## Repository map
 

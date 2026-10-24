@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <compare>
 #include <limits>
 #include <sstream>
 
@@ -34,18 +35,76 @@ bool is_number(const cfgx::Node& node)
     return node.Kind() == cfgx::NodeKind::Integer || node.Kind() == cfgx::NodeKind::Double;
 }
 
-double as_number(const cfgx::Node& node)
+std::partial_ordering compare_integer_to_double(std::int64_t integer, double number)
 {
-    return node.Kind() == cfgx::NodeKind::Integer ? static_cast<double>(node.AsInt()) : node.AsDouble();
+    if (std::isnan(number))
+    {
+        return std::partial_ordering::unordered;
+    }
+
+    // The upper endpoint is exclusive: converting INT64_MAX to double rounds
+    // up to 2^63, which must never be cast back to int64_t.
+    constexpr double lower = static_cast<double>(std::numeric_limits<std::int64_t>::min());
+    constexpr double upper = -lower;
+    if (number < lower)
+    {
+        return std::partial_ordering::greater;
+    }
+    if (number >= upper)
+    {
+        return std::partial_ordering::less;
+    }
+
+    const auto truncated = static_cast<std::int64_t>(number);
+    const auto integer_order = integer <=> truncated;
+    if (integer_order != 0)
+    {
+        return integer_order;
+    }
+    // Equal integer parts can differ only by a fractional part. At this point
+    // converting integer to double is exact or reproduces number itself.
+    return static_cast<double>(integer) <=> number;
+}
+
+std::partial_ordering compare_numbers(const cfgx::Node& lhs, const cfgx::Node& rhs)
+{
+    if (lhs.Kind() == cfgx::NodeKind::Integer)
+    {
+        if (rhs.Kind() == cfgx::NodeKind::Integer)
+        {
+            return lhs.AsInt() <=> rhs.AsInt();
+        }
+        return compare_integer_to_double(lhs.AsInt(), rhs.AsDouble());
+    }
+    if (rhs.Kind() == cfgx::NodeKind::Integer)
+    {
+        return 0 <=> compare_integer_to_double(rhs.AsInt(), lhs.AsDouble());
+    }
+    return lhs.AsDouble() <=> rhs.AsDouble();
 }
 
 std::string append_path(std::string_view parent, std::string_view child)
 {
+    // Match cfgx's dot/index path grammar, including its empty-key spelling.
+    std::string escaped;
+    if (child.empty())
+    {
+        escaped = "[]";
+    }
+    else
+    {
+        for (const char ch : child)
+        {
+            if (ch == '\\' || ch == '.' || ch == '[' || ch == ']' || child == "$")
+                escaped.push_back('\\');
+            escaped.push_back(ch);
+        }
+    }
     if (parent.empty())
     {
-        return std::string(child);
+        return escaped;
     }
-    return std::string(parent) + "." + std::string(child);
+    return std::string(parent) + "." + escaped;
 }
 
 std::string append_index(std::string_view parent, std::size_t index)
@@ -61,7 +120,7 @@ bool node_equals(const cfgx::Node& lhs, const cfgx::Node& rhs)
     {
         if (is_number(lhs) && is_number(rhs))
         {
-            return as_number(lhs) == as_number(rhs);
+            return compare_numbers(lhs, rhs) == 0;
         }
         return false;
     }
@@ -350,15 +409,14 @@ void validate_node(const cfgx::Node& document, const cfgx::Node& schema, std::st
 
     if (is_number(document))
     {
-        const double actual = as_number(document);
-        if (const auto* minimum = schema.Get("minimum"); minimum != nullptr && actual < as_number(*minimum))
+        if (const auto* minimum = schema.Get("minimum"); minimum != nullptr && compare_numbers(document, *minimum) < 0)
         {
             if (push_issue(issues, options, Issue{location, "minimum", "numeric value is below minimum"}))
             {
                 return;
             }
         }
-        if (const auto* maximum = schema.Get("maximum"); maximum != nullptr && actual > as_number(*maximum))
+        if (const auto* maximum = schema.Get("maximum"); maximum != nullptr && compare_numbers(document, *maximum) > 0)
         {
             if (push_issue(issues, options, Issue{location, "maximum", "numeric value is above maximum"}))
             {

@@ -346,6 +346,107 @@ TEST(FsxTests, SafeReplaceBackupCreatesBackupFile)
     std::filesystem::remove_all(root, ec);
 }
 
+TEST(FsxTests, SafeReplaceRejectsRetainedBackupSourceAliases)
+{
+    const auto root = TestRoot() / "backup_source_alias";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    for (const bool default_backup : {false, true})
+    {
+        for (const bool lexical_alias : {false, true})
+        {
+            const auto dst = root / "target";
+            const auto backup = root / "target.bak";
+            const auto src = lexical_alias ? root / "." / "target.bak" : backup;
+            WriteText(dst, "old");
+            WriteText(backup, "new");
+            fsx::BatchPlan plan;
+            plan.AddSafeReplace(src.string(), dst.string(), !default_backup);
+            fsx::RunOptions options;
+            options.default_backup = default_backup;
+            const auto result = fsx::Run(plan, options);
+            EXPECT_FALSE(result.ok);
+            EXPECT_NE(result.error.find("backup"), std::string::npos) << result.error;
+            EXPECT_EQ(ReadText(dst), "old");
+            EXPECT_EQ(ReadText(backup), "new");
+            EXPECT_EQ(std::distance(std::filesystem::directory_iterator(root), std::filesystem::directory_iterator()),
+                      2);
+        }
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, SafeReplaceRejectsRetainedBackupHardLinkAlias)
+{
+    const auto root = TestRoot() / "backup_source_hardlink";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto src = root / "source";
+    const auto dst = root / "target";
+    const auto backup = root / "target.bak";
+    WriteText(src, "new");
+    WriteText(dst, "old");
+    std::filesystem::create_hard_link(src, backup, ec);
+    if (ec)
+        GTEST_SKIP() << "hard links unavailable: " << ec.message();
+    fsx::BatchPlan plan;
+    plan.AddSafeReplace(src.string(), dst.string(), true);
+    const auto result = fsx::Run(plan);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(ReadText(src), "new");
+    EXPECT_EQ(ReadText(dst), "old");
+    EXPECT_EQ(ReadText(backup), "new");
+    EXPECT_TRUE(std::filesystem::equivalent(src, backup));
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, SafeReplaceRejectsRetainedBackupAncestorAndDestination)
+{
+    const auto root = TestRoot() / "backup_ancestor";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto src = root / "target.bak" / "source";
+    const auto dst = root / "target";
+    WriteText(src, "new");
+    WriteText(dst, "old");
+    fsx::BatchPlan plan;
+    plan.AddSafeReplace(src.string(), dst.string(), true);
+    const auto ancestor = fsx::Run(plan);
+    EXPECT_FALSE(ancestor.ok);
+    EXPECT_NE(ancestor.error.find("backup"), std::string::npos) << ancestor.error;
+    EXPECT_FALSE(ancestor.rollback_attempted && !ancestor.rollback_complete);
+    EXPECT_EQ(ReadText(src), "new");
+    EXPECT_EQ(ReadText(dst), "old");
+    fsx::RunOptions options;
+    options.backup_suffix.clear();
+    const auto same_destination = fsx::Run(plan, options);
+    EXPECT_FALSE(same_destination.ok);
+    EXPECT_NE(same_destination.error.find("backup"), std::string::npos) << same_destination.error;
+    EXPECT_EQ(ReadText(src), "new");
+    EXPECT_EQ(ReadText(dst), "old");
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, SafeReplaceRejectsRetainedBackupCanonicalSourceAlias)
+{
+    const auto root = TestRoot() / "backup_source_canonical";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(root / "physical" / "target", "old");
+    WriteText(root / "physical" / "target.bak", "new");
+    std::filesystem::create_directory_symlink(root / "physical", root / "alias", ec);
+    if (ec)
+        GTEST_SKIP() << "directory symlinks unavailable: " << ec.message();
+    fsx::BatchPlan plan;
+    plan.AddSafeReplace((root / "alias" / "target.bak").string(), (root / "physical" / "target").string(), true);
+    const auto result = fsx::Run(plan);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(ReadText(root / "physical" / "target"), "old");
+    EXPECT_EQ(ReadText(root / "physical" / "target.bak"), "new");
+    EXPECT_TRUE(std::filesystem::is_symlink(root / "alias"));
+    std::filesystem::remove_all(root, ec);
+}
+
 TEST(FsxTests, ConflictPolicySkipMarksSkipped)
 {
     const auto root = TestRoot() / "conflict_skip";
@@ -1771,6 +1872,189 @@ TEST(FsxTests, CreateLinkFailsWhenDestinationExistsWithoutOverwrite)
     std::filesystem::remove_all(root, ec);
 }
 
+TEST(FsxTests, CreateLinkOverwriteRejectsSourceAliases)
+{
+    const auto root = TestRoot() / "link_source_alias";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    for (const auto type : {fsx::LinkType::Hard, fsx::LinkType::Symbolic})
+    {
+        for (const bool lexical_alias : {false, true})
+        {
+            const auto source = root / "source";
+            const auto link = lexical_alias ? root / "." / "source" : source;
+            WriteText(source, "SOURCE-SENTINEL");
+            const auto result = fsx::CreateLink(source.string(), link.string(), type, true);
+            EXPECT_FALSE(result.ok);
+            EXPECT_EQ(ReadText(source), "SOURCE-SENTINEL");
+            EXPECT_FALSE(std::filesystem::is_symlink(source));
+        }
+    }
+    const auto alias = root / "hard-alias";
+    std::filesystem::create_hard_link(root / "source", alias, ec);
+    if (ec)
+        GTEST_SKIP() << "hard links unavailable: " << ec.message();
+    for (const auto type : {fsx::LinkType::Hard, fsx::LinkType::Symbolic})
+    {
+        EXPECT_FALSE(fsx::CreateLink((root / "source").string(), alias.string(), type, true).ok);
+        EXPECT_EQ(ReadText(root / "source"), "SOURCE-SENTINEL");
+        EXPECT_EQ(ReadText(alias), "SOURCE-SENTINEL");
+        EXPECT_TRUE(std::filesystem::equivalent(root / "source", alias));
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, CreateLinkOverwriteRejectsCanonicalSourceAlias)
+{
+    const auto root = TestRoot() / "link_canonical_source_alias";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto source = root / "physical" / "source";
+    WriteText(source, "SOURCE-SENTINEL");
+    std::filesystem::create_directory_symlink(root / "physical", root / "alias", ec);
+    if (ec)
+        GTEST_SKIP() << "directory symlinks unavailable: " << ec.message();
+    for (const auto type : {fsx::LinkType::Hard, fsx::LinkType::Symbolic})
+    {
+        const auto result = fsx::CreateLink(source.string(), (root / "alias" / "source").string(), type, true);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(ReadText(source), "SOURCE-SENTINEL");
+        EXPECT_TRUE(std::filesystem::is_symlink(root / "alias"));
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, CreateLinkOverwriteRejectsRelativeSymbolicSelfReference)
+{
+    const auto root = TestRoot() / "link_relative_self_reference";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(root / "destination", "OLD");
+    const auto result = fsx::CreateLink("destination", (root / "destination").string(), fsx::LinkType::Symbolic, true);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(ReadText(root / "destination"), "OLD");
+    EXPECT_FALSE(std::filesystem::is_symlink(root / "destination"));
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, CreateLinkFailedCandidatePreservesExistingDestination)
+{
+    const auto root = TestRoot() / "link_failed_candidate";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto link = root / "destination";
+    WriteText(link, "OLD");
+    const auto missing = fsx::CreateLink((root / "missing").string(), link.string(), fsx::LinkType::Hard, true);
+    EXPECT_FALSE(missing.ok);
+    EXPECT_EQ(ReadText(link), "OLD");
+    const auto invalid = fsx::CreateLink("", link.string(), fsx::LinkType::Symbolic, true);
+    EXPECT_FALSE(invalid.ok);
+    EXPECT_EQ(ReadText(link), "OLD");
+    EXPECT_EQ(std::distance(std::filesystem::directory_iterator(root), std::filesystem::directory_iterator()), 1);
+    std::filesystem::remove_all(root, ec);
+}
+
+#if defined(_WIN32)
+TEST(FsxTests, CreateLinkFailedPublicationPreservesExistingDestination)
+{
+    const auto root = TestRoot() / "link_failed_publication";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto source = root / "source";
+    const auto destination = root / "destination";
+    WriteText(source, "SOURCE");
+    WriteText(destination, "OLD");
+    HANDLE reader = CreateFileW(destination.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(reader, INVALID_HANDLE_VALUE);
+    const auto result = fsx::CreateLink(source.string(), destination.string(), fsx::LinkType::Hard, true);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(ReadText(source), "SOURCE");
+    EXPECT_EQ(ReadText(destination), "OLD");
+    EXPECT_EQ(std::distance(std::filesystem::directory_iterator(root), std::filesystem::directory_iterator()), 2);
+    CloseHandle(reader);
+    std::filesystem::remove_all(root, ec);
+}
+#endif
+
+TEST(FsxTests, CreateLinkOverwritePreservesNonemptyDirectoryAndReplacesEmptyDirectory)
+{
+    const auto root = TestRoot() / "link_directory_destination";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(root / "source", "SOURCE");
+    WriteText(root / "destination" / "keep", "KEEP");
+    const auto nonempty =
+        fsx::CreateLink((root / "source").string(), (root / "destination").string(), fsx::LinkType::Hard, true);
+    EXPECT_FALSE(nonempty.ok);
+    EXPECT_EQ(ReadText(root / "source"), "SOURCE");
+    EXPECT_EQ(ReadText(root / "destination" / "keep"), "KEEP");
+    std::filesystem::remove(root / "destination" / "keep", ec);
+    const auto empty =
+        fsx::CreateLink((root / "source").string(), (root / "destination").string(), fsx::LinkType::Hard, true);
+    ASSERT_TRUE(empty.ok) << empty.error;
+    EXPECT_EQ(ReadText(root / "source"), "SOURCE");
+    EXPECT_EQ(ReadText(root / "destination"), "SOURCE");
+    EXPECT_EQ(std::distance(std::filesystem::directory_iterator(root), std::filesystem::directory_iterator()), 2);
+    std::filesystem::remove_all(root, ec);
+}
+
+#if defined(__linux__)
+TEST(FsxTests, CreateLinkCrossDeviceFailurePreservesExistingDestination)
+{
+    const auto root = TestRoot() / "link_cross_device_source";
+    const auto other = std::filesystem::path("/dev/shm/toolx-fsx-link-cross-device-test");
+    std::error_code ec;
+    if (!std::filesystem::is_directory(other.parent_path(), ec))
+        GTEST_SKIP() << "/dev/shm unavailable";
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::remove_all(other, ec);
+    WriteText(root / "source", "SOURCE");
+    WriteText(other / "destination", "OLD");
+    std::filesystem::create_hard_link(root / "source", other / "probe", ec);
+    if (ec != std::errc::cross_device_link)
+    {
+        std::filesystem::remove_all(root, ec);
+        std::filesystem::remove_all(other, ec);
+        GTEST_SKIP() << "separate writable filesystem unavailable";
+    }
+    const auto result =
+        fsx::CreateLink((root / "source").string(), (other / "destination").string(), fsx::LinkType::Hard, true);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(ReadText(root / "source"), "SOURCE");
+    EXPECT_EQ(ReadText(other / "destination"), "OLD");
+    EXPECT_EQ(std::distance(std::filesystem::directory_iterator(other), std::filesystem::directory_iterator()), 1);
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::remove_all(other, ec);
+}
+#endif
+
+TEST(FsxTests, CreateLinkOverwriteReplacesDistinctDestination)
+{
+    const auto root = TestRoot() / "link_overwrite_distinct";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto source = root / "source";
+    const auto link = root / "destination";
+    WriteText(source, "new");
+    WriteText(link, "old");
+    const auto hard = fsx::CreateLink(source.string(), link.string(), fsx::LinkType::Hard, true);
+    ASSERT_TRUE(hard.ok) << hard.error;
+    EXPECT_EQ(ReadText(source), "new");
+    EXPECT_EQ(ReadText(link), "new");
+    EXPECT_TRUE(std::filesystem::equivalent(source, link));
+    std::filesystem::remove(link, ec);
+    WriteText(link, "old");
+    const auto symbolic = fsx::CreateLink("source", link.string(), fsx::LinkType::Symbolic, true);
+    if (!symbolic.ok && !fsx::QueryCapabilities().symbolic_link)
+        GTEST_SKIP() << "symbolic links unavailable: " << symbolic.error;
+    ASSERT_TRUE(symbolic.ok) << symbolic.error;
+    EXPECT_EQ(ReadText(source), "new");
+    EXPECT_EQ(ReadText(link), "new");
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    std::filesystem::remove_all(root, ec);
+}
+
 TEST(FsxTests, ArchiveCapabilitiesExposeTarMvp)
 {
     const auto caps = fsx::QueryCapabilities();
@@ -1875,6 +2159,120 @@ TEST(FsxTests, TarArchiveCreateAndExtractRoundTrip)
 
     EXPECT_EQ(ReadText(out / "a.txt"), "alpha");
     EXPECT_EQ(ReadText(out / "nested" / "b.txt"), "beta");
+}
+
+TEST(FsxTests, TarArchivePreservesEmptyFiles)
+{
+    const auto root = TestRoot() / "tar_empty_files";
+    const auto src = root / "src";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(src / "empty.txt", "");
+    WriteText(src / "nested" / "empty.txt", "");
+    std::string payload(8193, 'P');
+    payload[4096] = '\0';
+    WriteText(src / "last.txt", payload);
+
+    const auto created = fsx::CreateArchive(src.string(), (root / "bundle.tar").string());
+    ASSERT_TRUE(created.ok) << created.error;
+    const auto extracted = fsx::ExtractArchive((root / "bundle.tar").string(), (root / "out").string());
+    ASSERT_TRUE(extracted.ok) << extracted.error;
+    EXPECT_TRUE(std::filesystem::is_regular_file(root / "out" / "empty.txt"));
+    EXPECT_EQ(std::filesystem::file_size(root / "out" / "empty.txt"), 0U);
+    EXPECT_TRUE(std::filesystem::is_regular_file(root / "out" / "nested" / "empty.txt"));
+    EXPECT_EQ(std::filesystem::file_size(root / "out" / "nested" / "empty.txt"), 0U);
+    EXPECT_EQ(ReadText(root / "out" / "last.txt"), payload);
+
+    const auto single = fsx::CreateArchive((src / "empty.txt").string(), (root / "single.tar").string());
+    ASSERT_TRUE(single.ok) << single.error;
+    ASSERT_TRUE(fsx::ExtractArchive((root / "single.tar").string(), (root / "single-out").string()).ok);
+    EXPECT_TRUE(std::filesystem::is_regular_file(root / "single-out" / "empty.txt"));
+    EXPECT_EQ(std::filesystem::file_size(root / "single-out" / "empty.txt"), 0U);
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, ExtractionPreservesItsInputArchiveAndHardLinkAliases)
+{
+    const auto root = TestRoot() / "tar_input_alias";
+    std::error_code cleanup_ec;
+    std::filesystem::remove_all(root, cleanup_ec);
+    for (const bool hard_link : {false, true})
+    {
+        for (const auto policy : {fsx::ConflictPolicy::Overwrite, fsx::ConflictPolicy::Skip, fsx::ConflictPolicy::Fail})
+        {
+            const auto trial = root / (std::to_string(hard_link) + "-" + std::to_string(static_cast<int>(policy)));
+            const auto source = trial / "src" / (hard_link ? "payload.txt" : "bundle.tar");
+            const auto output = trial / "out";
+            const auto archive = output / "bundle.tar";
+            WriteText(source, "archive must survive");
+            std::filesystem::create_directories(output);
+            ASSERT_TRUE(fsx::CreateArchive(source.string(), archive.string()).ok);
+            if (hard_link)
+            {
+                std::error_code ec;
+                std::filesystem::create_hard_link(archive, output / "payload.txt", ec);
+                ASSERT_FALSE(ec) << ec.message();
+            }
+            const auto original = ReadText(archive);
+            fsx::ArchiveOptions options;
+            options.conflict_policy = policy;
+            const auto result = fsx::ExtractArchive(archive.string(), output.string(), options);
+            EXPECT_EQ(result.ok, policy == fsx::ConflictPolicy::Skip);
+            EXPECT_TRUE(ReadText(archive) == original) << "extraction changed the archive bytes";
+        }
+    }
+
+    const auto source = root / "ancestor-src" / "old";
+    const auto output = root / "ancestor-out";
+    const auto archive = output / "old" / "bundle.tar";
+    WriteText(source, "replacement file");
+    std::filesystem::create_directories(archive.parent_path());
+    ASSERT_TRUE(fsx::CreateArchive(source.string(), archive.string()).ok);
+    const auto original = ReadText(archive);
+    EXPECT_FALSE(fsx::ExtractArchive(archive.string(), output.string()).ok);
+    EXPECT_TRUE(ReadText(archive) == original);
+}
+
+TEST(FsxTests, ArchiveInputReadErrorsAndBufferedOutputFailuresAreReported)
+{
+    const auto root = TestRoot() / "tar_io_errors";
+    const auto directory = root / "directory.tar";
+    std::filesystem::create_directories(directory);
+    EXPECT_FALSE(fsx::ExtractArchive(directory.string(), (root / "out").string()).ok);
+#if !defined(_WIN32)
+    if (std::filesystem::exists("/dev/full"))
+    {
+        WriteText(root / "source.txt", "buffered content");
+        EXPECT_FALSE(fsx::CreateArchive((root / "source.txt").string(), "/dev/full").ok);
+    }
+#endif
+}
+
+TEST(FsxTests, TarSingleFileRootOptionDoesNotCreateConflictingDirectory)
+{
+    const auto root = TestRoot() / "tar_single_file_root_option";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(root / "source.txt", "PAYLOAD");
+    for (const bool include_root : {false, true})
+    {
+        fsx::ArchiveOptions create;
+        create.include_root_directory = include_root;
+        const auto archive = root / (include_root ? "with-root.tar" : "without-root.tar");
+        const auto created = fsx::CreateArchive((root / "source.txt").string(), archive.string(), create);
+        ASSERT_TRUE(created.ok) << created.error;
+        for (const auto policy : {fsx::ConflictPolicy::Fail, fsx::ConflictPolicy::Skip, fsx::ConflictPolicy::Overwrite})
+        {
+            fsx::ArchiveOptions extract;
+            extract.conflict_policy = policy;
+            const auto out = root / (std::string(include_root ? "with-" : "without-") + fsx::ToString(policy));
+            const auto extracted = fsx::ExtractArchive(archive.string(), out.string(), extract);
+            ASSERT_TRUE(extracted.ok) << extracted.error;
+            ASSERT_TRUE(std::filesystem::is_regular_file(out / "source.txt"));
+            EXPECT_EQ(ReadText(out / "source.txt"), "PAYLOAD");
+        }
+    }
+    std::filesystem::remove_all(root, ec);
 }
 
 TEST(FsxTests, ArchiveRejectsSourceOutputOverlapBeforeCreatingAnything)
@@ -2005,6 +2403,69 @@ TEST(FsxTests, ExtractArchiveConflictPoliciesConsumeSkippedPayloadAndPadding)
                 EXPECT_FALSE(std::filesystem::exists(dest / "b.txt"));
             else
                 EXPECT_EQ(ReadText(dest / "b.txt"), "SECOND");
+        }
+    }
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, ExtractArchiveRejectsDanglingFileLinksForEveryPolicy)
+{
+    const auto root = TestRoot() / "tar_dangling_entry";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(root / "source" / "file", "PAYLOAD");
+    const auto archive = root / "input.tar";
+    ASSERT_TRUE(fsx::CreateArchive((root / "source").string(), archive.string()).ok);
+    for (const auto policy : {fsx::ConflictPolicy::Fail, fsx::ConflictPolicy::Skip, fsx::ConflictPolicy::Overwrite})
+    {
+        const auto out = root / fsx::ToString(policy);
+        const auto outside = root / (std::string("outside-") + fsx::ToString(policy));
+        std::filesystem::create_directories(out);
+        std::filesystem::create_symlink(outside, out / "file", ec);
+        if (ec)
+            GTEST_SKIP() << "symbolic links unavailable: " << ec.message();
+        fsx::ArchiveOptions options;
+        options.conflict_policy = policy;
+        const auto result = fsx::ExtractArchive(archive.string(), out.string(), options);
+        EXPECT_FALSE(result.ok);
+        EXPECT_FALSE(std::filesystem::exists(outside));
+        EXPECT_TRUE(std::filesystem::is_symlink(out / "file"));
+    }
+    ASSERT_TRUE(fsx::ExtractArchive(archive.string(), (root / "ordinary").string()).ok);
+    EXPECT_EQ(ReadText(root / "ordinary" / "file"), "PAYLOAD");
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST(FsxTests, ExtractArchiveRejectsDirectoryLinksAndLinkedParents)
+{
+    const auto root = TestRoot() / "tar_linked_directory_entry";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    WriteText(root / "source" / "directory" / "file", "PAYLOAD");
+    const auto archive = root / "input.tar";
+    ASSERT_TRUE(fsx::CreateArchive((root / "source").string(), archive.string()).ok);
+    for (const bool dangling : {false, true})
+    {
+        for (const bool directory_entry : {false, true})
+        {
+            const auto out =
+                root / (std::string(dangling ? "dangling-" : "existing-") + (directory_entry ? "entry" : "parent"));
+            const auto linked = out / "inside";
+            std::filesystem::create_directories(out);
+            if (!dangling)
+                std::filesystem::create_directories(linked);
+            std::filesystem::create_directory_symlink(linked, out / "directory", ec);
+            if (ec)
+                GTEST_SKIP() << "directory symlinks unavailable: " << ec.message();
+            if (!directory_entry)
+                WriteTarWithSingleEntry(archive, "directory/file", "PAYLOAD");
+            else
+                ASSERT_TRUE(fsx::CreateArchive((root / "source").string(), archive.string()).ok);
+            const auto result = fsx::ExtractArchive(archive.string(), out.string());
+            EXPECT_FALSE(result.ok);
+            EXPECT_TRUE(std::filesystem::is_symlink(out / "directory"));
+            EXPECT_FALSE(std::filesystem::exists(linked / "file"));
+            EXPECT_EQ(std::filesystem::exists(linked), !dangling);
         }
     }
     std::filesystem::remove_all(root, ec);

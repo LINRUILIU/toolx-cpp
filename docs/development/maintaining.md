@@ -2,8 +2,11 @@
 
 > Audience: ToolX 维护者与发布负责人
 > Status: Canonical maintainer guide
-> Applies to: `v0.3.4` maintenance cycle
+> Applies to: `v0.3.5` final maintenance release and retained procedures
 > Source of truth for: 本地质量门禁、打包、发布与维护流程
+
+手动维护于 2026-10-25 随 v0.3.5 结束，不再承诺手动 bug/安全修复、功能开发或
+issue 跟进。下列流程保留供复现历史发行和 fork 自行维护；保留 CI 不代表继续有人维护。
 
 公开构建要求位于
 [`build-and-compatibility.md`](../build-and-compatibility.md)，第三方参与方式位于

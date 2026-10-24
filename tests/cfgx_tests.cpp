@@ -1287,6 +1287,16 @@ TEST(CfgxIoTests, LoadAndSaveJsonFileWork)
     std::filesystem::remove(file, ec);
 }
 
+TEST(CfgxIoTests, IniDirectoryIsNotAnEmptyConfiguration)
+{
+    const auto path = TestTempPath("cfgx-directory-not-file.ini");
+    std::filesystem::create_directories(path);
+    const auto loaded = cfgx::LoadFromFile(path.string());
+    EXPECT_FALSE(loaded.ok);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 TEST(CfgxIoTests, DirectoryInputsAndPreservationReadsReturnErrors)
 {
     const auto directory = TestTempPath("cfgx_read_directory.json");

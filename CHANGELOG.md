@@ -21,6 +21,8 @@ narratives remain under [`docs/releases`](docs/releases/).
 - Validate snapshots before restoring them; rejection preserves current config,
   source trace and audit history. Return errors for failed file/directory reads
   in config, upload/request-body and logger-config paths.
+- Explicitly reject directory inputs instead of relying on standard-library
+  stream error flags, and reject empty link paths/targets on every platform.
 - Preserve INI string/double types and precision, remove obsolete assignments
   while retaining comments, and place new root keys before section headers.
   Reject invalid `toolx-config set --type double` input before modifying files.

@@ -62,6 +62,12 @@ CTest 数量是注册项数量，后端独立套件数量是 GTest 用例数量�
 Windows 无 symlink 特权的分支有明确跳过；原生 junction 25 项没有权限跳过。
 macOS/BSD 尚未在本地运行，必须由对应提交的远端 CI 补充，不能用 Linux 结果替代。
 
+首个远端提交 5ff3723 的 Windows、GCC、OpenSSL、sanitizer/fuzz 检查通过；macOS
+实际暴露了 libc++ 目录读取可表现为 EOF、以及空 symlink target 可创建的差异。
+原失败回归保留，在六个文件读取入口显式拒绝目录、CreateLink 显式拒绝空参数，
+并新增 INI 目录不是空配置用例。独立 storage 审核再次确认补丁无剩余 P2+；新提交
+须重新通过全部 CI，不能借用前一提交的绿色检查打标签。
+
 首轮本地统一验证因新增目录回归误写退出码，以及 Windows PowerShell 环境没有
 Get-FileHash 而失败；已改为既有 runtime exit 1 与直接 .NET SHA256，再完整重跑通过。
 此前 Debug 44/44、GCC 43/43 仅保留为早期阶段证据，不冒充后续修复的验证。

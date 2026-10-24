@@ -477,6 +477,9 @@ std::uint64_t SteadyNowMs()
 
 Result<std::string> ReadFileText(std::string_view path)
 {
+    std::error_code type_ec;
+    if (std::filesystem::is_directory(std::filesystem::path(std::string(path)), type_ec))
+        return Result<std::string>{false, {}, "cannot read a directory as a file: " + std::string(path)};
     try
     {
         std::ifstream input(std::string(path), std::ios::binary);

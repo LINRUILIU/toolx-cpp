@@ -5139,6 +5139,12 @@ Status Client::DownloadFile(std::string url, std::string output_path, DownloadOp
 Result<Response> Client::UploadFile(std::string url, std::string field_name, std::string file_path, HeaderList headers)
 {
     Result<Response> out;
+    std::error_code type_ec;
+    if (std::filesystem::is_directory(file_path, type_ec))
+    {
+        out.error = MakeError(ErrorKind::InvalidArgument, "upload path is a directory");
+        return out;
+    }
     std::ifstream in(file_path, std::ios::binary);
     if (!in.is_open())
     {

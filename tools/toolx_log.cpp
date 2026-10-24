@@ -722,6 +722,8 @@ cfgx::Result<Summary> SummarizeLogs(const LogConfig& config)
         {
             return cfgx::Result<Summary>{false, {}, "log file not found: " + file};
         }
+        if (fs::is_directory(file, ec))
+            return cfgx::Result<Summary>{false, {}, "failed to read log file (directory): " + file};
 
         std::ifstream in(file, std::ios::binary);
         if (!in)

@@ -2846,6 +2846,12 @@ Status CreateArchive(std::string_view source_root, std::string_view archive_path
 Status ExtractArchive(std::string_view archive_path, std::string_view destination_root, const ArchiveOptions& options)
 {
     Status status;
+    std::error_code type_ec;
+    if (std::filesystem::is_directory(Path(std::string(archive_path)), type_ec))
+    {
+        status.error = utils::err::join_context("fsx", "tar", "archive path is a directory");
+        return status;
+    }
     std::ifstream in(std::string(archive_path), std::ios::binary);
     if (!in.is_open())
     {
@@ -3031,6 +3037,11 @@ Status ExtractArchive(std::string_view archive_path, std::string_view destinatio
 Status CreateLink(std::string_view target, std::string_view link_path, LinkType type, bool overwrite)
 {
     Status out;
+    if (target.empty() || link_path.empty())
+    {
+        out.error = utils::err::join_context("fsx", "link", "target and link path cannot be empty");
+        return out;
+    }
     const Path target_path{std::string(target)};
     const Path link{std::string(link_path)};
 

@@ -702,6 +702,8 @@ cfgx::Result<std::string> ReadBodyFile(const std::string& path)
     {
         return cfgx::Result<std::string>{false, {}, "body file not found: " + path};
     }
+    if (fs::is_directory(path, ec))
+        return cfgx::Result<std::string>{false, {}, "failed to read body file (directory): " + path};
     std::ifstream in(path, std::ios::binary);
     if (!in)
     {

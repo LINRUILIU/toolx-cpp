@@ -1576,6 +1576,9 @@ const LoggerConfigV2& Logger::CurrentConfigV2() const noexcept
 
 bool Logger::LoadConfigV2FromJsonFile(const std::string& file_path)
 {
+    std::error_code type_ec;
+    if (std::filesystem::is_directory(file_path, type_ec))
+        return false;
     std::ifstream input(file_path);
     if (!input.is_open())
     {
